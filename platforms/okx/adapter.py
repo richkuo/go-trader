@@ -1,9 +1,15 @@
 
+import json
 import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
+from decimal import Decimal
 from typing import Optional, Tuple
+
+OKX_OFFLINE_FIXTURE_KEY = "offline-fixture"
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
@@ -58,6 +64,15 @@ class OKXCloseOrdersError(RuntimeError):
         self.orders = list(orders)
 
 
+def _okx_offline_fixture_url(api_key: str) -> str:
+    url = os.environ.get("OKX_OFFLINE_FIXTURE", "").strip()
+    if not url:
+        return ""
+    if api_key != OKX_OFFLINE_FIXTURE_KEY:
+        raise RuntimeError("OKX_OFFLINE_FIXTURE is set but OKX_API_KEY is not offline-fixture; refusing to call OKX")
+    return url
+
+
 class OKXExchangeAdapter:
 
     def __init__(self, public_only: bool = False):
@@ -65,6 +80,7 @@ class OKXExchangeAdapter:
         api_key = "" if self._public_only else os.environ.get("OKX_API_KEY", "")
         api_secret = "" if self._public_only else os.environ.get("OKX_API_SECRET", "")
         passphrase = "" if self._public_only else os.environ.get("OKX_PASSPHRASE", "")
+        self._offline_url = _okx_offline_fixture_url(os.environ.get("OKX_API_KEY", ""))
         sandbox = os.environ.get("OKX_SANDBOX", "") == "1"
 
         config = {
@@ -419,6 +435,18 @@ class OKXExchangeAdapter:
             )
         return self._exchange.fetch_positions() or []
 
+    def fetch_swap_positions_raw(self) -> list:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_swap_positions_raw requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        resp = self._exchange.privateGetAccountPositions({"instType": "SWAP"})
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
+            raise RuntimeError(f"OKX positions query failed: {resp!r}")
+        if "data" not in resp or not isinstance(resp.get("data"), list):
+            raise RuntimeError(f"OKX positions query returned no position list: {resp!r}")
+        return resp["data"]
+
     @staticmethod
     def order_pair(symbol: str, inst_type: str = "spot") -> str:
         if inst_type == "swap":
@@ -713,3 +741,369 @@ class OKXExchangeAdapter:
         if not matched:
             raise option_data.OptionDataUnavailable("option quote unavailable: no listed okx option matches")
         raise option_data.OptionDataUnavailable("option quote unavailable: okx mark is not positive")
+
+    def _exchange_call(self, name: str, params: dict):
+        if self._offline_url:
+            return self._offline_call(name, params)
+        fn = getattr(self._exchange, name, None)
+        if fn is None:
+            raise RuntimeError(f"OKX client has no {name}")
+        return fn(params or {})
+
+    def _offline_call(self, name: str, params: dict):
+        body = json.dumps({"method": name, "params": params or {}}).encode()
+        req = urllib.request.Request(self._offline_url, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"OKX offline fixture {name} failed: HTTP {exc.code}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"OKX offline fixture {name} returned {payload!r}")
+        return payload
+
+    @staticmethod
+    def _okx_data(resp, what: str) -> list:
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
+            raise RuntimeError(f"OKX {what} refused: {resp!r}")
+        data = resp.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError(f"OKX {what} returned no data list")
+        return data
+
+    def _require_live_stop(self):
+        if not self._is_live:
+            raise RuntimeError("OKX stop commands require live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)")
+
+    def stop_preflight(self, inst_id: str, planned_contracts: str = "") -> dict:
+        self._require_live_stop()
+        cfg = self._okx_data(self._exchange_call("privateGetAccountConfig", {}), "account config")
+        if len(cfg) != 1 or not isinstance(cfg[0], dict):
+            raise RuntimeError("OKX account config did not return one record")
+        pos_mode = str(cfg[0].get("posMode") or "")
+        positions = self._okx_data(self._exchange_call("privateGetAccountPositions", {"instType": "SWAP"}), "positions")
+        own, others, liq, liq_known, pos_contracts, pos_side, cross = _read_stop_position(positions, inst_id)
+        orders = self._okx_data(self._exchange_call("privateGetTradeOrdersPending", {"instType": "SWAP", "instId": inst_id}), "open orders")
+        algos = self._okx_data(self._exchange_call("privateGetTradeOrdersAlgoPending", {"instType": "SWAP", "instId": inst_id, "ordType": "conditional"}), "open algos")
+        public = self.public_stop_reference(inst_id, planned_contracts or pos_contracts or "0", round_entry=bool(planned_contracts))
+        balance = self._okx_data(self._exchange_call("privateGetAccountBalance", {}), "balance")
+        equity = _usdt_equity(balance)
+        fee = self._taker_fee(inst_id)
+        flat = own is None
+        return {
+            **public,
+            "pos_mode": pos_mode if cfg[0].get("acctLv") in ("2", "3") else "unsupported_account_mode",
+            "flat": flat,
+            "cross": cross if not flat else True,
+            "open_orders": len(orders),
+            "open_algos": len(algos),
+            "other_positions": others,
+            "equity": equity,
+            "fee": fee,
+            "liq_px": liq,
+            "liq_known": liq_known,
+            "pos_contracts": pos_contracts,
+            "pos_side": pos_side,
+        }
+
+    def public_stop_reference(self, inst_id: str, planned_contracts: str, round_entry: bool = False) -> dict:
+        inst = self._okx_data(self._exchange_call("publicGetPublicInstruments", {"instType": "SWAP", "instId": inst_id}), "instruments")
+        if len(inst) != 1 or not isinstance(inst[0], dict) or inst[0].get("instId") != inst_id:
+            raise RuntimeError(f"OKX instruments did not return {inst_id}")
+        row = inst[0]
+        for field in ("tickSz", "lotSz", "minSz", "ctVal", "state"):
+            if not isinstance(row.get(field), str) or row.get(field) == "":
+                raise RuntimeError(f"OKX instrument {inst_id} field {field} is missing")
+        if row["state"] != "live":
+            raise RuntimeError(f"OKX instrument {inst_id} state is {row['state']}")
+        ticker = self._okx_data(self._exchange_call("publicGetPublicMarkPrice", {"instType": "SWAP", "instId": inst_id}), "mark price")
+        if len(ticker) != 1 or not isinstance(ticker[0], dict) or ticker[0].get("instId") != inst_id:
+            raise RuntimeError(f"OKX ticker did not return {inst_id}")
+        mark = ticker[0].get("markPx")
+        if not isinstance(mark, str) or mark == "":
+            raise RuntimeError(f"OKX ticker {inst_id} has no markPx")
+        family = row.get("instFamily")
+        if not isinstance(family, str) or family == "":
+            raise RuntimeError(f"OKX instrument {inst_id} has no instFamily")
+        tiers = self._okx_data(self._exchange_call("publicGetPublicPositionTiers", {"instType": "SWAP", "tdMode": "cross", "instFamily": family}), "position tiers")
+        contracts = planned_contracts or row["minSz"]
+        if round_entry:
+            from decimal import ROUND_FLOOR
+            qty, lot, minimum = (Decimal(value) for value in (contracts, row["lotSz"], row["minSz"]))
+            if not all(item.is_finite() and item > 0 for item in (qty, lot, minimum)):
+                raise RuntimeError("OKX stop size parameters must be finite and positive")
+            qty = (qty / lot).to_integral_value(rounding=ROUND_FLOOR) * lot
+            if qty < minimum:
+                raise RuntimeError("OKX stop size is below the instrument minimum")
+            contracts = format(qty, "f")
+        mmr = _tier_mmr(tiers, contracts)
+        return {"mark": mark, "tick": row["tickSz"], "lot": row["lotSz"], "min_sz": row["minSz"], "ct_val": row["ctVal"],
+                "mmr": mmr, "contracts": contracts}
+
+    def _taker_fee(self, inst_id: str) -> str:
+        rows = self._okx_data(self._exchange_call("privateGetAccountTradeFee", {"instType": "SWAP", "instFamily": inst_id.removesuffix("-SWAP")}), "trade fee")
+        if len(rows) != 1 or not isinstance(rows[0], dict) or not isinstance(rows[0].get("taker"), str):
+            raise RuntimeError("OKX trade fee did not return a taker rate")
+        taker = Decimal(rows[0]["taker"])
+        if not taker.is_finite():
+            raise RuntimeError("OKX taker fee is not finite")
+        fee = -taker if taker < 0 else Decimal("0")
+        return format(fee, "f")
+
+    def stop_place(self, inst_id: str, position_side: str, contracts: str, trigger: str, algo_client_id: str) -> dict:
+        self._require_live_stop()
+        if position_side not in ("long", "short"):
+            raise RuntimeError("OKX stop side must be long or short")
+        body = {
+            "instId": inst_id,
+            "tdMode": "cross",
+            "side": "sell" if position_side == "long" else "buy",
+            "posSide": "net",
+            "ordType": "conditional",
+            "sz": str(contracts),
+            "algoClOrdId": algo_client_id,
+            "slTriggerPx": str(trigger),
+            "slOrdPx": "-1",
+            "slTriggerPxType": "mark",
+            "reduceOnly": True,
+            "cxlOnClosePos": True,
+        }
+        rows = self._okx_data(self._exchange_call("privatePostTradeOrderAlgo", body), "place stop")
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise RuntimeError(f"OKX place stop returned {rows!r}")
+        row = rows[0]
+        if str(row.get("sCode")) != "0" or not isinstance(row.get("algoId"), str) or row.get("algoId") == "":
+            raise RuntimeError(f"OKX place stop was not accepted: {row!r}")
+        if row.get("algoClOrdId") not in ("", None, algo_client_id):
+            raise RuntimeError(f"OKX place stop returned algoClOrdId {row.get('algoClOrdId')!r}")
+        return {"algo_id": row["algoId"], "algo_client_id": algo_client_id, "trigger_px": str(trigger), "sz": str(contracts)}
+
+    def stop_read(self, inst_id: str, algo_client_id: str) -> dict:
+        self._require_live_stop()
+        try:
+            reply = self._exchange_call("privateGetTradeOrderAlgo", {"algoClOrdId": algo_client_id})
+        except ccxt.OrderNotFound:
+            return {"algo_state": "absent"}
+        if isinstance(reply, dict) and str(reply.get("code")) == "51603":
+            return {"algo_state": "absent"}
+        rows = self._okx_data(reply, "read stop")
+        if len(rows) != 1:
+            raise RuntimeError(f"OKX returned {len(rows)} stops for {algo_client_id}")
+        row = rows[0]
+        if not isinstance(row, dict) or row.get("instId") != inst_id or row.get("algoClOrdId") != algo_client_id:
+            raise RuntimeError("OKX stop read returned a different instrument or client ID")
+        order_ids = row.get("ordIdList") or []
+        if not isinstance(order_ids, list) or any(not isinstance(order_id, str) or not order_id for order_id in order_ids):
+            raise RuntimeError("OKX stop read returned invalid child order IDs")
+        order_id = row.get("ordId")
+        if order_id:
+            if not isinstance(order_id, str):
+                raise RuntimeError("OKX stop read returned an invalid child order ID")
+            order_ids = [*order_ids, order_id]
+        state = str(row.get("state") or "")
+        if state not in ("live", "effective", "canceled", "order_failed", "partially_effective"):
+            raise RuntimeError(f"OKX stop {algo_client_id} state {state!r} is not a known terminal or live state")
+        return {
+            "algo_state": state,
+            "order_ids": list(dict.fromkeys(order_ids)),
+            "algo_id": str(row.get("algoId") or ""),
+            "trigger_px": str(row.get("slTriggerPx") or ""),
+            "sz": str(row.get("sz") or ""),
+            "algo_client_id": algo_client_id,
+        }
+
+    def stop_amend(self, inst_id: str, algo_id: str, algo_client_id: str, trigger: str, contracts: str) -> dict:
+        self._require_live_stop()
+        body = {
+            "instId": inst_id,
+            "algoId": algo_id,
+            "algoClOrdId": algo_client_id,
+            "newSz": str(contracts),
+            "newSlTriggerPx": str(trigger),
+            "newSlOrdPx": "-1",
+            "newSlTriggerPxType": "mark",
+            "cxlOnFail": False,
+        }
+        rows = self._okx_data(self._exchange_call("privatePostTradeAmendAlgos", body), "amend stop")
+        if len(rows) != 1 or str(rows[0].get("sCode")) != "0":
+            raise RuntimeError(f"OKX amend stop was not accepted: {rows!r}")
+        return {"algo_id": algo_id, "trigger_px": str(trigger), "sz": str(contracts)}
+
+    def stop_cancel(self, inst_id: str, algo_id: str, algo_client_id: str) -> dict:
+        self._require_live_stop()
+        body = [{"instId": inst_id, "algoId": algo_id, "algoClOrdId": algo_client_id}]
+        rows = self._okx_data(self._exchange_call("privatePostTradeCancelAlgos", body), "cancel stop")
+        if len(rows) != 1 or str(rows[0].get("sCode")) != "0":
+            raise RuntimeError(f"OKX cancel stop was not accepted: {rows!r}")
+        return {"algo_id": algo_id, "algo_client_id": algo_client_id}
+
+    def stop_reduce(self, inst_id: str, position_side: str, contracts: str, client_id: str, exp_time_ms: int):
+        self._require_live_stop()
+        size = Decimal(contracts)
+        if position_side not in ("long", "short") or not size.is_finite() or size <= 0 or not client_id or exp_time_ms <= 0:
+            raise RuntimeError("OKX emergency reduce parameters are invalid")
+        body = {"instId": inst_id, "tdMode": "cross", "side": "sell" if position_side == "long" else "buy",
+                "posSide": "net", "ordType": "market", "sz": contracts, "reduceOnly": True, "clOrdId": client_id}
+        saved = self._exchange.headers
+        self._exchange.headers = {**(saved or {}), "expTime": str(exp_time_ms)}
+        try:
+            rows = self._okx_data(self._exchange_call("privatePostTradeOrder", body), "emergency reduce")
+        finally:
+            self._exchange.headers = saved
+        if len(rows) != 1 or not isinstance(rows[0], dict) or str(rows[0].get("sCode")) != "0":
+            raise RuntimeError("OKX did not confirm submission of the emergency reduce")
+
+    def stop_reduce_fill(self, inst_id: str, client_id: str) -> dict:
+        self._require_live_stop()
+        try:
+            reply = self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "clOrdId": client_id})
+        except ccxt.OrderNotFound:
+            return {"absent": True}
+        if isinstance(reply, dict) and str(reply.get("code")) == "51603":
+            return {"absent": True}
+        rows = self._okx_data(reply, "emergency reduce order")
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise RuntimeError("OKX returned no unique emergency reduce order")
+        row = rows[0]
+        if (row.get("instId") != inst_id or row.get("clOrdId") != client_id or row.get("reduceOnly") not in (True, "true")
+                or row.get("state") not in ("filled", "canceled") or not row.get("ordId")):
+            raise RuntimeError("OKX did not prove a terminal emergency reduce order with a USDT fee")
+        qty = Decimal(row["accFillSz"])
+        if row["state"] == "canceled" and qty == 0:
+            return {"side": row.get("side"), "qty": "0", "ord_id": row["ordId"]}
+        if row.get("feeCcy") != "USDT":
+            raise RuntimeError("OKX reduce fill has no USDT fee evidence")
+        return {"fill_id": "order:" + row["ordId"], "ord_id": row["ordId"], "side": row.get("side"),
+                "qty": row.get("accFillSz"), "px": row.get("avgPx"), "fee": row.get("fee")}
+
+    def stop_child_terminal(self, inst_id: str, order_id: str) -> bool:
+        rows = self._okx_data(self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "ordId": order_id}), "stop child order")
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise RuntimeError("OKX returned no unique stop child order")
+        order = rows[0]
+        if order.get("instId") != inst_id or order.get("ordId") != order_id or order.get("reduceOnly") not in (True, "true"):
+            raise RuntimeError("OKX did not prove the stop child order identity")
+        return order.get("state") in ("filled", "canceled")
+
+    def stop_fills(self, inst_id: str, order_id: str) -> list:
+        self._require_live_stop()
+        if not order_id:
+            raise RuntimeError("OKX stop fills require a child order ID")
+        params = {"instType": "SWAP", "instId": inst_id, "ordId": order_id}
+        rows = self._okx_data(self._exchange_call("privateGetTradeFills", params), "fills")
+        if not rows:
+            rows = self._okx_data(self._exchange_call("privateGetTradeFillsHistory", params), "fills history")
+        out = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("instId") != inst_id or row.get("ordId") != order_id:
+                continue
+            trade_id = row.get("tradeId")
+            if not isinstance(trade_id, str) or trade_id == "":
+                raise RuntimeError(f"OKX fill for {inst_id} has no tradeId")
+            out.append({
+                "fill_id": trade_id,
+                "side": str(row.get("side") or ""),
+                "qty": str(row.get("fillSz") or ""),
+                "px": str(row.get("fillPx") or ""),
+                "fee": str(row.get("fee") or "0"),
+                "ord_id": str(row.get("ordId") or ""),
+            })
+        return out
+
+    def arm_reference(self, inst_id: str) -> dict:
+        self._require_live_stop()
+        pos = self.stop_position(inst_id)
+        if pos["flat"] or not pos["cross"] or pos["other_positions"] or pos["pos_side"] not in ("long", "short"):
+            raise RuntimeError("the filled position is not one exclusive cross net swap")
+        public = self.public_stop_reference(inst_id, pos["pos_contracts"])
+        balance = self._okx_data(self._exchange_call("privateGetAccountBalance", {}), "balance")
+        out = dict(pos)
+        out.update(public)
+        out["equity"] = _usdt_equity(balance)
+        out["fee"] = self._taker_fee(inst_id)
+        return out
+
+    def stop_position(self, inst_id: str) -> dict:
+        self._require_live_stop()
+        positions = self._okx_data(self._exchange_call("privateGetAccountPositions", {"instType": "SWAP", "instId": inst_id}), "position")
+        own, others, liq, liq_known, pos_contracts, pos_side, cross = _read_stop_position(positions, inst_id)
+        return {
+            "flat": own is None,
+            "cross": cross if own is not None else True,
+            "other_positions": others,
+            "liq_px": liq,
+            "liq_known": liq_known,
+            "pos_contracts": pos_contracts,
+            "pos_side": pos_side,
+        }
+
+
+def _usdt_equity(rows: list) -> str:
+    if len(rows) != 1 or not isinstance(rows[0], dict) or not isinstance(rows[0].get("details"), list):
+        raise RuntimeError("OKX balance did not return USDT details")
+    for detail in rows[0]["details"]:
+        if isinstance(detail, dict) and detail.get("ccy") == "USDT":
+            fields = [detail.get(key) for key in ("eq", "cashBal")]
+            if all(isinstance(value, str) and value for value in fields):
+                values = [Decimal(value) for value in fields]
+                if all(value.is_finite() and value > 0 for value in values):
+                    return format(min(values), "f")
+    raise RuntimeError("OKX balance has no positive USDT equity")
+
+
+def _tier_mmr(tiers: list, contracts: str) -> str:
+    size = Decimal(contracts or "0")
+    chosen = None
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            continue
+        try:
+            lo = Decimal(str(tier.get("minSz")))
+            hi = Decimal(str(tier.get("maxSz")))
+            mmr = Decimal(str(tier.get("mmr")))
+        except Exception as exc:
+            raise RuntimeError(f"OKX position tier {tier!r} is not usable") from exc
+        if not mmr.is_finite() or mmr <= 0 or mmr >= 1:
+            continue
+        if lo <= size <= hi:
+            chosen = mmr
+            break
+    if chosen is None:
+        raise RuntimeError(f"OKX position tiers have no row for {contracts} contracts")
+    return format(chosen, "f")
+
+
+def _read_stop_position(rows: list, inst_id: str):
+    own = None
+    others = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError("OKX position row is not an object")
+        pos = row.get("pos")
+        if not isinstance(pos, str):
+            raise RuntimeError("OKX position pos is not text")
+        qty = Decimal(pos)
+        if not qty.is_finite():
+            raise RuntimeError("OKX position size is not finite")
+        if qty == 0:
+            continue
+        if row.get("instId") != inst_id:
+            others += 1
+            continue
+        if own is not None:
+            raise RuntimeError(f"OKX returned more than one position for {inst_id}")
+        own = row
+    if own is None:
+        return None, others, "", True, "0", "", True
+    if str(own.get("posSide") or "") != "net":
+        raise RuntimeError(f"OKX position {inst_id} posSide is {own.get('posSide')!r}, not net")
+    if str(own.get("mgnMode") or "") != "cross":
+        cross = False
+    else:
+        cross = True
+    pos = Decimal(own["pos"])
+    side = "long" if pos > 0 else "short"
+    liq = own.get("liqPx")
+    if not isinstance(liq, str):
+        return own, others, "", False, format(abs(pos), "f"), side, cross
+    return own, others, liq, True, format(abs(pos), "f"), side, cross

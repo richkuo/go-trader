@@ -1,0 +1,244 @@
+{
+  "adopted_sets": [
+    "all"
+  ],
+  "fidelity_sha256": "97c7767b5810e0e9b03d9738f7f8cac983f729333d7ec775e76ec0b373d21218",
+  "gated_ids": [
+    "breakout-bnb-1h-gated",
+    "breakout-bnb-30m-gated",
+    "breakout-btc-1h-gated",
+    "breakout-btc-30m-gated",
+    "breakout-eth-1h-gated",
+    "breakout-eth-30m-gated",
+    "breakout-sol-1h-gated",
+    "breakout-sol-30m-gated"
+  ],
+  "outcome": "gate adopted for all (gate_p21: BNB/USDT 30m, BNB/USDT 1h, BTC/USDT 30m, BTC/USDT 1h, ETH/USDT 30m, ETH/USDT 1h, SOL/USDT 30m, SOL/USDT 1h)",
+  "protocol_sha256": "a68c58e20ac58392d59622152e9a3698fc06eef60dc3483daf307094c90bcdf2",
+  "results_sha256": "ef372a9570c5648452fb30f83034a53cf7ce9384d01c90da3ad725709fbff1e5",
+  "sets": {
+    "1h": {
+      "adopted": true,
+      "arm": "gate_p21",
+      "checks": {
+        "oos_beats_control_ddadj": true,
+        "oos_beats_control_sharpe": true,
+        "oos_min_clusters": true,
+        "stitched_mean_return_not_lower": true,
+        "stitched_shallower_worst_dd": true,
+        "venue_not_fail": true
+      },
+      "datasets": [
+        "BNB/USDT 1h",
+        "BTC/USDT 1h",
+        "ETH/USDT 1h",
+        "SOL/USDT 1h"
+      ],
+      "excluded": {},
+      "oos_arm": {
+        "clusters": 42,
+        "complete": true,
+        "datasets": 4,
+        "mean_ddadj": 1.1784999999999999,
+        "mean_return_pct": 6.685,
+        "mean_sharpe": 0.64125,
+        "worst_max_dd_pct": -12.36
+      },
+      "oos_control": {
+        "clusters": 159,
+        "complete": true,
+        "datasets": 4,
+        "mean_ddadj": -0.29725,
+        "mean_return_pct": -7.2725,
+        "mean_sharpe": -0.24575000000000002,
+        "worst_max_dd_pct": -25.14
+      },
+      "reason": "every frozen adoption check is true",
+      "set": "1h",
+      "stitched_arm": {
+        "clusters": 83,
+        "complete": true,
+        "datasets": 4,
+        "mean_ddadj": 0.906,
+        "mean_return_pct": 6.6025,
+        "mean_sharpe": 0.26625000000000004,
+        "worst_max_dd_pct": -14.24
+      },
+      "stitched_control": {
+        "clusters": 264,
+        "complete": true,
+        "datasets": 4,
+        "mean_ddadj": -0.5225,
+        "mean_return_pct": -19.555,
+        "mean_sharpe": -0.50625,
+        "worst_max_dd_pct": -44.17
+      },
+      "venue": {
+        "arm_x1": {
+          "clusters": 25,
+          "complete": true,
+          "datasets": 4,
+          "mean_ddadj": 1.6704999999999999,
+          "mean_return_pct": 6.78,
+          "mean_sharpe": 1.04775,
+          "worst_max_dd_pct": -9.64
+        },
+        "arm_x2": {
+          "clusters": 24,
+          "complete": true,
+          "datasets": 4,
+          "mean_ddadj": 1.35225,
+          "mean_return_pct": 5.6,
+          "mean_sharpe": 0.8535,
+          "worst_max_dd_pct": -9.75
+        },
+        "control_x1": {
+          "clusters": 90,
+          "complete": true,
+          "datasets": 4,
+          "mean_ddadj": -0.33449999999999996,
+          "mean_return_pct": -7.115,
+          "mean_sharpe": -0.4475,
+          "worst_max_dd_pct": -23.94
+        },
+        "control_x2": {
+          "clusters": 90,
+          "complete": true,
+          "datasets": 4,
+          "mean_ddadj": -0.62675,
+          "mean_return_pct": -13.365,
+          "mean_sharpe": -1.064,
+          "worst_max_dd_pct": -25.71
+        },
+        "datasets": [
+          "BNB 1h",
+          "BTC 1h",
+          "ETH 1h",
+          "SOL 1h"
+        ],
+        "outcome": "inconclusive",
+        "reason": "gate arm venue clusters 25 < 30",
+        "window": "tail"
+      }
+    },
+    "30m": {
+      "adopted": false,
+      "arm": null,
+      "reason": "no primary-family gate arm met the frozen is shortlist rule",
+      "set": "30m"
+    },
+    "all": {
+      "adopted": true,
+      "arm": "gate_p21",
+      "checks": {
+        "oos_beats_control_ddadj": true,
+        "oos_beats_control_sharpe": true,
+        "oos_min_clusters": true,
+        "stitched_mean_return_not_lower": true,
+        "stitched_shallower_worst_dd": true,
+        "venue_not_fail": true
+      },
+      "datasets": [
+        "BNB/USDT 30m",
+        "BNB/USDT 1h",
+        "BTC/USDT 30m",
+        "BTC/USDT 1h",
+        "ETH/USDT 30m",
+        "ETH/USDT 1h",
+        "SOL/USDT 30m",
+        "SOL/USDT 1h"
+      ],
+      "excluded": {},
+      "oos_arm": {
+        "clusters": 90,
+        "complete": true,
+        "datasets": 8,
+        "mean_ddadj": 0.578625,
+        "mean_return_pct": 3.08875,
+        "mean_sharpe": 0.330125,
+        "worst_max_dd_pct": -12.36
+      },
+      "oos_control": {
+        "clusters": 258,
+        "complete": true,
+        "datasets": 8,
+        "mean_ddadj": -0.6185,
+        "mean_return_pct": -22.48625,
+        "mean_sharpe": -1.337375,
+        "worst_max_dd_pct": -50.58
+      },
+      "reason": "every frozen adoption check is true",
+      "set": "all",
+      "stitched_arm": {
+        "clusters": 155,
+        "complete": true,
+        "datasets": 8,
+        "mean_ddadj": 0.14475000000000002,
+        "mean_return_pct": -0.8987499999999999,
+        "mean_sharpe": -0.1295,
+        "worst_max_dd_pct": -16.18
+      },
+      "stitched_control": {
+        "clusters": 412,
+        "complete": true,
+        "datasets": 8,
+        "mean_ddadj": -0.74125,
+        "mean_return_pct": -35.68875,
+        "mean_sharpe": -1.2746250000000001,
+        "worst_max_dd_pct": -63.22
+      },
+      "venue": {
+        "arm_x1": {
+          "clusters": 43,
+          "complete": true,
+          "datasets": 8,
+          "mean_ddadj": 1.0865,
+          "mean_return_pct": 4.83625,
+          "mean_sharpe": 0.93075,
+          "worst_max_dd_pct": -12.0
+        },
+        "arm_x2": {
+          "clusters": 42,
+          "complete": true,
+          "datasets": 8,
+          "mean_ddadj": 0.7937500000000001,
+          "mean_return_pct": 3.645,
+          "mean_sharpe": 0.6577500000000001,
+          "worst_max_dd_pct": -12.86
+        },
+        "control_x1": {
+          "clusters": 119,
+          "complete": true,
+          "datasets": 8,
+          "mean_ddadj": -0.3655,
+          "mean_return_pct": -7.125,
+          "mean_sharpe": -0.80025,
+          "worst_max_dd_pct": -23.94
+        },
+        "control_x2": {
+          "clusters": 119,
+          "complete": true,
+          "datasets": 8,
+          "mean_ddadj": -0.626375,
+          "mean_return_pct": -13.92875,
+          "mean_sharpe": -1.842625,
+          "worst_max_dd_pct": -26.59
+        },
+        "datasets": [
+          "BNB 30m",
+          "BNB 1h",
+          "BTC 30m",
+          "BTC 1h",
+          "ETH 30m",
+          "ETH 1h",
+          "SOL 30m",
+          "SOL 1h"
+        ],
+        "outcome": "pass",
+        "reason": "beats control on mean Sharpe and mean ddadj at cost x1 and x2",
+        "window": "tail"
+      }
+    }
+  },
+  "suggested_config": "suggested_paper_config.json"
+}

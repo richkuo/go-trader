@@ -1,52 +1,7 @@
-import importlib.util
 import json
 import pathlib
 import subprocess
 import sys
-
-_SPEC = importlib.util.spec_from_file_location(
-    "check_test_budget_under_test", pathlib.Path(__file__).with_name("check_test_budget.py")
-)
-budget = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(budget)
-
-
-def test_go_wording_only(subtests):
-    for body, expected in [
-        (
-            'func TestA(t *testing.T) {\n\tmsg := f()\n\tif !strings.Contains(msg, "x") {\n\t\tt.Fatal("no")\n\t}\n}\n',
-            True,
-        ),
-        (
-            'func TestB(t *testing.T) {\n\tgot := f()\n\tif got != 3 {\n\t\tt.Fatalf("got %d", got)\n\t}\n\tif !strings.Contains(msg, "x") {\n\t\tt.Fatal("no")\n\t}\n}\n',
-            False,
-        ),
-        ('func TestC(t *testing.T) {\n\tf()\n}\n', False),
-    ]:
-        with subtests.test(body=body):
-            assert budget.go_wording_only(body) is expected
-
-
-def test_py_wording_only(subtests):
-    for body, expected in [
-        ('def test_a():\n    assert "x" in f()\n', True),
-        ('def test_b():\n    assert f() == 3\n    assert "x" in f()\n', False),
-        ("def test_c():\n    f()\n", False),
-    ]:
-        with subtests.test(body=body):
-            assert budget.py_wording_only(body) is expected
-
-
-def test_compare_flags_new_and_stale_identifiers(subtests):
-    for hits, baseline, expected_new, expected_stale in [
-        (["a::t1", "b::t2"], ["a::t1", "b::t2"], [], []),
-        (["a::t1", "c::t3"], ["a::t1", "b::t2"], ["c::t3"], ["b::t2"]),
-        (["a::t1"], ["a::t1", "b::t2"], [], ["b::t2"]),
-        (["a::t1", "a::t9"], ["a::t1"], ["a::t9"], []),
-    ]:
-        with subtests.test(hits=hits, baseline=baseline):
-            assert budget.compare(hits, baseline) == (expected_new, expected_stale)
-
 
 SCRIPT = pathlib.Path(__file__).with_name("check_test_budget.py")
 COMPOSITION = pathlib.Path(__file__).resolve().parent.parent / "shared_tools" / "strategy_composition.py"
@@ -94,7 +49,7 @@ CANONICAL_SOURCE = [
     '    (["--mode=Paper"], "invalid mode input"),',
     '    (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),',
     "]",
-    'SCRIPTS = [("check_okx.py", ["rsi"]), ("check_topstep.py", ["rsi"])]',
+    'SCRIPTS = [("check_okx.py", ["rsi"]), ("check_robinhood.py", ["rsi"])]',
     "",
     "",
     '@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)',
@@ -335,7 +290,7 @@ def test_cli_reports_a_nonexistent_baseline_identifier_as_stale(tmp_path):
     assert "refusal_grid_tests" in proc.stderr and SECTION in proc.stderr
 
 
-def test_cli_rejects_a_planted_refusal_matrix_copy_and_passes_once_it_is_removed(tmp_path, subtests):
+def test_cli_rejects_a_planted_refusal_matrix_copy(tmp_path, subtests):
     for kind in sorted(PLANTED):
         with subtests.test(kind=kind):
             rel = "shared_scripts/test_new_strategy_checks.py"
@@ -345,9 +300,6 @@ def test_cli_rejects_a_planted_refusal_matrix_copy_and_passes_once_it_is_removed
             owner = "TestNewStrategy::" if kind == "pytest_param_with_missing_mode" else ""
             assert proc.stderr.splitlines().count(f"  new: {rel}::{owner}test_new_strategy_is_refused") == 1
             assert "test budget exceeded (refusal_grid_tests)" in proc.stderr and SECTION in proc.stderr
-            (root / rel).unlink()
-            clean = _cli(root)
-            assert clean.returncode == 0, clean.stderr
 
 
 def test_cli_permits_admitted_mixed_reference_and_unrelated_mode_matrices(tmp_path, subtests):

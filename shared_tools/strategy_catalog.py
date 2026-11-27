@@ -69,6 +69,13 @@ RESEARCH_INPUT_REQUIRES = {
         "complete l2Book boundary and episode with event and receipt coverage (sealed l2_books)",
         "closed_bar_decisions must be false",
     ),
+    "sweep_absorption_ifvg": (
+        "complete signed executed trade-flow coverage (sealed trade_flows) from the session start through the "
+        "sweep, with matching candle volume and complete session history",
+        "sealed one-hour candles covering the swing-structure search (htf_candles)",
+        "closed_bar_decisions must be true",
+        "expected_interval_ms equal to the timeframe duration",
+    ),
 }
 
 QUOTE_REQUIRES = (

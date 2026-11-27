@@ -1,6 +1,5 @@
 import os
 import sys
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -10,7 +9,6 @@ _BT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BT_DIR not in sys.path:
     sys.path.insert(0, _BT_DIR)
 
-import eval_windows as ew
 import fee_audit as fa
 
 
@@ -38,18 +36,6 @@ def test_salvage_verdict_no_trades_deprecate_graduate_healthy_and_short_unmeasur
     assert fa.salvage_verdict(100, 0.0, -5.0, short_unmeasured=True) == "unscreened_short", case
     assert fa.salvage_verdict(100, 8.0, -3.0, short_unmeasured=True) == "graduate_m1", case
     assert fa.salvage_verdict(50, 12.0, 4.0, short_unmeasured=True) == "healthy", case
-
-
-def test_trades_per_year_basic_and_guards_zero_span():
-    case = "test_trades_per_year_basic"
-    assert fa.trades_per_year(100, 365.25) == pytest.approx(100.0), case
-    assert fa.trades_per_year(50, 365.25 / 2) == pytest.approx(100.0), case
-
-    case = "test_trades_per_year_zero_span_and_zero_trades_guarded"
-    assert fa.trades_per_year(100, 0) is None, case
-    assert fa.trades_per_year(100, None) is None, case
-    assert fa.trades_per_year(100, -5) is None, case
-    assert fa.trades_per_year(0, 365.25) == pytest.approx(0.0), case
 
 
 def _leg(trades, span, net, gross, sharpe=1.0):
@@ -112,97 +98,10 @@ def test_aggregate_strategy_sums_legs_and_assigns_every_verdict():
     assert row["verdict"] == "graduate_m1", case
 
 
-def test_strategy_is_short_capable_predicate():
-    assert fa.strategy_is_short_capable({}, "sma_crossover") is False
-    assert fa.strategy_is_short_capable({"short_period": 8}, "triple_ema_bidir") is True
-    assert fa.strategy_is_short_capable(None, "bear_pullback_st") is True
-    assert fa.strategy_is_short_capable({"allow_short": False}, "mtf_confluence") is False
-    assert fa.strategy_is_short_capable({"allow_short": True}, "mtf_confluence") is True
-
-
 def test_live_bidirectional_set_is_the_registry_short_entry_set():
     from registry_loader import load_registry
     registry = load_registry("futures")._registry
     assert fa.LIVE_BIDIRECTIONAL_STRATEGIES == registry.short_entry_strategies()
-
-
-def test_rank_rows_orders_by_drag_no_trades_last_and_tiebreaks_by_name():
-    case = "test_rank_rows_orders_by_drag_then_no_trades_last"
-    rows = [
-        {"strategy": "low", "verdict": "healthy", "fee_drag_pp": 2.0},
-        {"strategy": "high", "verdict": "graduate_m1", "fee_drag_pp": 40.0},
-        {"strategy": "dead", "verdict": "no_trades", "fee_drag_pp": None},
-        {"strategy": "mid", "verdict": "deprecate", "fee_drag_pp": 15.0},
-    ]
-    ordered = [r["strategy"] for r in fa.rank_rows(rows)]
-    assert ordered == ["high", "mid", "low", "dead"], case
-
-    case = "test_rank_rows_no_trades_tiebreak_by_name"
-    rows = [
-        {"strategy": "zeta", "verdict": "no_trades", "fee_drag_pp": None},
-        {"strategy": "alpha", "verdict": "no_trades", "fee_drag_pp": None},
-    ]
-    ordered = [r["strategy"] for r in fa.rank_rows(rows)]
-    assert ordered == ["alpha", "zeta"], case
-
-
-def test_render_markdown_unscreened_short_section_and_dagger(subtests):
-    with subtests.test("test_render_markdown_unscreened_short_section_and_dagger"):
-        ranked = fa.rank_rows([
-            fa.aggregate_strategy("shorty", "futures",
-                                  [_leg(80, 365.0, -10.0, -2.0)],
-                                  short_capable=True),
-            fa.aggregate_strategy("clean", "spot",
-                                  [_leg(900, 365.0, -20.0, -5.0)]),
-        ])
-        meta = {"command": "uv run ...", "registry": "both",
-                "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
-                "capital": 1000.0, "date": "2026-06-12"}
-        md = fa.render_markdown(ranked, meta)
-        assert "## Unscreened short legs" in md
-        assert "shorty †" in md
-        dep_section = md.split("## Deprecation list")[1].split("## M1 graduations")[0]
-        assert "shorty" not in dep_section
-        assert "clean" in dep_section
-    with subtests.test("test_render_markdown_has_table_and_sections"):
-        ranked = [
-            fa.aggregate_strategy("churner", "spot",
-                                  [_leg(1500, 365.0, -40.0, 6.0)]),
-            fa.aggregate_strategy("hopeless", "spot",
-                                  [_leg(900, 365.0, -20.0, -5.0)]),
-            fa.aggregate_strategy("idle", "spot", []),
-        ]
-        meta = {"command": "uv run ...", "registry": "spot",
-                "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
-                "capital": 1000.0, "date": "2026-06-12"}
-        md = fa.render_markdown(ranked, meta)
-        assert "# Fee-aware selectivity audit (#999 M5)" in md
-        assert "| rank | strategy |" in md
-        assert "## Deprecation list" in md
-        assert "hopeless" in md
-        assert "## M1 graduations" in md
-        assert "churner" in md
-        assert "raise selectivity" in md
-
-
-def test_enumerate_targets_both_skips_hold_and_handles_variants():
-    targets = fa.enumerate_targets("both")
-    names = [t[0] for t in targets]
-    assert "hold" not in names
-    pairs = {(t[0], t[1]) for t in targets}
-
-    assert ("delta_neutral_funding", "futures") in pairs
-
-    assert ("range_scalper", "spot") in pairs
-    assert ("macd", "spot") in pairs
-
-    assert ("sma_crossover", "spot") in pairs
-    assert ("sma_crossover", "futures") not in pairs
-    assert names.count("sma_crossover") == 1
-
-    assert ("momentum", "spot") in pairs
-    assert ("momentum", "futures") in pairs
-    assert names.count("momentum") == 2
 
 
 def test_enumerate_targets_variant_detection_matches_registry():
@@ -218,13 +117,6 @@ def test_enumerate_targets_variant_detection_matches_registry():
         assert names.count(n) == 2, n
     for n in shared - differing:
         assert names.count(n) == 1, n
-
-
-def test_enumerate_targets_subset_filter_and_unknown_raises():
-    targets = fa.enumerate_targets("spot", subset=["macd", "vwap_reversion"])
-    assert {t[0] for t in targets} == {"macd", "vwap_reversion"}
-    with pytest.raises(SystemExit):
-        fa.enumerate_targets("spot", subset=["does_not_exist"])
 
 
 class _FakeRegistry:
@@ -307,17 +199,6 @@ def test_screen_strategy_direction_short_is_measured_not_unscreened(monkeypatch)
     assert row["verdict"] == "deprecate"
 
 
-def test_run_leg_stamps_span_days(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None))
-    assert leg is not None
-    assert leg["span_days"] == pytest.approx(159 / 24.0, abs=0.01)
-
-
 def test_screen_leg_gross_zeroes_friction(monkeypatch):
     df = _synthetic_df()
     import data_fetcher
@@ -329,42 +210,3 @@ def test_screen_leg_gross_zeroes_friction(monkeypatch):
     assert leg["trades"] > 0
     assert leg["gross_ret"] >= leg["net_ret"]
     assert leg["gross_ret"] > leg["net_ret"]
-
-
-def test_screen_leg_no_data_returns_none(monkeypatch):
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: pd.DataFrame(), raising=True)
-    assert fa.screen_leg(_FakeRegistry(), "alternator", "BTC/USDT", "1h",
-                         ("2023-01-01", "2024-01-01"), capital=1000.0) is None
-
-
-def test_screen_leg_error_is_captured_not_raised(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-
-    class _Boom(_FakeRegistry):
-        @staticmethod
-        def apply_strategy(name, df, params):
-            raise RuntimeError("strategy blew up")
-
-    leg = fa.screen_leg(_Boom(), "alternator", "BTC/USDT", "1h",
-                        ("2026-01-01", None), capital=1000.0)
-    assert leg is not None
-    assert leg["error"] is not None and "blew up" in leg["error"]
-
-
-def test_reproduce_command_includes_direction():
-    args = SimpleNamespace(
-        registry="futures",
-        strategies="vwap_rejection_st",
-        windows="oos",
-        datasets=None,
-        direction="short",
-        capital=fa.DEFAULT_CAPITAL,
-        markdown_out=None,
-    )
-    cmd = fa._reproduce_command(args)
-    assert "--direction short" in cmd

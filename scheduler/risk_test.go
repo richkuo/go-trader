@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -291,77 +292,6 @@ func TestCheckRisk(t *testing.T) {
 				}
 				if len(s.TradeHistory) != 0 {
 					t.Fatalf("expected no circuit-breaker close trade for shared coin; got %d", len(s.TradeHistory))
-				}
-			})
-		}
-	})
-	t.Run("LiveTopStepCB_PendingFlatten", func(t *testing.T) {
-		cases := []struct {
-			name        string
-			withPeer    bool
-			tsSize      int
-			posQty      float64
-			wantPending bool
-			wantSize    float64
-		}{
-			{"sole peer sets pending full flatten", false, 3, 3, true, 3},
-			{"multi-peer contract sets no pending", true, 5, 2, false, 0},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				sc := StrategyConfig{
-					ID: "ts-a", Platform: "topstep", Type: "futures",
-					Capital: 5000,
-					Args:    []string{"sma", "ES", "15m", "--mode=live"},
-				}
-				tsLiveAll := []StrategyConfig{sc}
-				if tc.withPeer {
-					tsLiveAll = append(tsLiveAll, StrategyConfig{ID: "ts-b", Platform: "topstep", Type: "futures",
-						Capital: 5000,
-						Args:    []string{"rsi", "ES", "15m", "--mode=live"}})
-				}
-				assist := &PlatformRiskAssist{
-					TSPositions: []TopStepPosition{{Coin: "ES", Size: tc.tsSize, Side: "long"}},
-					TSLiveAll:   tsLiveAll,
-				}
-				s := &StrategyState{
-					ID:   sc.ID,
-					Type: "futures",
-					Cash: 3000.0,
-					RiskState: RiskState{
-						PeakValue:      5000.0,
-						MaxDrawdownPct: 25.0,
-						DailyPnLDate:   todayUTC(),
-					},
-					Positions: map[string]*Position{
-						"ES": {Symbol: "ES", Quantity: tc.posQty, AvgCost: 5000, Side: "long", Multiplier: 50},
-					},
-					OptionPositions: make(map[string]*OptionPosition),
-				}
-				prices := map[string]float64{"ES": 4995}
-
-				allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
-				if allowed {
-					t.Fatal("expected CB fire (drawdown exceeds 25%)")
-				}
-				p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
-				if !tc.wantPending {
-					if p != nil {
-						t.Errorf("expected no pending TS entry for multi-peer contract; got %+v", p)
-					}
-					return
-				}
-				if p == nil {
-					t.Fatal("expected PendingCircuitCloses[topstep] after CB fire")
-				}
-				if len(p.Symbols) != 1 {
-					t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
-				}
-				if p.Symbols[0].Symbol != "ES" {
-					t.Errorf("symbol=%q want ES", p.Symbols[0].Symbol)
-				}
-				if p.Symbols[0].Size != tc.wantSize {
-					t.Errorf("pending size=%.0f want %.0f (full flatten for sole peer)", p.Symbols[0].Size, tc.wantSize)
 				}
 			})
 		}
@@ -1066,7 +996,7 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 			WarningSent:              true,
 		}
 
-		if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, true, "confirmed flat; no owner configured"); !ok {
+		if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, "confirmed flat; no owner configured"); !ok {
 			t.Fatal("expected auto-reset to return true")
 		}
 		if prs.KillSwitchActive {
@@ -1078,8 +1008,11 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if prs.WarningSent {
 			t.Error("expected WarningSent=false after confirmed-flat auto-reset")
 		}
-		if prs.PeakValue != 1216.07 {
-			t.Errorf("expected PeakValue re-baselined to post-close value 1216.07; got %.2f", prs.PeakValue)
+		if prs.PeakValue != 1261.87 {
+			t.Errorf("expected PeakValue kept at 1261.87 until the first eligible post-reset reading; got %.2f", prs.PeakValue)
+		}
+		if !prs.PeakRebaselinePending {
+			t.Error("expected the auto-reset to leave the peak rebaseline pending")
 		}
 		if prs.CurrentDrawdownPct != 0 {
 			t.Errorf("expected CurrentDrawdownPct=0; got %.2f", prs.CurrentDrawdownPct)
@@ -1097,8 +1030,8 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if evt.DrawdownPct != 0 {
 			t.Errorf("expected event drawdown 0; got %.2f", evt.DrawdownPct)
 		}
-		if evt.PortfolioValue != 1216.07 || evt.PeakValue != 1216.07 {
-			t.Errorf("expected event portfolio/peak re-baselined to 1216.07; got portfolio=%.2f peak=%.2f",
+		if evt.PortfolioValue != 1216.07 || evt.PeakValue != 1261.87 {
+			t.Errorf("expected event to record the observed 1216.07 and the kept peak 1261.87; got portfolio=%.2f peak=%.2f",
 				evt.PortfolioValue, evt.PeakValue)
 		}
 		if !strings.Contains(evt.Details, "previous equity drawdown=3.63%") ||
@@ -1116,7 +1049,7 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		}
 
 		if ok := AutoResetConfirmedFlatKillSwitch(
-			prs, 0, false, "confirmed flat on missing-balance cycle",
+			prs, 0, "confirmed flat on missing-balance cycle",
 		); !ok {
 			t.Fatal("expected auto-reset to clear the ownerless latch")
 		}
@@ -1133,8 +1066,8 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if evt.PortfolioValue != 0 || evt.PeakValue != 10000 {
 			t.Fatalf("event must preserve observed fallback and retained peak: %+v", evt)
 		}
-		if !strings.Contains(evt.Details, "peak retained") ||
-			!strings.Contains(evt.Details, "current equity is not trustworthy") {
+		if !strings.Contains(evt.Details, "peak kept at $10000.00") ||
+			!strings.Contains(evt.Details, "first eligible equity reading") {
 			t.Fatalf("event must explain retained peak: %q", evt.Details)
 		}
 	})
@@ -1241,12 +1174,9 @@ func TestPerpsMarginInputs(t *testing.T) {
 					"spot-sol": {Type: "spot", Positions: map[string]*Position{
 						"SOL/USDT": {Symbol: "SOL/USDT", Quantity: 100, AvgCost: 150, Side: "long"},
 					}},
-					"ts-es": {Type: "futures", Positions: map[string]*Position{
-						"ES": {Symbol: "ES", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50},
-					}},
 				},
 				configs:  []StrategyConfig{{ID: "hl-btc", Leverage: 10}, {ID: "hl-eth", Leverage: 5}},
-				prices:   map[string]float64{"BTC": 42000, "ETH": 3100, "SOL/USDT": 200, "ES": 5100},
+				prices:   map[string]float64{"BTC": 42000, "ETH": 3100, "SOL/USDT": 200},
 				wantLoss: 2000, wantMargin: 10400,
 			},
 			{
@@ -1407,6 +1337,150 @@ func TestManualMarkBasisPeakAdjustment(t *testing.T) {
 			if gotPeak != tc.wantPeak {
 				t.Errorf("peak = %v, want %v", gotPeak, tc.wantPeak)
 			}
+		})
+	}
+}
+
+func TestCheckRisk_CircuitBreakerSuppressionDMLiveOnly(t *testing.T) {
+	resetSuppression := func() {
+		drainCircuitBreakerSuppressionAlerts()
+		circuitBreakerSuppressedWarned.Range(func(k, _ any) bool {
+			circuitBreakerSuppressedWarned.Delete(k)
+			return true
+		})
+	}
+	resetSuppression()
+	t.Cleanup(resetSuppression)
+
+	disabled := false
+	enabled := true
+	newConfigs := func() []*StrategyConfig {
+		return []*StrategyConfig{
+			{ID: "cb-live", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=live"}, CircuitBreaker: &disabled},
+			{ID: "cb-paper", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=paper"}, CircuitBreaker: &disabled},
+			{ID: "cb-paper-src", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=paper"}, PaperSource: "src", CircuitBreaker: &disabled},
+		}
+	}
+	for _, sc := range newConfigs() {
+		if sc.ID == "cb-live" && portfolioScopeFor(*sc) != ScopeLive {
+			t.Fatalf("%s must classify live", sc.ID)
+		}
+		if sc.ID != "cb-live" && portfolioScopeFor(*sc) != ScopePaper {
+			t.Fatalf("%s must classify paper", sc.ID)
+		}
+	}
+
+	cases := []struct {
+		name        string
+		losses      int
+		pv          float64
+		wantReasons []string
+	}{
+		{"drawdown", 0, 700, []string{"drawdown 30.0% > 20.0%"}},
+		{"consecutive losses", 5, 1000, []string{"5 consecutive losses"}},
+		{"both", 5, 700, []string{"drawdown 30.0% > 20.0%", "5 consecutive losses"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSuppression()
+			configs := newConfigs()
+			states := make(map[string]*StrategyState, len(configs))
+			logs := make(map[string]*bytes.Buffer, len(configs))
+			loggers := make(map[string]*StrategyLogger, len(configs))
+			for _, sc := range configs {
+				states[sc.ID] = &StrategyState{
+					ID: sc.ID, Platform: sc.Platform, Type: sc.Type,
+					RiskState: RiskState{PeakValue: 1000, MaxDrawdownPct: 20, DailyPnLDate: todayUTC(), ConsecutiveLosses: tc.losses},
+				}
+				logs[sc.ID] = &bytes.Buffer{}
+				loggers[sc.ID] = &StrategyLogger{stratID: sc.ID, writer: logs[sc.ID]}
+			}
+			runAll := func(pv float64) {
+				t.Helper()
+				for _, sc := range configs {
+					if allowed, reason := CheckRisk(sc, states[sc.ID], pv, nil, loggers[sc.ID], nil); !allowed && !sc.CircuitBreakerEnabled() {
+						t.Fatalf("%s: disabled breaker must not block: reason=%q", sc.ID, reason)
+					}
+				}
+			}
+			warnCount := func(id string) int {
+				return strings.Count(logs[id].String(), "circuit breaker is DISABLED")
+			}
+			assertLiveAlertOnly := func(stage string) {
+				t.Helper()
+				alerts := drainCircuitBreakerSuppressionAlerts()
+				if len(alerts) != 1 {
+					t.Fatalf("%s: queued alerts = %+v, want exactly one live alert", stage, alerts)
+				}
+				if alerts[0].StrategyID != "cb-live" {
+					t.Fatalf("%s: alert StrategyID = %q, want cb-live", stage, alerts[0].StrategyID)
+				}
+				if strings.Join(alerts[0].Reasons, "|") != strings.Join(tc.wantReasons, "|") {
+					t.Fatalf("%s: alert Reasons = %q, want %q", stage, alerts[0].Reasons, tc.wantReasons)
+				}
+			}
+			assertMarkers := func(stage string, want bool) {
+				t.Helper()
+				for _, sc := range configs {
+					if _, ok := circuitBreakerSuppressedWarned.Load(sc.ID); ok != want {
+						t.Fatalf("%s: %s marker present=%v, want %v", stage, sc.ID, ok, want)
+					}
+				}
+			}
+
+			runAll(tc.pv)
+			assertLiveAlertOnly("first breach")
+			assertMarkers("first breach", true)
+			for _, sc := range configs {
+				if got := warnCount(sc.ID); got != 1 {
+					t.Fatalf("first breach: %s WARN lines = %d, want 1", sc.ID, got)
+				}
+			}
+
+			runAll(tc.pv)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("same episode: queued alerts = %+v, want none", alerts)
+			}
+			for _, sc := range configs {
+				if got := warnCount(sc.ID); got != 1 {
+					t.Fatalf("same episode: %s WARN lines = %d, want 1", sc.ID, got)
+				}
+			}
+
+			for _, s := range states {
+				s.RiskState.ConsecutiveLosses = 0
+			}
+			runAll(1000)
+			assertMarkers("recovery", false)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("recovery: queued alerts = %+v, want none", alerts)
+			}
+
+			for _, s := range states {
+				s.RiskState.ConsecutiveLosses = tc.losses
+			}
+			runAll(tc.pv)
+			assertLiveAlertOnly("breach after recovery")
+			assertMarkers("breach after recovery", true)
+
+			for _, sc := range configs {
+				sc.CircuitBreaker = &enabled
+			}
+			runAll(tc.pv)
+			assertMarkers("breaker re-enabled", false)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("breaker re-enabled: queued alerts = %+v, want none", alerts)
+			}
+
+			for _, sc := range configs {
+				sc.CircuitBreaker = &disabled
+				states[sc.ID].RiskState.CircuitBreaker = false
+				states[sc.ID].RiskState.CircuitBreakerUntil = time.Time{}
+				states[sc.ID].RiskState.ConsecutiveLosses = tc.losses
+			}
+			runAll(tc.pv)
+			assertLiveAlertOnly("breach after re-enable")
+			assertMarkers("breach after re-enable", true)
 		})
 	}
 }

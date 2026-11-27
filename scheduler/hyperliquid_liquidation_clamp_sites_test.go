@@ -26,7 +26,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 		sc := liqWalkerStrategy()
 		var gotTrigger float64
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			gotTrigger = triggerPx
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 7001, StopLossTriggerPx: triggerPx}, "", nil
@@ -55,7 +55,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 		var gotTrigger float64
 		var gotCancelOID int64
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			gotTrigger, gotCancelOID = triggerPx, cancelStopLossOID
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 7002, StopLossTriggerPx: triggerPx}, "", nil
@@ -83,7 +83,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 
 		sc := liqWalkerStrategy()
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 7004, StopLossTriggerPx: triggerPx}, "", nil
 		}
@@ -104,7 +104,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 		defer clearHLLiquidationAlert("hl-eth", "ETH")
 
 		sc := liqWalkerStrategy()
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{
 				CancelStopLossSucceeded: true,
 				StopLossError:           "Order would exceed the open order limit",
@@ -127,7 +127,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 		defer clearHLLiquidationAlert("hl-eth", "ETH")
 
 		sc := liqWalkerStrategy()
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel rejected"}, "", nil
 		}
 		pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
@@ -151,7 +151,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 		}
 		var calls []call
 		callN := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			callN++
 			calls = append(calls, call{cancelOID: cancelStopLossOID})
 			if callN == 1 {
@@ -184,7 +184,7 @@ func TestTrailingWalkerLiquidationClamp(t *testing.T) {
 
 		sc := liqWalkerStrategy()
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			if calls == 1 {
 				return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
@@ -457,21 +457,21 @@ func TestLiquidationClampReplace(t *testing.T) {
 			Qty: 1.0, StopLossOID: 4242, StopLossTriggerPx: 2330,
 		}
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
 		}
 		if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceProtectionLost {
 			t.Errorf("outcome = %v, want hlReplaceProtectionLost (cancel landed, nothing rests)", outcome)
 		}
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{Error: "pre-cancel boom"}, "", nil
 		}
 		if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceDeferred {
 			t.Errorf("outcome = %v, want hlReplaceDeferred (no landed cancel — the old order may rest)", outcome)
 		}
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel down"}, "", nil
 		}
 		if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceDeferred {
@@ -487,7 +487,7 @@ func TestLiquidationClampReplace(t *testing.T) {
 			Qty: 1.0, StopLossOID: 4242, StopLossTriggerPx: 2330,
 		}
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			return &HyperliquidStopLossUpdateResult{
 				CancelStopLossSucceeded: true,

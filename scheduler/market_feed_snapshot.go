@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -56,6 +57,13 @@ type marketFundingPayload struct {
 	FetchedAtMs int64               `json:"fetched_at_ms"`
 	Source      string              `json:"source"`
 	Error       string              `json:"error,omitempty"`
+
+	ScalarError      string `json:"scalar_error,omitempty"`
+	RecordsError     string `json:"records_error,omitempty"`
+	RecordsContract  int    `json:"records_contract,omitempty"`
+	RecordsFromMs    int64  `json:"records_from_ms,omitempty"`
+	RecordsToMs      int64  `json:"records_to_ms,omitempty"`
+	RecordsThroughMs int64  `json:"records_through_ms,omitempty"`
 }
 
 type marketPayload struct {
@@ -79,10 +87,13 @@ type marketPayload struct {
 }
 
 type marketSnapshotKey struct {
-	Key        marketFeedKey
-	IntervalMs int64
-	Bars       []feedBar
-	Readiness  feedKeyReadiness
+	Key               marketFeedKey
+	IntervalMs        int64
+	Bars              []feedBar
+	Readiness         feedKeyReadiness
+	FilledFrom        string
+	restVerified      bool
+	FormingBarOmitted bool
 }
 
 type marketSnapshot struct {
@@ -118,6 +129,7 @@ type cycleMarketRequirements struct {
 	Keys            []cycleMarketRequirement
 	Coins           []string
 	Funding         map[string]feedFundingNeed
+	FundingCoverage string
 	Observations    map[feedObservationKey]int64
 	AccountingCoins []string
 	Macro           map[feedMacroKey]int64
@@ -152,11 +164,11 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 		if entry.HasLeader {
 			raise(entry.Leader, entry.LeaderLookback)
 		}
+		if entry.HasResearchHTF {
+			raise(entry.ResearchHTF, entry.ResearchHTFRow)
+		}
 		if entry.FundingScalar || entry.FundingRecords {
-			f := funding[entry.Coin]
-			f.Scalar = f.Scalar || entry.FundingScalar
-			f.Records = f.Records || entry.FundingRecords
-			funding[entry.Coin] = f
+			funding[entry.Coin] = funding[entry.Coin].merge(entry.fundingNeed())
 		}
 		for key, window := range entry.observationNeeds() {
 			if existing, ok := observations[key]; !ok || window > existing {
@@ -175,7 +187,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 	for _, coin := range req.MidCoins {
 		coins[coin] = true
 	}
-	out := cycleMarketRequirements{Funding: funding, Observations: observations, Macro: macro, Books: books}
+	out := cycleMarketRequirements{Funding: funding, FundingCoverage: fundingCoverageID(req.Funding), Observations: observations, Macro: macro, Books: books}
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
@@ -195,28 +207,7 @@ func (o *marketFeedOwner) publishedKey(key marketFeedKey) bool {
 }
 
 func (o *marketFeedOwner) recoverKeyOnce(ctx context.Context, key marketFeedKey) error {
-	return o.fetchAndMerge(ctx, key, feedRestRecovery)
-}
-
-func (o *marketFeedOwner) earliestFrameBarMs(reqs cycleMarketRequirements) map[string]int64 {
-	o.feedMu.Lock()
-	defer o.feedMu.Unlock()
-	out := make(map[string]int64)
-	for _, cr := range reqs.Keys {
-		st := o.keys[cr.Key]
-		if st == nil || len(st.Bars) == 0 {
-			continue
-		}
-		start := len(st.Bars) - cr.Required
-		if start < 0 {
-			start = 0
-		}
-		first := st.Bars[start].CloseMs
-		if existing, ok := out[cr.Key.Symbol]; !ok || first < existing {
-			out[cr.Key.Symbol] = first
-		}
-	}
-	return out
+	return o.fetchIncremental(ctx, key, feedRestRecovery)
 }
 
 func sealCycleMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMarketRequirements,
@@ -238,12 +229,16 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 			continue
 		}
 		if err := o.recoverKeyOnce(ctx, cr.Key); err != nil {
+			if feedFetchTypedResult(err) {
+				continue
+			}
 			o.logf("[feed] %s: cycle recovery failed: %v", cr.Key, err)
-			o.raiseAlert(cr.Key, "recovery_failed", err.Error())
+			if !feedRateLimitErr(err) && !errors.Is(err, errFeedWeightRefused) {
+				o.raiseAlert(cr.Key, "recovery_failed", err.Error())
+			}
 		}
 	}
-	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))
-	o.EnsureAccountingFunding(ctx)
+	o.EnsureFunding(ctx, feedFundingPlan{Needs: reqs.Funding, CoverageID: reqs.FundingCoverage})
 }
 
 func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now, cutoff time.Time) *marketSnapshot {
@@ -273,10 +268,11 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			continue
 		}
 		frozen := &marketSnapshotKey{
-			Key:        cr.Key,
-			IntervalMs: st.IntervalMs,
-			Bars:       append([]feedBar(nil), st.Bars...),
-			Readiness:  keyReadiness(st, now, connected),
+			Key:          cr.Key,
+			IntervalMs:   st.IntervalMs,
+			Bars:         append([]feedBar(nil), st.Bars...),
+			Readiness:    keyReadiness(st, now, connected),
+			restVerified: st.restVerified,
 		}
 		snap.keys[cr.Key] = frozen
 	}
@@ -285,14 +281,13 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			snap.mids[coin] = mid
 		}
 	}
+	coverageOK := o.coverageMatchesLocked(reqs.FundingCoverage)
 	for coin, need := range reqs.Funding {
 		if !need.Scalar && !need.Records {
 			continue
 		}
-		if f, ok := o.funding[coin]; ok && f != nil {
-			cp := *f
-			cp.Records = append([]feedFundingRecord(nil), f.Records...)
-			snap.funding[coin] = cp
+		if f, ok := o.freezeFundingLocked(coin, need, now.UTC(), coverageOK); ok {
+			snap.funding[coin] = f
 		}
 	}
 	o.tickTradeFlowsLocked(now.UTC().UnixMilli())
@@ -379,6 +374,13 @@ func (s *marketSnapshot) frameFor(key marketFeedKey, required int) (marketFrame,
 	return s.frameWithTiming(key, required, false)
 }
 
+func (s *marketSnapshot) formingBarHold(key marketFeedKey, closedOnly bool) string {
+	if entry := s.keys[key]; !closedOnly && entry != nil && entry.FormingBarOmitted {
+		return fmt.Sprintf("sealed snapshot reused %s without the forming bar this strategy needs", key.PayloadID())
+	}
+	return ""
+}
+
 func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing bool) (marketFrame, bool) {
 	if s == nil {
 		return marketFrame{}, false
@@ -388,6 +390,9 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 		return marketFrame{}, false
 	}
 	if !entry.Readiness.Ready {
+		return marketFrame{}, false
+	}
+	if required > 0 && entry.Readiness.Required < required {
 		return marketFrame{}, false
 	}
 	bars := entry.Bars
@@ -413,7 +418,7 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 		Ready:              entry.Readiness.Ready,
 		Stale:              entry.Readiness.Stale,
 		StaleReason:        entry.Readiness.StaleReason,
-		FormingBarIncluded: true,
+		FormingBarIncluded: !entry.FormingBarOmitted,
 	}
 	if !entry.Readiness.LastRecvAt.IsZero() {
 		frame.LastRecvAtMs = entry.Readiness.LastRecvAt.UTC().UnixMilli()
@@ -430,6 +435,20 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 		frame.Timing = t
 	}
 	return frame, true
+}
+
+func (s *marketSnapshot) coverageGap(key marketFeedKey, required int) (int, bool) {
+	if s == nil || required <= 0 {
+		return 0, false
+	}
+	entry, ok := s.keys[key]
+	if !ok || entry == nil || !entry.Readiness.Ready {
+		return 0, false
+	}
+	if entry.Readiness.Required < required {
+		return entry.Readiness.Required, true
+	}
+	return 0, false
 }
 
 func (s *marketSnapshot) keyFailed(key marketFeedKey) bool {
@@ -474,9 +493,11 @@ func (s *marketSnapshot) freshMids() map[string]float64 {
 }
 
 type marketPayloadFrameSpec struct {
-	Key      marketFeedKey
-	Required int
-	Timing   bool
+	Key        marketFeedKey
+	Required   int
+	Timing     bool
+	Optional   bool
+	ClosedOnly bool
 }
 
 func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins []string) (*marketPayload, error) {
@@ -492,8 +513,20 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 		FeedComplete: true,
 	}
 	for _, spec := range frames {
+		if why := s.formingBarHold(spec.Key, spec.ClosedOnly); why != "" {
+			if spec.Optional {
+				continue
+			}
+			return nil, errors.New(why)
+		}
 		frame, ok := s.frameWithTiming(spec.Key, spec.Required, spec.Timing)
 		if !ok {
+			if spec.Optional {
+				continue
+			}
+			if covered, gap := s.coverageGap(spec.Key, spec.Required); gap {
+				return nil, fmt.Errorf("sealed snapshot frame for %s covers a %d-bar history lookback, below the %d bars this consumer needs", spec.Key, covered, spec.Required)
+			}
 			return nil, fmt.Errorf("sealed snapshot has no ready frame for %s", spec.Key)
 		}
 		payload.Frames[spec.Key.PayloadID()] = frame
@@ -536,30 +569,16 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 			FetchedAtMs: f.FetchedAt.UnixMilli(),
 			Source:      f.Source,
 			Error:       f.Err,
+
+			ScalarError:      f.ScalarErr,
+			RecordsError:     f.RecordsErr,
+			RecordsContract:  f.RecordsContract,
+			RecordsFromMs:    f.RecordsFromMs,
+			RecordsToMs:      f.RecordsToMs,
+			RecordsThroughMs: f.RecordsThroughMs,
 		}
 	}
 	return payload, nil
-}
-
-func (s *marketSnapshot) fundingHold(coin string, scalar, records bool) (bool, string) {
-	if !scalar && !records {
-		return false, ""
-	}
-	if s == nil {
-		return true, fmt.Sprintf("no sealed funding for %s", coin)
-	}
-	f, ok := s.funding[coin]
-	switch {
-	case !ok:
-		return true, fmt.Sprintf("no sealed funding for %s", coin)
-	case f.Err != "":
-		return true, fmt.Sprintf("funding fetch for %s failed: %s", coin, f.Err)
-	case scalar && !f.HasScalar:
-		return true, fmt.Sprintf("sealed funding for %s carries no current rate", coin)
-	case records && !f.HasRecords:
-		return true, fmt.Sprintf("sealed funding for %s carries no history", coin)
-	}
-	return false, ""
 }
 
 type marketStdinEnvelope struct {

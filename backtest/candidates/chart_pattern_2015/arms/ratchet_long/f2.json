@@ -1,0 +1,359 @@
+{
+  "_provenance": "Research assumption for issue 2015, not a deployment. No sanitized chart_pattern deployment snapshot was available. Every field is either the request in the issue (Hyperliquid perps, BTC, ETH, SOL, HYPE and BNB at 30m and 1h, trailing_tp_ratchet_regime close) or a default the scheduler resolves (regime classifier ADX period 14, the default ratchet ladders through use_defaults, the default per-regime trailing stop table through trailing_stop_atr_mult_regime use_defaults, atr_method, leverage 1, capital 1000, paper mode). closed_bar_decisions true is an explicit assumption that makes the live decision frame the last closed candles. build-arms sets direction and htf_gate_factor per arm; nothing here is copied from another strategy's configuration.",
+  "config_version": 20,
+  "regime": {
+    "enabled": true
+  },
+  "strategies": [
+    {
+      "args": [
+        "chart_pattern",
+        "BNB",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-bnb-30m-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "BNB",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-bnb-1h-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "BTC",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-btc-30m-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-btc-1h-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "ETH",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-eth-30m-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "ETH",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-eth-1h-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "HYPE",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-hype-30m-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "HYPE",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-hype-1h-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "SOL",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-sol-30m-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    },
+    {
+      "args": [
+        "chart_pattern",
+        "SOL",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "closed_bar_decisions": true,
+      "direction": "long",
+      "id": "chart-pattern-sol-1h-research",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "chart_pattern",
+        "params": {
+          "htf_gate_factor": 2
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "use_defaults": true
+      },
+      "type": "perps"
+    }
+  ]
+}

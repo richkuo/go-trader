@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -47,6 +48,13 @@ type feedSealOutcome struct {
 	Detail string
 }
 
+type feedKeyEpisode struct {
+	streak  int
+	alerted bool
+}
+
+const feedKeyAbsentStatus = "absent"
+
 type feedSealer struct {
 	owner    *marketFeedOwner
 	source   string
@@ -72,9 +80,13 @@ type feedSealer struct {
 	missedStreak  int
 	wake          chan struct{}
 	alertHook     func(string)
+	rateLimitSend func(string)
 	prepareFn     feedPrepareFunc
 	ledger        *feedRequestLedger
 	budgetShort   bool
+	reqsRev       uint64
+	keyEpisodes   map[marketFeedKey]*feedKeyEpisode
+	keyAlertSend  func(string)
 }
 
 func newFeedSealer(owner *marketFeedOwner, source, instance string, clock func() time.Time, logf func(string, ...any)) *feedSealer {
@@ -98,6 +110,8 @@ func newFeedSealer(owner *marketFeedOwner, source, instance string, clock func()
 		ring:     make(map[int64]*feedSeal),
 		outcomes: make(map[int64]feedSealOutcome),
 		wake:     make(chan struct{}, 1),
+
+		keyEpisodes: make(map[marketFeedKey]*feedKeyEpisode),
 	}
 }
 
@@ -109,30 +123,141 @@ func (s *feedSealer) prepareFor(ctx context.Context, key int64, reqs cycleMarket
 	return feedPrepareReport{}
 }
 
-func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, rep feedPrepareReport) (feedBudgetTotals, []string) {
+func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, beforeWeight feedWeightTotals, rep feedPrepareReport) (feedBudgetTotals, []string) {
 	if s.ledger == nil {
 		return feedBudgetTotals{}, nil
 	}
 	delta := s.ledger.snapshot().since(before)
+	wDelta := s.ledger.weightSnapshot().since(beforeWeight)
 	st := s.ledger.status()
-	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s",
+	w := st.Weight
+	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s rate_limited=%d paused=%d paused_by_reason=%s paused_keys=%s rate_limit=%s weight=%s weight_per_minute=%d weight_startup_left=%d weight_reserve=%d weight_charged=%d weight_steady_used=%d weight_pending=%d weight_in_flight=%d weight_reserved=%d weight_settled=%d weight_retained=%d weight_refunded=%d weight_debt=%d weight_refused=%d weight_refused_by_cause=%s weight_refused_keys=%s",
 		key, s.source, s.instance, delta.Total, delta.Refused, formatFeedCounts(delta.ByReason), formatFeedCounts(delta.ByType),
 		formatFeedCounts(delta.RefusedByReason), st.WindowUsed, st.PerMinute, st.StartupLeft, st.Enforced, rep.Refreshed,
-		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed))
+		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed), delta.RateLimited, delta.Paused, formatFeedCounts(delta.PausedByReason),
+		joinFeedNames(rep.Paused), formatFeedRateLimitStatus(st.RateLimit),
+		w.Participation, w.PerMinute, w.StartupLeft, w.Reserve, w.Charged, w.SteadyUsed, w.Pending, w.InFlight,
+		wDelta.Reserved, wDelta.Settled, wDelta.Retained, wDelta.Refunded, wDelta.Debt, wDelta.Refused, formatFeedCounts(wDelta.RefusedByCause),
+		joinFeedNames(rep.WeightRefused))
+	line += " " + formatFeedSharedFields(w.Shared)
+	line += fmt.Sprintf(" reuse_candidates=%d reuse_proof_fetched=%d", len(rep.ReusedKeys), rep.ReuseProofFetched)
 	return delta, []string{line}
 }
 
-func markUnrefreshedKeysNotReady(snap *marketSnapshot, refreshed map[marketFeedKey]bool, deadline int64) {
+func markUnrefreshedKeysNotReady(snap *marketSnapshot, rep feedPrepareReport, deadline int64) {
 	if snap == nil {
 		return
 	}
 	for k, entry := range snap.keys {
-		if entry == nil || refreshed[k] || !entry.Readiness.Ready {
+		if entry == nil || rep.RefreshedKeys[k] || rep.ReusedKeys[k] {
 			continue
 		}
-		entry.Readiness.Ready = false
-		entry.Readiness.Status = feedStatusNotDue
-		entry.Readiness.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
+		r := &entry.Readiness
+		dueAt, deferred := rep.DeferredKeys[k]
+		refusedReuse, reuseRefused := rep.ReuseRefused[k]
+		switch {
+		case reuseRefused:
+			r.Ready = false
+			r.Status = feedStatusFailed
+			if rep.ReusePaused {
+				r.Status = feedStatusRateLimited
+			}
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d: closed-frame reuse was refused at the seal: %s", deadline, refusedReuse)
+		case rep.InflightKeys[k]:
+			text := fmt.Sprintf("refresh for deadline %d not sent: a history request for this key was in flight", deadline)
+			if !r.Ready {
+				if r.Detail != "" {
+					text = r.Detail + "; " + text
+				}
+				r.Detail = text
+				continue
+			}
+			r.Ready = false
+			r.Status = feedStatusBootstrapping
+			r.Detail = text
+		case deferred:
+			text := fmt.Sprintf("refresh for deadline %d not sent: the full-history retry is due at %s", deadline, dueAt.UTC().Format(time.RFC3339))
+			if !r.Ready {
+				if r.Detail != "" {
+					text = r.Detail + "; " + text
+				}
+				r.Detail = text
+				continue
+			}
+			if r.HistoryErr != "" {
+				text += ": " + r.HistoryErr
+			}
+			r.Ready = false
+			r.Status = feedStatusFailed
+			r.Detail = text
+		case !r.Ready:
+		case rep.DueKeys[k]:
+			r.Ready = false
+			r.Status = feedStatusFailed
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d", deadline)
+		default:
+			r.Ready = false
+			r.Status = feedStatusNotDue
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
+		}
+	}
+}
+
+func (s *feedSealer) reusePauseReason() string {
+	if s.ledger == nil {
+		return ""
+	}
+	host := feedHostOf(hlMainnetURL)
+	if until := s.ledger.pausedUntil(host); until.After(s.ledger.clock().UTC()) {
+		return fmt.Sprintf("the venue host %s is paused until %s", host, until.UTC().Format(time.RFC3339))
+	}
+	if a := s.ledger.sharedAuthority(); a != nil {
+		if _, pending := a.pendingPauses()[host]; pending {
+			return fmt.Sprintf("a pause for the venue host %s is not yet written to the shared weight record", host)
+		}
+		for _, h := range a.statusView().Hosts {
+			if h.Host == host && h.Pause != "" && h.Pause != "clear" {
+				return fmt.Sprintf("the shared weight record shows the venue host %s pause as %s", host, h.Pause)
+			}
+		}
+	}
+	return ""
+}
+
+func applyClosedFrameReuse(snap *marketSnapshot, rep *feedPrepareReport, deadline int64, pauseReason string) {
+	if snap == nil || len(rep.ReusedKeys) == 0 {
+		return
+	}
+	cutoffMs := deadline * 1000
+	keys := make([]marketFeedKey, 0, len(rep.ReusedKeys))
+	for k := range rep.ReusedKeys {
+		keys = append(keys, k)
+	}
+	sortMarketFeedKeys(keys)
+	for _, k := range keys {
+		entry := snap.keys[k]
+		why := pauseReason
+		var closed []feedBar
+		if why == "" && entry == nil {
+			why = "the key is absent from the frozen snapshot"
+		}
+		if why == "" {
+			closed, why = feedClosedFrameReuse(entry.Bars, entry.Readiness, entry.restVerified, entry.IntervalMs, cutoffMs, snap.SealedAt)
+		}
+		if why != "" {
+			delete(rep.ReusedKeys, k)
+			rep.ReuseRefused[k] = why
+			continue
+		}
+		last := closed[len(closed)-1]
+		entry.Bars = closed
+		entry.FormingBarOmitted = true
+		r := &entry.Readiness
+		r.Bars = len(closed)
+		r.FirstOpenMs = closed[0].OpenMs
+		r.LastOpenMs = last.OpenMs
+		r.LastCloseMs = last.CloseMs
+		r.Detail = fmt.Sprintf("reused for deadline %d: every bar through the close at %d was read from REST after it closed, and every reader of this key uses closed bars only; the forming bar is omitted", deadline, last.CloseMs)
 	}
 }
 
@@ -145,6 +270,9 @@ func joinFeedNames(names []string) string {
 
 func (s *feedSealer) budgetAlert(key int64, delta feedBudgetTotals, rep feedPrepareReport) {
 	if s.ledger == nil || !s.ledger.status().Enforced {
+		return
+	}
+	if delta.Paused > 0 || delta.RateLimited > 0 {
 		return
 	}
 	s.mu.Lock()
@@ -177,9 +305,17 @@ func (s *feedSealer) sealAt(key int64) time.Time {
 
 func (s *feedSealer) setGeneration(union feedRequirements, cadences []int, activateAfter time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.reqs = fullCycleRequirements(union)
 	s.coverage = union
+	s.reqsRev++
+	var removed []string
+	for key := range s.keyEpisodes {
+		if _, kept := union.Keys[key]; kept {
+			continue
+		}
+		removed = append(removed, key.String())
+		delete(s.keyEpisodes, key)
+	}
 	act := activateAfter.UTC().Unix()
 	next := make(map[int]int64, len(cadences))
 	for _, c := range cadences {
@@ -194,6 +330,18 @@ func (s *feedSealer) setGeneration(union feedRequirements, cadences []int, activ
 	}
 	s.cadences = next
 	s.signal()
+	s.mu.Unlock()
+	if len(removed) > 0 {
+		sort.Strings(removed)
+		s.logf("[feed-key-alert] source=%s instance=%s requirements reload removed %d key(s) with open unready state; cleared with no recovery alert: %s",
+			s.source, s.instance, len(removed), strings.Join(removed, ","))
+	}
+}
+
+func (s *feedSealer) coverageSnapshot() feedRequirements {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.coverage
 }
 
 func (s *feedSealer) startServing(at time.Time) {
@@ -293,7 +441,53 @@ func (s *feedSealer) run(ctx context.Context) {
 	}
 }
 
+func (s *feedSealer) reportRateLimit(key int64) {
+	if s.ledger == nil {
+		return
+	}
+	for _, ev := range s.ledger.rateLimitReport(feedRateLimitOutstanding(s.owner)) {
+		s.logf("[feed-ratelimit] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+		send := s.rateLimitSend
+		if send == nil {
+			send = s.alertHook
+		}
+		if send != nil {
+			send(formatFeedRateLimitAlert(ev, s.source, s.instance))
+		}
+	}
+}
+
+func (s *feedSealer) reportWeight(key int64) {
+	if s.ledger == nil {
+		return
+	}
+	if a := s.ledger.sharedAuthority(); a != nil {
+		for _, ev := range a.sharedReport() {
+			s.logf("[feed-weight-shared] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+			send := s.rateLimitSend
+			if send == nil {
+				send = s.alertHook
+			}
+			if send != nil {
+				send(formatFeedSharedAlert(ev, s.source, s.instance, a.key))
+			}
+		}
+	}
+	for _, ev := range s.ledger.weightReport(s.owner.weightRefusedInputs(), s.owner.weightInputRequired) {
+		s.logf("[feed-weight] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+		send := s.rateLimitSend
+		if send == nil {
+			send = s.alertHook
+		}
+		if msg := formatFeedWeightAlert(ev, s.source, s.instance); send != nil && msg != "" {
+			send(msg)
+		}
+	}
+}
+
 func (s *feedSealer) sealOne(ctx context.Context, key int64) {
+	defer s.reportWeight(key)
+	defer s.reportRateLimit(key)
 	hard := s.hardDeadline(key)
 	startedAt := s.now()
 	if startedAt.After(s.sealAt(key).Add(s.prepare)) {
@@ -309,29 +503,59 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.mu.Lock()
 	reqs := s.reqs
 	coverage := s.coverage
+	rev := s.reqsRev
 	s.mu.Unlock()
 	var before feedBudgetTotals
+	var beforeWeight feedWeightTotals
 	if s.ledger != nil {
 		before = s.ledger.snapshot()
+		beforeWeight = s.ledger.weightSnapshot()
 	}
 	prepCtx, cancel := context.WithDeadline(ctx, s.sealAt(key).Add(s.prepare))
+	coverageAtStart := s.owner.coverageMatches(reqs.FundingCoverage)
 	rep := s.prepareFor(prepCtx, key, reqs, coverage)
 	cancel()
-	delta, budgetLines := s.budgetLines(key, before, rep)
+	delta, budgetLines := s.budgetLines(key, before, beforeWeight, rep)
 	for _, line := range budgetLines {
 		s.logf("%s", line)
 	}
 	s.budgetAlert(key, delta, rep)
 	frozenAt := s.owner.now()
 	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt, time.Unix(key, 0).UTC())
-	if rep.ReadyOnlyRefreshed {
-		markUnrefreshedKeysNotReady(snap, rep.RefreshedKeys, key)
+	if len(rep.ReusedKeys) > 0 {
+		pause := s.reusePauseReason()
+		applyClosedFrameReuse(snap, &rep, key, pause)
+		rep.ReusePaused = pause != ""
+		s.owner.dropReuseProof(rep.ReuseRefused)
+		for _, line := range formatFeedReuseLines(key, s.source, s.instance, rep) {
+			s.logf("%s", line)
+		}
 	}
-	doc, err := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
-	var blob []byte
-	var hash string
-	if err == nil {
-		blob, hash, err = encodeFeedSeal(doc)
+	if rep.ReadyOnlyRefreshed {
+		markUnrefreshedKeysNotReady(snap, rep, key)
+	}
+	stripped := false
+	unproved := func() bool {
+		if stripped || coverageAtStart && !s.coverageReplaced(reqs.FundingCoverage) {
+			return false
+		}
+		if stripped = snap.stripFundingCoverage(feedFundingCoverageChanged); stripped {
+			s.logf("[feed-funding] key=%d mode=unproved reason=%q", key, feedFundingCoverageChanged)
+		}
+		return stripped
+	}
+	unproved()
+	build := func() (*feedSealDoc, []byte, string, error) {
+		d, derr := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
+		if derr != nil {
+			return nil, nil, "", derr
+		}
+		b, h, derr := encodeFeedSeal(d)
+		return d, b, h, derr
+	}
+	doc, blob, hash, err := build()
+	if err == nil && unproved() {
+		doc, blob, hash, err = build()
 	}
 	prepDur := frozenAt.Sub(startedAt)
 	if err != nil {
@@ -364,6 +588,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 			seal.KeysStale++
 		}
 	}
+	sharedHeld := s.owner.sharedHeldKeys()
 	s.mu.Lock()
 	if s.now().After(hard) {
 		s.recordOutcomeLocked(key, feedWireStatusUnavailable, "seal finished after its hard deadline")
@@ -385,6 +610,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.missedStreak = 0
 	s.recordOutcomeLocked(key, feedWireStatusSealed, "")
 	evicted := s.retainLocked()
+	keyAlerts := s.observeKeyEpisodesLocked(key, rev, coverage, doc, sharedHeld)
 	s.mu.Unlock()
 	s.logf("[feed-seal] key=%d status=sealed source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d stale=%d mids=%d prepare_ms=%d sealed_at_ms=%d requests=%d refused=%d",
 		key, seal.Source, s.instance, seal.Generation, seal.Hash, len(seal.Bytes), seal.KeysTotal, seal.KeysReady, seal.KeysStale, seal.Mids,
@@ -397,6 +623,170 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	}
 	if recovered && s.alertHook != nil {
 		s.alertHook(fmt.Sprintf("**MARKET FEED SEALING RECOVERED** [%s] key %d sealed again (instance %s).", s.source, key, s.instance))
+	}
+	s.sendKeyAlerts(keyAlerts)
+}
+
+type feedKeyAlertEntry struct {
+	full  string
+	short string
+}
+
+type feedKeyAlert struct {
+	log  string
+	send []string
+}
+
+func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, coverage feedRequirements, doc *feedSealDoc, sharedHeld map[marketFeedKey]bool) []feedKeyAlert {
+	if rev != s.reqsRev || doc == nil || len(coverage.Order) == 0 {
+		return nil
+	}
+	sealed := make(map[marketFeedKey]feedSealReadiness, len(doc.Keys))
+	for _, k := range doc.Keys {
+		sealed[marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}] = k.Readiness
+	}
+	var unready, ready []feedKeyAlertEntry
+	for _, key := range coverage.Order {
+		if s.source == feedSourceREST && !feedKeyDueAt(coverage.KeyCadences[key], deadline) {
+			continue
+		}
+		r, ok := sealed[key]
+		if !ok {
+			r = feedSealReadiness{Status: feedKeyAbsentStatus, Detail: "the key is absent from the sealed document", Required: coverage.Keys[key]}
+		}
+		ep := s.keyEpisodes[key]
+		if !r.Ready && sharedHeld[key] && (ep == nil || !ep.alerted) {
+			delete(s.keyEpisodes, key)
+			continue
+		}
+		if r.Ready {
+			if ep != nil && ep.alerted {
+				ready = append(ready, newFeedKeyAlertEntry(key, r))
+			}
+			delete(s.keyEpisodes, key)
+			continue
+		}
+		if ep == nil {
+			ep = &feedKeyEpisode{}
+			s.keyEpisodes[key] = ep
+		}
+		if ep.streak < scriptFailureAlertThreshold {
+			ep.streak++
+		}
+		if ep.streak >= scriptFailureAlertThreshold && !ep.alerted {
+			ep.alerted = true
+			unready = append(unready, newFeedKeyAlertEntry(key, r))
+		}
+	}
+	sort.Slice(unready, func(i, j int) bool { return unready[i].full < unready[j].full })
+	sort.Slice(ready, func(i, j int) bool { return ready[i].full < ready[j].full })
+	at := time.Unix(deadline, 0).UTC().Format(time.RFC3339)
+	var alerts []feedKeyAlert
+	if len(unready) > 0 {
+		alerts = append(alerts, buildFeedKeyAlert(fmt.Sprintf("**MARKET FEED KEY UNREADY** [%s] deadline %d (%s): %d candle key(s) sealed not ready at %d consecutive eligible deadlines. Consumers hold entries on these keys unless another feed supplies ready inputs; protection continues on verified inputs (instance %s).",
+			s.source, deadline, at, len(unready), scriptFailureAlertThreshold, s.instance), unready))
+	}
+	if len(ready) > 0 {
+		alerts = append(alerts, buildFeedKeyAlert(fmt.Sprintf("**MARKET FEED KEY READY AGAIN** [%s] deadline %d (%s): %d candle key(s) sealed ready again (instance %s).",
+			s.source, deadline, at, len(ready), s.instance), ready))
+	}
+	return alerts
+}
+
+const (
+	feedKeyAlertMaxLen    = discordSplitThreshold
+	feedKeyAlertDetailMax = 160
+	feedKeyAlertMaxParts  = 5
+)
+
+func newFeedKeyAlertEntry(key marketFeedKey, r feedSealReadiness) feedKeyAlertEntry {
+	format := func(detail string) string {
+		return fmt.Sprintf("%s status=%s detail=%q bars=%d/%d", key.String(), r.Status, detail, r.Bars, r.Required)
+	}
+	return feedKeyAlertEntry{full: format(r.Detail), short: format(clipFeedAlertText(r.Detail, feedKeyAlertDetailMax))}
+}
+
+func clipFeedAlertText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:0]
+	}
+	cut := max - 3
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
+func buildFeedKeyAlert(head string, entries []feedKeyAlertEntry) feedKeyAlert {
+	full := make([]string, len(entries))
+	for i, e := range entries {
+		full[i] = e.full
+	}
+	log := head + " Keys: " + strings.Join(full, "; ")
+	if len(log) <= feedKeyAlertMaxLen {
+		return feedKeyAlert{log: log, send: []string{log}}
+	}
+	return feedKeyAlert{log: log, send: packFeedKeyAlertParts(head, entries)}
+}
+
+func packFeedKeyAlertParts(head string, entries []feedKeyAlertEntry) []string {
+	label := func(part, parts int) string { return fmt.Sprintf(" Part %d/%d. Keys: ", part, parts) }
+	omittedNote := func(n int) string {
+		return fmt.Sprintf("; and %d more key(s) not listed here; the [feed-key-alert] log line lists every key", n)
+	}
+	room := feedKeyAlertMaxLen - len(head) - len(label(feedKeyAlertMaxParts, feedKeyAlertMaxParts)) - len(omittedNote(len(entries)))
+	if room < 1 {
+		room = 1
+	}
+	var groups [][]string
+	var cur []string
+	curLen := 0
+	listed := 0
+	for _, e := range entries {
+		item := clipFeedAlertText(e.short, room)
+		add := len(item)
+		if len(cur) > 0 {
+			add += len("; ")
+		}
+		if len(cur) > 0 && curLen+add > room {
+			groups = append(groups, cur)
+			cur, curLen = nil, 0
+			add = len(item)
+			if len(groups) == feedKeyAlertMaxParts {
+				break
+			}
+		}
+		cur = append(cur, item)
+		curLen += add
+		listed++
+	}
+	if len(cur) > 0 && len(groups) < feedKeyAlertMaxParts {
+		groups = append(groups, cur)
+	}
+	omitted := len(entries) - listed
+	msgs := make([]string, len(groups))
+	for i, g := range groups {
+		msg := head + label(i+1, len(groups)) + strings.Join(g, "; ")
+		if i == len(groups)-1 && omitted > 0 {
+			msg += omittedNote(omitted)
+		}
+		msgs[i] = clipFeedAlertText(msg, feedKeyAlertMaxLen)
+	}
+	return msgs
+}
+
+func (s *feedSealer) sendKeyAlerts(alerts []feedKeyAlert) {
+	for _, a := range alerts {
+		s.logf("[feed-key-alert] %s", a.log)
+		if s.keyAlertSend == nil {
+			continue
+		}
+		for _, msg := range a.send {
+			s.keyAlertSend(msg)
+		}
 	}
 }
 
@@ -527,8 +917,15 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 	return nil
 }
 
+func (s *feedSealer) coverageReplaced(captured string) bool {
+	s.mu.Lock()
+	current := s.reqs.FundingCoverage
+	s.mu.Unlock()
+	return current != captured || !s.owner.coverageMatches(captured)
+}
+
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile), len(s.coverage.Books) > 0, s.coverage.hasObservationKind(feedObservationPerpPremium))
+	return feedCoverageSealVersion(feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile), len(s.coverage.Books) > 0, s.coverage.hasObservationKind(feedObservationPerpPremium)), fundingRecordsNeeded(s.coverage.Funding))
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -580,8 +977,7 @@ func (s *feedSealer) describe() *feedDescribe {
 	}
 	sort.Strings(fundingCoins)
 	for _, c := range fundingCoins {
-		need := s.coverage.Funding[c]
-		d.Funding = append(d.Funding, feedDescribeFunding{Coin: c, Scalar: need.Scalar, Records: need.Records})
+		d.Funding = append(d.Funding, describeFunding(c, s.coverage.Funding[c]))
 	}
 	for _, key := range s.coverage.observationKeys() {
 		d.Observations = append(d.Observations, feedDescribeObservation{
@@ -659,6 +1055,7 @@ func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
 	for coin, need := range req.Funding {
 		out.Funding[coin] = need
 	}
+	out.FundingCoverage = fundingCoverageID(req.Funding)
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	return out
 }
@@ -760,7 +1157,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile), len(d.Books) > 0, describeHasObservationKind(d, feedObservationPerpPremium)),
+			SealVersion:    feedCoverageSealVersion(feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile), len(d.Books) > 0, describeHasObservationKind(d, feedObservationPerpPremium)), describeHasFundingContract(d)),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

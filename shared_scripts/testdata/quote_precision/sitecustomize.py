@@ -30,6 +30,12 @@ def _closes(close, n):
         return [close * (0.8 - 0.0001 * i) for i in range(n - 1)] + [close]
     if shape == "cross_down":
         return [close * (1.25 + 0.0001 * i) for i in range(n - 1)] + [close]
+    if shape == "ifvg_up":
+        tail = [97.5, 97.5, 97.5, 97.5, 103.0]
+        return [close * 1.0151517] * (n - len(tail) - 1) + [close * x / 100.0 for x in tail] + [close]
+    if shape == "ifvg_down":
+        tail = [102.5, 102.5, 102.5, 102.5, 97.0]
+        return [close * 0.9851517] * (n - len(tail) - 1) + [close * x / 100.0 for x in tail] + [close]
     return [close * (1.0 + 0.04 * math.sin(i / 4.0) + 0.0005 * (i - n)) for i in range(n - 1)] + [close]
 
 
@@ -91,7 +97,7 @@ def _raise_daily(ccxt, exchange_id, mode):
     raise ccxt.NetworkError("quote precision stub: daily history failure for " + exchange_id)
 
 
-_OPTION_QUOTES_SERVED = [0]
+_MODEL_PRICES_SERVED = [0]
 
 
 def _noise():
@@ -100,93 +106,47 @@ def _noise():
         sys.stdout.flush()
 
 
-def _option_quote_mode():
-    fail_after = os.environ.get("QP_OPTION_QUOTE_FAIL_AFTER", "")
-    _OPTION_QUOTES_SERVED[0] += 1
-    if fail_after != "" and _OPTION_QUOTES_SERVED[0] > int(fail_after):
-        return "error", None
-    raw = os.environ.get("QP_OPTION_QUOTE", "")
-    if raw == "":
-        return "value", 0.05
-    if raw in ("error", "429", "503", "missing"):
-        return raw, None
-    return "value", float(raw)
-
-
-def _option_greeks():
-    raw = os.environ.get("QP_OPTION_GREEKS", "")
-    if raw:
-        return json.loads(raw)
-    return {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
-
-
-def _install_deribit_ticker(requests):
-    import requests.adapters
-    import requests.models
-
-    real_send = requests.adapters.HTTPAdapter.send
-
-    def send(self, request, *args, **kwargs):
-        if "deribit.com/api/v2/public/ticker" not in request.url:
-            return real_send(self, request, *args, **kwargs)
-        mode, value = _option_quote_mode()
-        _log({"call": "deribit_ticker", "url": request.url, "mode": mode})
-        if mode == "error":
-            raise requests.exceptions.ConnectionError("quote precision stub: deribit ticker failure")
-        resp = requests.models.Response()
-        resp.status_code = 200
-        result = {"underlying_price": 100.0, "greeks": _option_greeks()}
-        if mode in ("429", "503"):
-            resp.status_code = int(mode)
-            body = {"error": {"message": "quote precision stub status " + mode}}
-        elif mode == "missing":
-            body = {"result": result}
-        else:
-            result["mark_price"] = value
-            body = {"result": result}
-        resp._content = json.dumps(body).encode()
-        resp.headers["Content-Type"] = "application/json"
-        resp.url = request.url
-        resp.request = request
-        resp.reason = "quote precision stub"
-        resp.encoding = "utf-8"
-        return resp
-
-    requests.adapters.HTTPAdapter.send = send
-
-
-def _install_frozen_topstep_clock(iso):
-    import datetime as _dt
+def _install_model_price_controls():
     import importlib.abc
     import importlib.machinery
 
-    fixed = _dt.datetime.fromisoformat(iso)
+    fail_after = os.environ.get("QP_OPTION_QUOTE_FAIL_AFTER", "")
+    greeks_raw = os.environ.get("QP_OPTION_GREEKS", "")
+    if fail_after == "" and greeks_raw == "":
+        return
 
-    class FrozenDatetime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+    def wrap(real):
+        def bs_price_and_greeks(*args, **kwargs):
+            _MODEL_PRICES_SERVED[0] += 1
+            if fail_after != "" and _MODEL_PRICES_SERVED[0] > int(fail_after):
+                _log({"call": "model_price", "mode": "error"})
+                raise sys.modules["option_data"].OptionDataUnavailable(
+                    "option model unavailable: quote precision stub model failure")
+            _log({"call": "model_price", "mode": "value"})
+            price, greeks = real(*args, **kwargs)
+            if greeks_raw:
+                greeks = json.loads(greeks_raw)
+            return price, greeks
+        return bs_price_and_greeks
 
-    suffix = os.path.join("platforms", "topstep", "adapter.py")
-
-    class TopStepClockFinder(importlib.abc.MetaPathFinder):
+    class PricingFinder(importlib.abc.MetaPathFinder):
         def find_spec(self, name, path, target=None):
-            if name != "adapter":
+            if name != "pricing":
                 return None
             spec = importlib.machinery.PathFinder.find_spec(name, path)
-            if spec is None or not str(spec.origin or "").endswith(suffix):
+            if spec is None or not str(spec.origin or "").endswith(os.path.join("shared_tools", "pricing.py")):
                 return spec
             loader = spec.loader
             original = loader.exec_module
 
             def exec_module(module):
                 original(module)
-                module.datetime = FrozenDatetime
+                module.bs_price_and_greeks = wrap(module.bs_price_and_greeks)
 
             loader.exec_module = exec_module
             return spec
 
-    sys.meta_path.insert(0, TopStepClockFinder())
+    sys.meta_path.insert(0, PricingFinder())
 
 
 def _install():
@@ -210,7 +170,6 @@ def _install():
 
     import ccxt
     import pandas as pd
-    import requests
     import yfinance
 
     def fetch_ticker(self, symbol, params=None):
@@ -259,16 +218,12 @@ def _install():
     def load_markets(self, reload=False, params=None):
         return {}
 
-    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus, ccxt.luno):
+    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus):
         cls.fetch_ticker = fetch_ticker
         cls.fetch_ohlcv = fetch_ohlcv
         cls.load_markets = load_markets
 
-    _install_deribit_ticker(requests)
-
-    frozen_now = os.environ.get("QP_NOW", "")
-    if frozen_now:
-        _install_frozen_topstep_clock(frozen_now)
+    _install_model_price_controls()
 
     def dated_history(self, interval, kwargs):
         _log({"call": "yahoo_history_window", "symbol": getattr(self, "ticker", ""), "interval": interval,

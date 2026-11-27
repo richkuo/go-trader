@@ -412,13 +412,13 @@ func TestHLAgentRejectionThroughEverySignedRunnerSendsOneCritical(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	_, _, _ = RunHyperliquidExecute(driver, "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
-	_, _, _ = RunHyperliquidUpdateStopLoss(driver, "ETH", "long", 1, 100, 0)
-	_, _, _ = RunHyperliquidSyncProtection(driver, hlProtectionPlan{Symbol: "ETH"}, nil)
-	_, _, _ = RunHyperliquidSizedClose(driver, hlSizedCloseRequest{Symbol: "ETH", Side: "sell", Mode: hlCloseModeReduceOnly, Size: 1})
-	_, _, _ = RunHyperliquidClose(driver, "ETH", nil, nil)
-	_, _, _ = RunHyperliquidLimitOpen(driver, "ETH", "buy", 1, 100, "Alo", "cross", 1, hlExecuteSnapshot{})
-	_, _, _ = RunHyperliquidCancelOrder(driver, "ETH", 5)
+	_, _, _ = RunHyperliquidExecute(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	_, _, _ = RunHyperliquidUpdateStopLoss(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", "long", 1, 100, 0)
+	_, _, _ = RunHyperliquidSyncProtection(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, hlProtectionPlan{Symbol: "ETH"}, nil)
+	_, _, _ = RunHyperliquidSizedClose(driver, hlSizedCloseRequest{Symbol: "ETH", Side: "sell", Mode: hlCloseModeReduceOnly, Size: 1, Auth: hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel)})
+	_, _, _ = RunHyperliquidClose(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", nil, nil)
+	_, _, _ = RunHyperliquidLimitOpen(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", "buy", 1, 100, "Alo", "cross", 1, hlExecuteSnapshot{})
+	_, _, _ = RunHyperliquidCancelOrder(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel).forOrder(5), driver, "ETH", 5)
 
 	hlAgentStatus.mu.Lock()
 	rejectedAt, bad := hlAgentStatus.lastRejectionAt, hlAgentStatus.bad
@@ -505,7 +505,7 @@ func TestHLAgentRejectionNamingTheSignerSendsOneReplaceKeyCritical(t *testing.T)
 	if !hlAgentAddressRE.MatchString(signer) {
 		t.Fatalf("the valid check did not record the signer: %q", signer)
 	}
-	_, _, _ = RunHyperliquidExecute(f.rejectingDriver(signer), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	_, _, _ = RunHyperliquidExecute(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), f.rejectingDriver(signer), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
 	f.stub.set("missing", 0)
 	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
 	if got := f.criticals(); got != 1 {
@@ -527,9 +527,9 @@ func TestHLAgentRejectionNamingAnotherAddressIsASignatureMismatch(t *testing.T) 
 	signer := f.knownSigner()
 	driver := f.rejectingDriver(hlAgentTestOther)
 
-	_, _, _ = RunHyperliquidExecute(driver, "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	_, _, _ = RunHyperliquidExecute(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
 	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
-	_, _, _ = RunHyperliquidUpdateStopLoss(driver, "ETH", "long", 1, 100, 0)
+	_, _, _ = RunHyperliquidUpdateStopLoss(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), driver, "ETH", "long", 1, 100, 0)
 	sc := StrategyConfig{ID: "hl-agent-mismatch", Platform: "hyperliquid"}
 	notifyLiveExecFailure(f.n, sc, directionOpen, "ETH", "exchange rejected order: {'status': 'err', 'response': 'User or API Wallet "+hlAgentTestOther+" does not exist.'}")
 	t.Cleanup(func() { clearLiveExecThrottle(sc, directionOpen, "ETH") })
@@ -566,7 +566,7 @@ func TestHLAgentRejectionWithNoAddressKeepsTheCritical(t *testing.T) {
 	if f.knownSigner() == "" {
 		t.Fatal("the valid check did not record the signer")
 	}
-	_, _, _ = RunHyperliquidExecute(f.rejectingDriver(""), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	_, _, _ = RunHyperliquidExecute(hlAccountRecoveryWriteAuth("ETH", hlWriteExecute|hlWriteClose|hlWriteStop|hlWriteProtection|hlWriteLimitOpen|hlWriteCancel), f.rejectingDriver(""), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
 	if got := f.criticals(); got != 1 {
 		t.Fatalf("a rejection with no address sent %d CRITICAL alerts, want 1", got)
 	}

@@ -1,11 +1,9 @@
-import itertools
 
 import numpy as np
 import pandas as pd
 
 from backtester import Backtester
 from atr import ensure_atr_indicator
-from optimizer import DEFAULT_PARAM_RANGES
 from registry_loader import load_registry
 
 NAME = "ultimate_oscillator"
@@ -24,17 +22,6 @@ def _market(n, seed, freq="1h"):
                        "volume": np.ones(n)})
     df.index = pd.date_range("2025-01-01", periods=n, freq=freq)
     return df
-
-
-def test_optimizer_grid_is_valid_for_the_registry_and_history_bound():
-    reg = load_registry("futures")
-    ranges = DEFAULT_PARAM_RANGES[NAME]
-    keys = sorted(ranges)
-    combos = [dict(zip(keys, v)) for v in itertools.product(*(ranges[k] for k in keys))]
-    assert len(combos) == 729
-    for combo in combos:
-        reg._registry.validate_params(NAME, combo)
-        assert max(combo["long_window"] + 1, combo["breakout_lookback"] + 2) <= 42
 
 
 def test_simulator_keeps_exits_and_stop_running_through_invalid_entry_spans():

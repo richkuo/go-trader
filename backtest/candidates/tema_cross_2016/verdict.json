@@ -1,0 +1,810 @@
+{
+  "family_size": 36,
+  "fidelity_sha256": "602205995220aad942ca22fb0bc7d3bf273a2a4dee0f80f4aa0747b983a3aea5",
+  "frames": {
+    "live": {
+      "arm": null,
+      "arms": {
+        "bar_1h": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": false,
+            "min_clusters": false,
+            "min_trades": false,
+            "net_positive_base": false,
+            "net_positive_stress": false,
+            "venue_not_fail": true
+          },
+          "clusters": 0,
+          "control": "live_long",
+          "datasets": [],
+          "diagnostic_without_exclusions": {
+            "gross_per_trade_pct": 0.100849,
+            "gross_trades": 178,
+            "net_per_trade_pct": -0.126473,
+            "net_trades": 178,
+            "stress_per_trade_pct": -0.230462,
+            "stress_trades": 181
+          },
+          "family": "bar",
+          "gross_per_trade_pct": null,
+          "net_per_trade_pct": null,
+          "noise_baseline": "live_long",
+          "noise_verdict": "indistinguishable_from_zero",
+          "p_cluster": 1.0,
+          "p_decision": 1.0,
+          "p_plain": 1.0,
+          "statistics": null,
+          "stress_per_trade_pct": null,
+          "trades": 0,
+          "venue": {
+            "arm_datasets": [],
+            "arm_x1": null,
+            "arm_x2": null,
+            "control": "live_long",
+            "control_datasets": [],
+            "control_x1": null,
+            "control_x2": null,
+            "outcome": "inconclusive",
+            "reason": "venue coverage incomplete or missing legs",
+            "window": "tail"
+          }
+        },
+        "live_long": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": false,
+            "min_clusters": false,
+            "min_trades": false,
+            "net_positive_base": false,
+            "net_positive_stress": false,
+            "venue_not_fail": true
+          },
+          "clusters": 0,
+          "control": "live_both",
+          "datasets": [],
+          "diagnostic_without_exclusions": {
+            "gross_per_trade_pct": 0.060398,
+            "gross_trades": 302,
+            "net_per_trade_pct": -0.138576,
+            "net_trades": 304,
+            "stress_per_trade_pct": -0.264346,
+            "stress_trades": 312
+          },
+          "family": "direction",
+          "gross_per_trade_pct": null,
+          "net_per_trade_pct": null,
+          "noise_baseline": "live_long",
+          "noise_verdict": "indistinguishable_from_zero",
+          "p_cluster": 1.0,
+          "p_decision": 1.0,
+          "p_plain": 1.0,
+          "statistics": null,
+          "stress_per_trade_pct": null,
+          "trades": 0,
+          "venue": {
+            "arm_datasets": [],
+            "arm_x1": null,
+            "arm_x2": null,
+            "control": "live_both",
+            "control_datasets": [],
+            "control_x1": null,
+            "control_x2": null,
+            "outcome": "inconclusive",
+            "reason": "venue coverage incomplete or missing legs",
+            "window": "tail"
+          }
+        }
+      },
+      "datasets_total": 1,
+      "excluded": {
+        "ETH 1h": [
+          "failing proxy htf fidelity row htf 2024",
+          "failing proxy htf fidelity row htf 2025H1"
+        ],
+        "ETH 30m": [
+          "failing proxy htf fidelity row htf 2024",
+          "failing proxy htf fidelity row htf 2025H1"
+        ]
+      },
+      "kept_datasets": [],
+      "reason": "coverage not met: 0 of 1 datasets remain after the frozen exclusions",
+      "verdict": "inconclusive"
+    },
+    "paper": {
+      "arm": null,
+      "arms": {
+        "bar_1h": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": false,
+            "net_positive_stress": false,
+            "venue_not_fail": false
+          },
+          "clusters": 528,
+          "control": "control",
+          "datasets": [
+            "BNB 1h",
+            "BTC 1h",
+            "ETH 1h",
+            "SOL 1h"
+          ],
+          "diagnostic_without_exclusions": {
+            "gross_per_trade_pct": 0.048078,
+            "gross_trades": 1094,
+            "net_per_trade_pct": -0.178926,
+            "net_trades": 1099,
+            "stress_per_trade_pct": -0.271534,
+            "stress_trades": 1103
+          },
+          "family": "bar",
+          "gross_per_trade_pct": 0.048078,
+          "net_per_trade_pct": -0.178926,
+          "noise_baseline": "control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.990401,
+          "p_decision": 0.9983,
+          "p_plain": 0.9983,
+          "statistics": {
+            "bootstrap": {
+              "hi": -0.059496,
+              "lo": -0.296663,
+              "n_resamples": 10000,
+              "point": -0.178926
+            },
+            "cluster_permutation": {
+              "clusters": 528,
+              "mean": -0.178926,
+              "n": 1099,
+              "n_resamples": 10000,
+              "p_value": 0.990401
+            },
+            "n": 1099,
+            "permutation": {
+              "mean": -0.178926,
+              "n": 1099,
+              "n_resamples": 10000,
+              "p_value": 0.9983
+            },
+            "sign_test": {
+              "n": 1099,
+              "n_neg": 591,
+              "n_pos": 508,
+              "n_zero": 0,
+              "p_value": 0.013343
+            },
+            "summary": {
+              "max": 9.251244,
+              "mean": -0.178926,
+              "median": -0.679109,
+              "min": -8.476385,
+              "n": 1099,
+              "n_neg": 591,
+              "n_pos": 508,
+              "n_zero": 0
+            },
+            "verdict": "no_positive_edge",
+            "wilcoxon": {
+              "n": 1099,
+              "p_value": 0.0,
+              "w": 246856.0,
+              "z": -5.2609
+            }
+          },
+          "stress_per_trade_pct": -0.271534,
+          "trades": 1099,
+          "venue": {
+            "arm_datasets": [
+              "BNB 1h",
+              "BTC 1h",
+              "ETH 1h",
+              "SOL 1h"
+            ],
+            "arm_x1": {
+              "clusters": 84,
+              "complete": true,
+              "datasets": 4,
+              "mean_ddadj": -0.51725,
+              "mean_return_pct": -9.19,
+              "mean_sharpe": -1.10125,
+              "worst_max_dd_pct": -23.69
+            },
+            "arm_x2": {
+              "clusters": 88,
+              "complete": true,
+              "datasets": 4,
+              "mean_ddadj": -0.6915,
+              "mean_return_pct": -14.807500000000001,
+              "mean_sharpe": -1.91875,
+              "worst_max_dd_pct": -28.23
+            },
+            "control": "control",
+            "control_datasets": [
+              "BNB 30m",
+              "BTC 30m",
+              "ETH 30m",
+              "SOL 30m"
+            ],
+            "control_x1": {
+              "clusters": 74,
+              "complete": true,
+              "datasets": 4,
+              "mean_ddadj": 0.48475,
+              "mean_return_pct": 3.73,
+              "mean_sharpe": 0.756,
+              "worst_max_dd_pct": -9.37
+            },
+            "control_x2": {
+              "clusters": 75,
+              "complete": true,
+              "datasets": 4,
+              "mean_ddadj": -0.08175,
+              "mean_return_pct": -1.0125000000000002,
+              "mean_sharpe": -0.34825000000000006,
+              "worst_max_dd_pct": -12.55
+            },
+            "outcome": "fail",
+            "reason": "loses to control on mean Sharpe and mean ddadj at cost x1",
+            "window": "tail"
+          }
+        },
+        "gate_cm_up": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": false,
+            "net_positive_stress": false,
+            "venue_not_fail": true
+          },
+          "clusters": 518,
+          "control": "control",
+          "datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "diagnostic_without_exclusions": {
+            "gross_per_trade_pct": 0.052931,
+            "gross_trades": 1383,
+            "net_per_trade_pct": -0.164307,
+            "net_trades": 1389,
+            "stress_per_trade_pct": -0.272567,
+            "stress_trades": 1400
+          },
+          "family": "gate",
+          "gross_per_trade_pct": 0.052931,
+          "net_per_trade_pct": -0.164307,
+          "noise_baseline": "control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.993501,
+          "p_decision": 0.9988,
+          "p_plain": 0.9988,
+          "statistics": {
+            "bootstrap": {
+              "hi": -0.060279,
+              "lo": -0.266779,
+              "n_resamples": 10000,
+              "point": -0.164307
+            },
+            "cluster_permutation": {
+              "clusters": 518,
+              "mean": -0.164307,
+              "n": 1389,
+              "n_resamples": 10000,
+              "p_value": 0.993501
+            },
+            "n": 1389,
+            "permutation": {
+              "mean": -0.164307,
+              "n": 1389,
+              "n_resamples": 10000,
+              "p_value": 0.9988
+            },
+            "sign_test": {
+              "n": 1389,
+              "n_neg": 830,
+              "n_pos": 559,
+              "n_zero": 0,
+              "p_value": 0.0
+            },
+            "summary": {
+              "max": 11.088344,
+              "mean": -0.164307,
+              "median": -0.724501,
+              "min": -8.475972,
+              "n": 1389,
+              "n_neg": 830,
+              "n_pos": 559,
+              "n_zero": 0
+            },
+            "verdict": "no_positive_edge",
+            "wilcoxon": {
+              "n": 1389,
+              "p_value": 0.0,
+              "w": 381552.0,
+              "z": -6.7633
+            }
+          },
+          "stress_per_trade_pct": -0.272567,
+          "trades": 1389,
+          "venue": {
+            "arm_datasets": [
+              "BNB 30m",
+              "BNB 1h",
+              "BTC 30m",
+              "BTC 1h",
+              "ETH 30m",
+              "ETH 1h",
+              "SOL 30m",
+              "SOL 1h"
+            ],
+            "arm_x1": {
+              "clusters": 57,
+              "complete": true,
+              "datasets": 8,
+              "mean_ddadj": 0.32049999999999995,
+              "mean_return_pct": -1.0137500000000002,
+              "mean_sharpe": -4.5102810375396984e-17,
+              "worst_max_dd_pct": -15.96
+            },
+            "arm_x2": {
+              "clusters": 57,
+              "complete": true,
+              "datasets": 8,
+              "mean_ddadj": 0.099625,
+              "mean_return_pct": -2.6237500000000002,
+              "mean_sharpe": -0.45112500000000005,
+              "worst_max_dd_pct": -17.76
+            },
+            "control": "control",
+            "control_datasets": [
+              "BNB 30m",
+              "BNB 1h",
+              "BTC 30m",
+              "BTC 1h",
+              "ETH 30m",
+              "ETH 1h",
+              "SOL 30m",
+              "SOL 1h"
+            ],
+            "control_x1": {
+              "clusters": 111,
+              "complete": true,
+              "datasets": 8,
+              "mean_ddadj": -0.01625,
+              "mean_return_pct": -2.73,
+              "mean_sharpe": -0.17262500000000003,
+              "worst_max_dd_pct": -23.69
+            },
+            "control_x2": {
+              "clusters": 117,
+              "complete": true,
+              "datasets": 8,
+              "mean_ddadj": -0.386625,
+              "mean_return_pct": -7.91,
+              "mean_sharpe": -1.1335,
+              "worst_max_dd_pct": -28.23
+            },
+            "outcome": "pass",
+            "reason": "beats control on mean Sharpe and mean ddadj at cost x1 and x2",
+            "window": "tail"
+          }
+        }
+      },
+      "datasets_total": 10,
+      "excluded": {
+        "HYPE 1h": [
+          "coverage: is: warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00); stitched: warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00)"
+        ],
+        "HYPE 30m": [
+          "coverage: is: warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00); stitched: warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00)"
+        ]
+      },
+      "kept_datasets": [
+        "BNB 30m",
+        "BNB 1h",
+        "BTC 30m",
+        "BTC 1h",
+        "ETH 30m",
+        "ETH 1h",
+        "SOL 30m",
+        "SOL 1h"
+      ],
+      "reason": "no judged arm met every frozen verdict check",
+      "verdict": "negative"
+    },
+    "spot": {
+      "arm": null,
+      "arms": {
+        "bar_4h": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": true,
+            "net_positive_stress": true
+          },
+          "clusters": 132,
+          "control": "spot_control",
+          "datasets": [
+            "BTC 4h",
+            "ETH 4h",
+            "SOL 4h"
+          ],
+          "family": "bar",
+          "gross_per_trade_pct": 0.850676,
+          "net_per_trade_pct": 0.475098,
+          "noise_baseline": "spot_control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.142786,
+          "p_decision": 0.142786,
+          "p_plain": 0.107989,
+          "statistics": {
+            "bootstrap": {
+              "hi": 1.250115,
+              "lo": -0.206887,
+              "n_resamples": 10000,
+              "point": 0.475098
+            },
+            "cluster_permutation": {
+              "clusters": 132,
+              "mean": 0.475098,
+              "n": 246,
+              "n_resamples": 10000,
+              "p_value": 0.142786
+            },
+            "n": 246,
+            "permutation": {
+              "mean": 0.475098,
+              "n": 246,
+              "n_resamples": 10000,
+              "p_value": 0.107989
+            },
+            "sign_test": {
+              "n": 246,
+              "n_neg": 169,
+              "n_pos": 77,
+              "n_zero": 0,
+              "p_value": 0.0
+            },
+            "summary": {
+              "max": 39.479857,
+              "mean": 0.475098,
+              "median": -0.950994,
+              "min": -7.232477,
+              "n": 246,
+              "n_neg": 169,
+              "n_pos": 77,
+              "n_zero": 0
+            },
+            "verdict": "indistinguishable_from_zero",
+            "wilcoxon": {
+              "n": 246,
+              "p_value": 0.001785,
+              "w": 11700.0,
+              "z": -3.1239
+            }
+          },
+          "stress_per_trade_pct": 0.374509,
+          "trades": 246
+        },
+        "combo": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": true,
+            "net_positive_stress": true
+          },
+          "clusters": 98,
+          "control": "spot_control",
+          "datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "family": "combo",
+          "gross_per_trade_pct": 0.571921,
+          "net_per_trade_pct": 0.125961,
+          "noise_baseline": "spot_control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.370863,
+          "p_decision": 0.370863,
+          "p_plain": 0.349265,
+          "statistics": {
+            "bootstrap": {
+              "hi": 0.798668,
+              "lo": -0.501025,
+              "n_resamples": 10000,
+              "point": 0.125961
+            },
+            "cluster_permutation": {
+              "clusters": 98,
+              "mean": 0.125961,
+              "n": 272,
+              "n_resamples": 10000,
+              "p_value": 0.370863
+            },
+            "n": 272,
+            "permutation": {
+              "mean": 0.125961,
+              "n": 272,
+              "n_resamples": 10000,
+              "p_value": 0.349265
+            },
+            "sign_test": {
+              "n": 272,
+              "n_neg": 196,
+              "n_pos": 76,
+              "n_zero": 0,
+              "p_value": 0.0
+            },
+            "summary": {
+              "max": 33.409686,
+              "mean": 0.125961,
+              "median": -1.000776,
+              "min": -11.055652,
+              "n": 272,
+              "n_neg": 196,
+              "n_pos": 76,
+              "n_zero": 0
+            },
+            "verdict": "indistinguishable_from_zero",
+            "wilcoxon": {
+              "n": 272,
+              "p_value": 1.3e-05,
+              "w": 12897.0,
+              "z": -4.3637
+            }
+          },
+          "stress_per_trade_pct": 0.025709,
+          "trades": 272
+        },
+        "gate_cm_up": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": true,
+            "net_positive_stress": true
+          },
+          "clusters": 242,
+          "control": "spot_control",
+          "datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "family": "gate",
+          "gross_per_trade_pct": 0.400173,
+          "net_per_trade_pct": 0.11721,
+          "noise_baseline": "spot_control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.289671,
+          "p_decision": 0.289671,
+          "p_plain": 0.244576,
+          "statistics": {
+            "bootstrap": {
+              "hi": 0.449177,
+              "lo": -0.189651,
+              "n_resamples": 10000,
+              "point": 0.11721
+            },
+            "cluster_permutation": {
+              "clusters": 242,
+              "mean": 0.11721,
+              "n": 638,
+              "n_resamples": 10000,
+              "p_value": 0.289671
+            },
+            "n": 638,
+            "permutation": {
+              "mean": 0.11721,
+              "n": 638,
+              "n_resamples": 10000,
+              "p_value": 0.244576
+            },
+            "sign_test": {
+              "n": 638,
+              "n_neg": 480,
+              "n_pos": 158,
+              "n_zero": 0,
+              "p_value": 0.0
+            },
+            "summary": {
+              "max": 39.479734,
+              "mean": 0.11721,
+              "median": -0.73124,
+              "min": -8.274552,
+              "n": 638,
+              "n_neg": 480,
+              "n_pos": 158,
+              "n_zero": 0
+            },
+            "verdict": "indistinguishable_from_zero",
+            "wilcoxon": {
+              "n": 638,
+              "p_value": 0.0,
+              "w": 62612.0,
+              "z": -8.4398
+            }
+          },
+          "stress_per_trade_pct": 0.017042,
+          "trades": 638
+        },
+        "p_13_34_89": {
+          "bh_pass": false,
+          "checks": {
+            "baseline_has_gross_edge": true,
+            "bh_pass": false,
+            "half_the_datasets_remain": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "net_positive_base": true,
+            "net_positive_stress": true
+          },
+          "clusters": 141,
+          "control": "spot_control",
+          "datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "family": "period",
+          "gross_per_trade_pct": 0.863524,
+          "net_per_trade_pct": 0.479773,
+          "noise_baseline": "spot_control",
+          "noise_verdict": "distinguishable_positive",
+          "p_cluster": 0.209179,
+          "p_decision": 0.209179,
+          "p_plain": 0.108689,
+          "statistics": {
+            "bootstrap": {
+              "hi": 1.27507,
+              "lo": -0.155208,
+              "n_resamples": 10000,
+              "point": 0.479773
+            },
+            "cluster_permutation": {
+              "clusters": 141,
+              "mean": 0.479773,
+              "n": 478,
+              "n_resamples": 10000,
+              "p_value": 0.209179
+            },
+            "n": 478,
+            "permutation": {
+              "mean": 0.479773,
+              "n": 478,
+              "n_resamples": 10000,
+              "p_value": 0.108689
+            },
+            "sign_test": {
+              "n": 478,
+              "n_neg": 345,
+              "n_pos": 133,
+              "n_zero": 0,
+              "p_value": 0.0
+            },
+            "summary": {
+              "max": 135.979403,
+              "mean": 0.479773,
+              "median": -0.968397,
+              "min": -11.055652,
+              "n": 478,
+              "n_neg": 345,
+              "n_pos": 133,
+              "n_zero": 0
+            },
+            "verdict": "indistinguishable_from_zero",
+            "wilcoxon": {
+              "n": 478,
+              "p_value": 0.0,
+              "w": 40324.0,
+              "z": -5.5984
+            }
+          },
+          "stress_per_trade_pct": 0.379196,
+          "trades": 478
+        }
+      },
+      "datasets_total": 6,
+      "excluded": {},
+      "kept_datasets": [
+        "BTC 1h",
+        "BTC 4h",
+        "ETH 1h",
+        "ETH 4h",
+        "SOL 1h",
+        "SOL 4h"
+      ],
+      "reason": "no judged arm met every frozen verdict check",
+      "verdict": "negative"
+    }
+  },
+  "frames_agree": false,
+  "noise_gate_sha256": "14f54f08c26978ec7ad0875e83ade405efaf22e357f29302e920386e6c76b86e",
+  "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+  "results_sha256": "b51aae054b9ec9b70b8546d3afa5e046a380b029d04e6b6502c2364940ed67a0",
+  "selection_sha256": "93e16d3524805c82daae5b91650a2cef75f9f34f932b28d79ae122a80612ec32",
+  "suggested_configs": [],
+  "suggestion_basis": "the perps frames decide the suggestion; the spot frame is reported beside them",
+  "tests": [
+    {
+      "arm": "bar_1h",
+      "frame": "live",
+      "p_decision": 1.0
+    },
+    {
+      "arm": "live_long",
+      "frame": "live",
+      "p_decision": 1.0
+    },
+    {
+      "arm": "bar_1h",
+      "frame": "paper",
+      "p_decision": 0.9983
+    },
+    {
+      "arm": "gate_cm_up",
+      "frame": "paper",
+      "p_decision": 0.9988
+    },
+    {
+      "arm": "bar_4h",
+      "frame": "spot",
+      "p_decision": 0.142786
+    },
+    {
+      "arm": "combo",
+      "frame": "spot",
+      "p_decision": 0.370863
+    },
+    {
+      "arm": "gate_cm_up",
+      "frame": "spot",
+      "p_decision": 0.289671
+    },
+    {
+      "arm": "p_13_34_89",
+      "frame": "spot",
+      "p_decision": 0.209179
+    }
+  ]
+}

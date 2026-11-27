@@ -33,7 +33,8 @@ from htf_filter import (
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason",)
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "vsb_reason", "invfvg_reason")
+FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_", "invfvg_")
 
 _inst_type = "swap"
 for _arg in sys.argv:
@@ -351,7 +352,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 try:
                     fval = float(val)
                     if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
+                        indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                           else round(fval, 6))
                 except (ValueError, TypeError):
                     pass
 
@@ -826,6 +828,31 @@ def run_recover_entry(symbol, inst_type, client_order_id, mode, since_ms=0, unti
 
 
 def main():
+    if "--okx-stop" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--okx-stop", action="store_true")
+        parser.add_argument("--op", required=True, choices=["preflight", "position", "place", "read", "amend", "cancel", "fills", "reduce", "reduce-fill", "public-instrument", "arm-reference"])
+        parser.add_argument("--symbol", default="BTC")
+        parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
+        parser.add_argument("--contracts", default="")
+        parser.add_argument("--min-contracts", default="")
+        parser.add_argument("--position-side", default="", choices=["", "long", "short"])
+        parser.add_argument("--trigger-px", default="")
+        parser.add_argument("--algo-client-id", default="")
+        parser.add_argument("--order-id", default="")
+        parser.add_argument("--round-entry", choices=["true"], default="")
+        parser.add_argument("--exp-time-ms", type=int, default=0)
+        parser.add_argument("--algo-id", default="")
+        parser.add_argument("--probe-only", action="store_true")
+        args = parser.parse_args()
+        if args.probe_only:
+            from okx_stop_command import probe_payload
+            print(json.dumps(probe_payload()))
+            sys.exit(0)
+        from okx_stop_command import run_okx_stop
+        run_okx_stop(args)
+        return
     if "--recover-entry" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

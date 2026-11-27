@@ -14,7 +14,7 @@ func TestPlanKillSwitchCloseManualAndHedgeCoins(t *testing.T) {
 				Args: []string{"hold", "ETH", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 2.0, EntryPrice: 3000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{Symbol: symbol,
 					Fill: &HyperliquidCloseFill{TotalSz: 2.0, AvgPx: 2900, Fee: 3.0, OID: 499735101008}},
@@ -79,7 +79,7 @@ func TestPlanKillSwitchCloseManualAndHedgeCoins(t *testing.T) {
 				Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "BTC", Size: 1.0}, {Coin: "DOGE", Size: 5000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{Symbol: symbol,
 					Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 50000, Fee: 1.0}},
@@ -113,14 +113,14 @@ func TestPlanKillSwitchCloseManualAndHedgeCoins(t *testing.T) {
 				Hedge: &HedgeConfig{Enabled: true, Symbol: "SOL"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 1.0}, {Coin: "SOL", Size: 40}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{Symbol: symbol,
 					Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 3000, Fee: 1.0}},
 				Platform: "hyperliquid",
 			}, nil
 		}
-		fetcher, _ := stubHLStateFetcher(nil, nil)
+		fetcher, _ := stubHLStateFetcher([]HLPosition{{Coin: "SOL", Size: 40}}, nil)
 
 		in := defaultHLInputs("0xaddr", true, positions, roster,
 			"portfolio drawdown 25.0% exceeds limit 20.0%",
@@ -150,7 +150,7 @@ func TestPlanKillSwitchCloseManualAndHedgeCoins(t *testing.T) {
 				Args: []string{"hold", "BTC", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 2.0, EntryPrice: 2000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{Symbol: symbol,
 					Fill: &HyperliquidCloseFill{TotalSz: 2.0, AvgPx: 2100, Fee: 0.5, OID: 777}},

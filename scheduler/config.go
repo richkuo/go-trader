@@ -26,6 +26,7 @@ type DiscordConfig struct {
 	EphemeralReplies   bool              `json:"ephemeral_replies,omitempty"`
 	ReportRepo         string            `json:"report_repo,omitempty"`
 	ReportGitHubToken  string            `json:"report_github_token,omitempty"`
+	SlashCommands      bool              `json:"slash_commands,omitempty"`
 }
 
 func (c DiscordConfig) reportRepo() string {
@@ -328,12 +329,17 @@ type Config struct {
 	UserDefaults             *UserDefaultsConfig          `json:"user_defaults,omitempty"`
 	Tuning                   *TuningConfig                `json:"tuning,omitempty"`
 	TradeFeedbackAnalysis    *TradeFeedbackAnalysisConfig `json:"trade_feedback_analysis,omitempty"`
+	DashboardCandles         *DashboardCandlesConfig      `json:"dashboard_candles,omitempty"`
 	MarketFeed               string                       `json:"market_feed,omitempty"`
 	SharedMarketFeed         *SharedMarketFeedConfig      `json:"shared_market_feed,omitempty"`
+	MarketFeedWeightBudget   *feedWeightBudgetConfig      `json:"market_feed_weight_budget,omitempty"`
 	Role                     string                       `json:"role,omitempty"`
 	Feed                     *FeedRoleConfig              `json:"feed,omitempty"`
 	Egress                   *EgressConfig                `json:"egress,omitempty"`
 	PaperOnly                bool                         `json:"paper_only,omitempty"`
+
+	NotifyPaperCircuitBreakers *bool `json:"notify_paper_circuit_breakers,omitempty"`
+	PaperCircuitBreakers       *bool `json:"paper_circuit_breakers,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -523,6 +529,20 @@ func (c *Config) NotifyRatchetTriggersEnabled() bool {
 	return *c.NotifyRatchetTriggers
 }
 
+func (c *Config) NotifyPaperCircuitBreakersEnabled() bool {
+	if c == nil || c.NotifyPaperCircuitBreakers == nil {
+		return false
+	}
+	return *c.NotifyPaperCircuitBreakers
+}
+
+func (c *Config) PaperCircuitBreakersEnabled() bool {
+	if c == nil || c.PaperCircuitBreakers == nil {
+		return false
+	}
+	return *c.PaperCircuitBreakers
+}
+
 func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
 	if sc != nil && sc.NotifyRatchetTriggers != nil {
 		return *sc.NotifyRatchetTriggers
@@ -531,8 +551,11 @@ func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
 }
 
 func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
-	if sc == nil || sc.CircuitBreaker == nil {
+	if sc == nil {
 		return true
+	}
+	if sc.CircuitBreaker == nil {
+		return !sc.paperCircuitBreakerOff
 	}
 	return *sc.CircuitBreaker
 }
@@ -655,6 +678,7 @@ type StrategyConfig struct {
 	sharedWalletPoolBudget      bool                     `json:"-"`
 	sharedWalletModeDeferred    bool                     `json:"-"`
 	leverageDefaulted           bool                     `json:"-"`
+	paperCircuitBreakerOff      bool                     `json:"-"`
 	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
 	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`
 	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`
@@ -1089,6 +1113,9 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	if rawErrs := validateTradeFeedbackAnalysisJSON(data); len(rawErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
+	if rawErrs := validateDashboardCandlesJSON(data); len(rawErrs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
+	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -1103,6 +1130,8 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
+	unknownErrs = append(unknownErrs, validateMarketFeedWeightBudgetJSON(data)...)
+	unknownErrs = append(unknownErrs, validateDiscordJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
@@ -1202,6 +1231,7 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 			cfg.Strategies[i].Leverage = 1
 			cfg.Strategies[i].leverageDefaulted = true
 		}
+		cfg.Strategies[i].paperCircuitBreakerOff = !cfg.PaperCircuitBreakersEnabled() && portfolioScopeFor(cfg.Strategies[i]) == ScopePaper
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 && cfg.Strategies[i].RiskPerTradePct == nil {
 			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
 		}
@@ -2268,8 +2298,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct < 0 || pct > 50 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if sc.Type != "perps" || (sc.Platform != "hyperliquid" && sc.Platform != "okx") {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
 
@@ -2300,8 +2330,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct < 0 || pct > 50 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct must be in [0, 50], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if sc.Type != "perps" || (sc.Platform != "hyperliquid" && sc.Platform != "okx") {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedPct := 0.0
 			if sc.StopLossPct != nil {
@@ -2313,6 +2343,25 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			if pct > 0 && (fixedPct > 0 || marginPct > 0) {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
+			}
+			if pct == 0 && sc.Type == "perps" && (sc.Platform == "hyperliquid" || sc.Platform == "okx") {
+				var hidden, hiddenNames []string
+				addHidden := func(name string, v float64) {
+					hidden = append(hidden, fmt.Sprintf("%s=%g", name, v))
+					hiddenNames = append(hiddenNames, name)
+				}
+				if marginPct > 0 {
+					addHidden("stop_loss_margin_pct", marginPct)
+				}
+				if fixedPct > 0 {
+					addHidden("stop_loss_pct", fixedPct)
+				}
+				if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+					addHidden("trailing_stop_atr_mult", *sc.TrailingStopATRMult)
+				}
+				if len(hidden) > 0 {
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct=0 explicitly disables the stop and would hide %s, so the strategy would run without the hidden stop; remove trailing_stop_pct to use the other stop, or remove %s to keep the opt-out (stop_loss_atr_mult may stay alongside trailing_stop_pct=0)", prefix, strings.Join(hidden, ", "), strings.Join(hiddenNames, " and ")))
+				}
 			}
 		}
 
@@ -2351,8 +2400,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if mult < 0 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult must be >= 0, got %g", prefix, mult))
 			}
-			if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if !((sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual")) || (sc.Platform == "okx" && sc.Type == "perps")) {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			if mult > 0 {
 				fixedPct := 0.0
@@ -2390,8 +2439,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct must be in [0, 100], got %g", prefix, pct))
 			}
 			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
-			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if !((sc.Platform == "hyperliquid" && (sc.Type == "perps" || manualRatchet)) || (sc.Platform == "okx" && sc.Type == "perps")) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies, HL manual trailing_tp_ratchet strategies, or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedTrailingPct := 0.0
 			if sc.TrailingStopPct != nil {
@@ -2404,6 +2453,17 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			regimeTrail := sc.TrailingStopATRMultRegime.IsConfigured()
 			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_mult_regime", prefix))
+			}
+		}
+
+		if sc.Platform == "okx" && sc.Type == "perps" {
+			if sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() || strategyUsesUnifiedRegimeClose(sc) {
+				errs = append(errs, fmt.Sprintf("%s: OKX perps does not support regime ATR stops, trailing ATR regime stops, or a unified regime close", prefix))
+			}
+			if owner, ownerErr := okxExplicitStopOwner(sc); ownerErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", prefix, ownerErr.Error()))
+			} else if owner != "" && !okxStopScriptOK(sc) {
+				errs = append(errs, fmt.Sprintf("%s: an OKX perps exchange stop requires script check_okx.py", prefix))
 			}
 		}
 
@@ -2422,6 +2482,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	for _, msg := range okxPerpsStopOverlapErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 
@@ -2496,6 +2559,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
+	errs = append(errs, chartPatternHTFGateConfigErrors(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
 	errs = append(errs, validateHurstGateConfigs(cfg)...)
 

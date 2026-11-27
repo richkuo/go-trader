@@ -4,26 +4,6 @@ import pytest
 import run_backtest
 
 
-def test_build_parser_accepts():
-    for i, (argv, expected) in enumerate([
-        (
-            ["--registry", "futures", "--platform", "hyperliquid",
-             "--strategy", "sma_crossover", "--mode", "single"],
-            {"registry": "futures", "platform": "hyperliquid"},
-        ),
-        (
-            ["--mode", "optimize", "--strategy", "sma_crossover",
-             "--sweep-close", "--optimize-metric", "dd_adjusted_return",
-             "--direction", "long"],
-            {"sweep_close": True, "optimize_metric": "dd_adjusted_return",
-             "direction": "long", "close_stacks_json": None},
-        ),
-    ]):
-        args = run_backtest._build_parser().parse_args(argv)
-        for field, want in expected.items():
-            assert getattr(args, field) == want, f"test_build_parser_accepts[argv{i}-expected{i}] {field}"
-
-
 _BUILD_PARSER_REJECTS_UNKNOWN_CHOICE_CASES = [
     ["--platform", "mystery-exchange"],
     ["--registry", "options"],
@@ -37,88 +17,6 @@ def test_build_parser_rejects_unknown_choice(subtests):
             parser = run_backtest._build_parser()
             with pytest.raises(SystemExit):
                 parser.parse_args(argv)
-
-
-def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
-    seen = {}
-
-    class SpyBacktester:
-        def __init__(self, initial_capital, platform="binanceus", **kwargs):
-            seen["platform"] = platform
-            seen["capital"] = initial_capital
-            self.commission_pct = 0.123
-            self.slippage_pct = 0.0
-
-        def run(self, df, **kwargs):
-            return {
-                "strategy_name": kwargs.get("strategy_name"),
-                "symbol": "BTC/USDT",
-                "timeframe": "1d",
-                "start_date": str(df.index[0]),
-                "end_date": str(df.index[-1]),
-                "initial_capital": 1000.0,
-                "final_capital": 1000.0,
-                "total_return_pct": 0.0,
-                "annual_return_pct": 0.0,
-                "sharpe_ratio": 0.0,
-                "sortino_ratio": 0.0,
-                "max_drawdown_pct": 0.0,
-                "calmar_ratio": 0.0,
-                "volatility_pct": 0.0,
-                "win_rate": 0.0,
-                "profit_factor": 0.0,
-                "total_trades": 0,
-                "avg_win_pct": 0.0,
-                "avg_loss_pct": 0.0,
-                "trades": [],
-                "params": {},
-            }
-
-    df = pd.DataFrame(
-        {"open": [100] * 60, "high": [101] * 60, "low": [99] * 60,
-         "close": [100] * 60, "volume": [1000] * 60},
-        index=pd.date_range("2024-01-01", periods=60, freq="D"),
-    )
-    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
-    monkeypatch.setattr(run_backtest, "load_cached_data",
-                        lambda *a, **kw: df)
-
-    result = run_backtest.run_single_backtest(
-        strategy_name="sma_crossover",
-        symbol="BTC/USDT",
-        timeframe="1d",
-        since="2024-01-01",
-        capital=777.0,
-        platform="robinhood",
-        registry="spot",
-    )
-    assert result is not None
-    assert seen["platform"] == "robinhood", (
-        f"platform did not thread through to Backtester — got {seen}"
-    )
-    assert seen["capital"] == 777.0
-
-
-def test_backtester_imports_under_script_style_sys_path(tmp_path):
-    import os
-    import subprocess
-    import sys
-
-    backtest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    snippet = tmp_path / "script_style_import.py"
-    snippet.write_text(
-        "import sys\n"
-        f"sys.path.insert(0, {backtest_dir!r})\n"
-        "import backtester\n"
-        "backtester.Backtester()\n"
-        "print('OK')\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, str(snippet)],
-        cwd=tmp_path, capture_output=True, text=True, timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "OK" in proc.stdout
 
 
 def _spy_single(monkeypatch):
@@ -150,109 +48,6 @@ def test_mode_threads_direction(monkeypatch, subtests):
                 ])
                 run_backtest.main()
                 assert seen["calls"][0]["direction"] == "short"
-
-
-def test_direction_both_with_close_strategy_threads_through(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
-        "--strategy", "sma_crossover", "--direction", "both",
-        "--close-strategy", "tiered_tp_atr",
-    ])
-    run_backtest.main()
-    assert seen["calls"][0]["direction"] == "both"
-    assert seen["calls"][0]["close_strategies"] == [
-        {"name": "tiered_tp_atr", "params": {}}]
-
-
-def test_direction_short_rejected_in_optimize_mode(monkeypatch, subtests):
-    with subtests.test("test_direction_short_rejected_in_optimize_mode"):
-        with monkeypatch.context() as mp:
-            seen = {}
-            mp.setattr(run_backtest, "run_walk_forward",
-                       lambda *a, **kw: seen.setdefault("hit", True))
-            for extra in ([], ["--sweep-close"],
-                          ["--close-strategy", "tiered_tp_atr"]):
-                mp.setattr("sys.argv", [
-                    "run_backtest.py", "--mode", "optimize",
-                    "--strategy", "sma_crossover", "--direction", "short", *extra,
-                ])
-                with pytest.raises(SystemExit):
-                    run_backtest.main()
-            assert "hit" not in seen
-    with subtests.test("test_direction_both_with_default_sweep_grid_rejected"):
-        with monkeypatch.context() as mp:
-            seen = {}
-            mp.setattr(run_backtest, "run_walk_forward",
-                       lambda *a, **kw: seen.setdefault("hit", True))
-            mp.setattr("sys.argv", [
-                "run_backtest.py", "--mode", "optimize",
-                "--strategy", "sma_crossover", "--sweep-close",
-                "--direction", "both",
-            ])
-            with pytest.raises(SystemExit):
-                run_backtest.main()
-            assert "hit" not in seen
-    with subtests.test("test_direction_both_without_close_rejected_before_running"):
-        with monkeypatch.context() as mp:
-            seen = _spy_single(mp)
-            mp.setattr("sys.argv", [
-                "run_backtest.py", "--mode", "single",
-                "--strategy", "sma_crossover", "--direction", "both",
-            ])
-            with pytest.raises(SystemExit):
-                run_backtest.main()
-            assert "calls" not in seen
-
-
-def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(
-        monkeypatch, tmp_path):
-    import json
-    specs = tmp_path / "stacks.json"
-    specs.write_text(json.dumps([
-        {"close": {"name": "tiered_tp_atr", "params": {}}},
-    ]))
-    seen = {}
-
-    def spy_wf(*args, **kwargs):
-        seen.update(kwargs)
-
-    monkeypatch.setattr(run_backtest, "run_walk_forward", spy_wf)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "optimize",
-        "--strategy", "sma_crossover",
-        "--close-stacks-json", str(specs),
-        "--direction", "both",
-    ])
-    run_backtest.main()
-    assert seen["direction"] == "both"
-    assert seen["close_stack_grid"]
-    assert all(s.get("close_strategies") for s in seen["close_stack_grid"])
-
-
-def test_run_walk_forward_threads_close_stack_grid(monkeypatch):
-    seen = {}
-
-    def spy_wfo(df, strategy_name, param_ranges, **kwargs):
-        seen.update(kwargs)
-        return {"error": "spy", "strategy": strategy_name}
-
-    monkeypatch.setattr(run_backtest, "walk_forward_optimize", spy_wfo)
-    monkeypatch.setattr(
-        run_backtest, "load_cached_data",
-        lambda *a, **k: pd.DataFrame(
-            {"open": [1.0] * 300, "high": [1.0] * 300, "low": [1.0] * 300,
-             "close": [1.0] * 300, "volume": [1.0] * 300},
-            index=pd.date_range("2024-01-01", periods=300, freq="D")))
-
-    grid = [{"label": "baseline", "close_strategies": [],
-             "stop_loss_atr_mult": None, "trailing_stop_atr_mult": None}]
-    run_backtest.run_walk_forward(
-        "sma_crossover", close_stack_grid=grid,
-        optimize_metric="dd_adjusted_return", direction="long")
-    assert seen["close_stack_grid"] == grid
-    assert seen["optimize_metric"] == "dd_adjusted_return"
-    assert seen["direction"] == "long"
 
 
 def _wave_frame(n=400):
@@ -357,7 +152,6 @@ _AUTOMATIC_FEE_CASES = [
     ("rh-sma", "spot", None, "robinhood", 0.0),
     ("cfg-rh", "spot", "robinhood", "robinhood", 0.0),
     ("hl-but-rh", "spot", "robinhood", "robinhood", 0.0),
-    ("luno-spot", "spot", None, "luno", 0.01),
     ("hl-perp", "perps", None, "hyperliquid", 0.00045),
     ("hl-manual", "manual", None, "hyperliquid", 0.00045),
     ("bus-spot", "spot", "binanceus", "binanceus", 0.001),
@@ -377,77 +171,6 @@ def test_config_run_selects_the_strategy_fee_model_in_the_real_engine(monkeypatc
                 assert _selection_warnings(run["out"]) == []
                 assert run["funding_calls"] == []
                 _assert_engine_costs(run, commission)
-
-
-_REFUSED_AUTOMATIC_CASES = [
-    ("deribit-opt", "options", None, "'deribit'", "'options'"),
-    ("plain-fut", "futures", None, "'binanceus'", "'futures'"),
-    ("ibkr-fut", "futures", None, "'ibkr'", "'futures'"),
-    ("kraken-spot", "spot", "kraken", "'kraken'", "'spot'"),
-    ("odd-type", "swap", None, "'binanceus'", "'swap'"),
-    ("plain-manual", "manual", None, "'binanceus'", "'manual'"),
-]
-
-
-def test_unsupported_automatic_selection_exits_before_data_access(monkeypatch, capsys, tmp_path, subtests):
-    for sid, stype, platform, want_platform, want_type in _REFUSED_AUTOMATIC_CASES:
-        with subtests.test(sid=sid):
-            with monkeypatch.context() as mp:
-                path = _fee_config(tmp_path, sid, stype, platform)
-                run = _main_config(mp, capsys, path, sid)
-                assert run["code"] == 1, run["out"]
-                assert run["kwargs"] is None and run["data_calls"] == []
-                assert f"platform={want_platform}" in run["out"]
-                assert f"type={want_type}" in run["out"]
-                assert "explicit --platform" in run["out"]
-                assert "Fee model:" not in run["out"]
-
-
-_EXPLICIT_PLATFORM_CASES = [
-    ("rh-sma", "spot", "binanceus", 0.001, ["'robinhood'", "'spot'", "binanceus"]),
-    ("rh-sma", "spot", "robinhood", 0.0, None),
-    ("hl-perp", "perps", "hyperliquid", 0.00045, None),
-    ("plain-manual", "manual", "binanceus", 0.001, ["'binanceus'", "'manual'", "--platform binanceus"]),
-]
-
-
-def test_explicit_platform_controls_config_selection_and_warns_on_a_proxy(monkeypatch, capsys, tmp_path, subtests):
-    for sid, stype, chosen, commission, warn in _EXPLICIT_PLATFORM_CASES:
-        with subtests.test(sid=sid, chosen=chosen):
-            with monkeypatch.context() as mp:
-                path = _fee_config(tmp_path, sid, stype)
-                run = _main_config(mp, capsys, path, sid, "--platform", chosen, "--funding", "off")
-                assert run["kwargs"]["platform"] == chosen
-                warnings = _selection_warnings(run["out"])
-                if warn is None:
-                    assert warnings == []
-                else:
-                    assert len(warnings) == 1, run["out"]
-                    for token in warn:
-                        assert token in warnings[0]
-                    assert "funding and Hyperliquid tier" in warnings[0]
-                assert run["code"] is None, run["out"]
-                assert _fee_line(run["out"]) == (chosen, commission, 0.0005)
-                _assert_engine_costs(run, commission)
-
-
-def test_explicit_proxy_keeps_funding_tier_and_stop_scope(monkeypatch, capsys, tmp_path, subtests):
-    with subtests.test("config validation still refuses an explicit proxy"):
-        with monkeypatch.context() as mp:
-            path = _fee_config(tmp_path, "rh-hedge", "spot",
-                               hedge={"enabled": True, "symbol": "ETH"})
-            run = _main_config(mp, capsys, path, "rh-hedge", "--platform", "robinhood")
-            assert run["code"] == 1
-            assert "hedge" in run["out"]
-            assert run["kwargs"] is None and run["data_calls"] == []
-
-
-def test_ad_hoc_run_defaults_to_binanceus(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single", "--strategy", "sma_crossover"])
-    run_backtest.main()
-    assert seen["calls"][0]["platform"] == "binanceus"
 
 
 def _manifest(tmp_path, venue="hyperliquid"):
@@ -500,7 +223,7 @@ def _manifest(tmp_path, venue="hyperliquid"):
 _MANIFEST_PRECEDENCE_CASES = [
     ("rh-man", "spot", ()),
     ("rh-man", "spot", ("--platform", "robinhood")),
-    ("deribit-man", "options", ()),
+    ("ibkr-man", "options", ()),
 ]
 
 

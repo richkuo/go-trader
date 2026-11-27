@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/profile-harness.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
-GO_TRADER_PROFILE_HARNESS_OUT="$OUT" go -C "$ROOT/scheduler" test -run '^TestVolumeProfileObservationPipeline$' -count=1 .
+GO_TRADER_PROFILE_HARNESS_OUT="$OUT" go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^TestVolumeProfileObservationPipeline$' -count=1 .
 
 for f in harness.json recording/run.manifest.json; do
     if [[ ! -s "$OUT/$f" ]]; then

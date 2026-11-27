@@ -15,18 +15,20 @@ import (
 )
 
 const (
-	feedWireVersion           = 1
-	feedSealVersionBase       = 1
-	feedSealVersion           = 2
-	feedSealVersionAccounting = 3
-	feedSealVersionTrades     = 4
-	feedSealVersionMacro      = 5
-	feedSealVersionProfile    = 6
-	feedSealVersionBooks      = 7
-	feedSealVersionPremium    = 8
-	feedWireMaxRequestBytes   = 4 << 10
-	feedWireMaxHeaderBytes    = 1 << 20
-	feedSealMaxBytes          = 64 << 20
+	feedWireVersion            = 1
+	feedSealVersionBase        = 1
+	feedSealVersion            = 2
+	feedSealVersionAccounting  = 3
+	feedSealVersionTrades      = 4
+	feedSealVersionMacro       = 5
+	feedSealVersionProfile     = 6
+	feedSealVersionBooks       = 7
+	feedSealVersionPremium     = 8
+	feedSealVersionClosedReuse = 9
+	feedSealVersionFunding     = 10
+	feedWireMaxRequestBytes    = 4 << 10
+	feedWireMaxHeaderBytes     = 1 << 20
+	feedSealMaxBytes           = 64 << 20
 
 	feedWireOpDescribe = "describe"
 	feedWireOpSnapshot = "snapshot"
@@ -73,10 +75,53 @@ type feedDescribeKey struct {
 	Required  int    `json:"required"`
 }
 
+type feedDescribeFundingReader struct {
+	Host      string `json:"host"`
+	Namespace string `json:"namespace"`
+	Symbol    string `json:"symbol"`
+	Timeframe string `json:"timeframe"`
+	Rows      int    `json:"rows"`
+}
+
 type feedDescribeFunding struct {
 	Coin    string `json:"coin"`
 	Scalar  bool   `json:"scalar"`
 	Records bool   `json:"records"`
+
+	RecordsContract int                         `json:"records_contract,omitempty"`
+	Readers         []feedDescribeFundingReader `json:"readers,omitempty"`
+}
+
+func (f feedDescribeFunding) need() feedFundingNeed {
+	need := feedFundingNeed{Scalar: f.Scalar, Records: f.Records}
+	for _, r := range f.Readers {
+		need = need.withReader(marketFeedKey{Host: r.Host, Namespace: r.Namespace, Symbol: r.Symbol, Timeframe: r.Timeframe}, r.Rows)
+	}
+	return need
+}
+
+func describeFunding(coin string, need feedFundingNeed) feedDescribeFunding {
+	out := feedDescribeFunding{Coin: coin, Scalar: need.Scalar, Records: need.Records}
+	if !need.Records {
+		return out
+	}
+	out.RecordsContract = feedFundingRecordsContract
+	for _, r := range need.Readers {
+		out.Readers = append(out.Readers, feedDescribeFundingReader{Host: r.Key.Host, Namespace: r.Key.Namespace, Symbol: r.Key.Symbol, Timeframe: r.Key.Timeframe, Rows: r.Rows})
+	}
+	return out
+}
+
+func describeHasFundingContract(d *feedDescribe) bool {
+	if d == nil {
+		return false
+	}
+	for _, f := range d.Funding {
+		if f.RecordsContract != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type feedDescribeObservation struct {
@@ -145,13 +190,14 @@ type feedSealReadiness struct {
 }
 
 type feedSealKey struct {
-	Host       string            `json:"host"`
-	Namespace  string            `json:"namespace"`
-	Symbol     string            `json:"symbol"`
-	Timeframe  string            `json:"timeframe"`
-	IntervalMs int64             `json:"interval_ms"`
-	Readiness  feedSealReadiness `json:"readiness"`
-	Bars       []feedSealBar     `json:"bars"`
+	Host              string            `json:"host"`
+	Namespace         string            `json:"namespace"`
+	Symbol            string            `json:"symbol"`
+	Timeframe         string            `json:"timeframe"`
+	IntervalMs        int64             `json:"interval_ms"`
+	Readiness         feedSealReadiness `json:"readiness"`
+	Bars              []feedSealBar     `json:"bars"`
+	FormingBarOmitted bool              `json:"forming_bar_omitted,omitempty"`
 }
 
 type feedSealMid struct {
@@ -171,6 +217,65 @@ type feedSealFunding struct {
 	FetchedAtMs int64               `json:"fetched_at_ms"`
 	Source      string              `json:"source"`
 	Error       string              `json:"error"`
+
+	RecordsContract    int    `json:"records_contract,omitempty"`
+	RecordsFromMs      int64  `json:"records_from_ms,omitempty"`
+	RecordsToMs        int64  `json:"records_to_ms,omitempty"`
+	RecordsThroughMs   int64  `json:"records_through_ms,omitempty"`
+	RecordsFetchedAtMs int64  `json:"records_fetched_at_ms,omitempty"`
+	RecordsError       string `json:"records_error,omitempty"`
+	ScalarError        string `json:"scalar_error,omitempty"`
+	ScalarFetchedAtMs  int64  `json:"scalar_fetched_at_ms,omitempty"`
+}
+
+func (f feedSealFunding) contractFieldsEmpty() bool {
+	return f.RecordsFromMs == 0 && f.RecordsToMs == 0 && f.RecordsThroughMs == 0 && f.RecordsFetchedAtMs == 0 &&
+		f.RecordsError == "" && f.ScalarError == "" && f.ScalarFetchedAtMs == 0
+}
+
+func validateFeedSealFunding(f feedSealFunding) error {
+	if math.IsNaN(f.Current) || math.IsInf(f.Current, 0) || math.IsNaN(f.Avg7d) || math.IsInf(f.Avg7d, 0) {
+		return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
+	}
+	switch f.RecordsContract {
+	case 0:
+		if !f.contractFieldsEmpty() {
+			return fmt.Errorf("seal funding %s carries record coverage fields with no contract", f.Coin)
+		}
+		return nil
+	case feedFundingRecordsContract:
+	default:
+		return fmt.Errorf("seal funding %s declares record contract %d, want %d", f.Coin, f.RecordsContract, feedFundingRecordsContract)
+	}
+	if f.Error != "" {
+		return fmt.Errorf("seal funding %s carries a joined error beside its record contract", f.Coin)
+	}
+	if !f.HasRecords {
+		if len(f.Records) > 0 || f.RecordsFromMs != 0 || f.RecordsToMs != 0 || f.RecordsThroughMs != 0 {
+			return fmt.Errorf("seal funding %s carries coverage with no usable records", f.Coin)
+		}
+		if f.RecordsError == "" {
+			return fmt.Errorf("seal funding %s has no records and no reason", f.Coin)
+		}
+		return nil
+	}
+	if f.RecordsError != "" || f.RecordsFromMs <= 0 || f.RecordsToMs < f.RecordsFromMs || f.RecordsThroughMs < f.RecordsToMs || f.RecordsFetchedAtMs <= 0 {
+		return fmt.Errorf("seal funding %s coverage [%d, %d] through %d fetched at %d is malformed", f.Coin, f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs, f.RecordsFetchedAtMs)
+	}
+	last := f.RecordsFromMs - 1
+	for i, r := range f.Records {
+		if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
+			return fmt.Errorf("seal funding %s record %d carries a non-finite rate", f.Coin, i)
+		}
+		if r.TimeMs <= last || r.TimeMs > f.RecordsToMs {
+			return fmt.Errorf("seal funding %s record %d time %d is out of order or outside [%d, %d]", f.Coin, i, r.TimeMs, f.RecordsFromMs, f.RecordsToMs)
+		}
+		last = r.TimeMs
+	}
+	if f.RecordsThroughMs != feedFundingThrough(f.Records, f.RecordsToMs) {
+		return fmt.Errorf("seal funding %s claims coverage through %d, its records and read end prove %d", f.Coin, f.RecordsThroughMs, feedFundingThrough(f.Records, f.RecordsToMs))
+	}
+	return nil
 }
 
 type feedSealObservationSample struct {
@@ -337,7 +442,14 @@ func feedSealVersionFor(hasObservations, hasAccounting, hasTrades, hasMacro, has
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium || v == feedSealVersionClosedReuse || v == feedSealVersionFunding
+}
+
+func feedCoverageSealVersion(base int, fundingRecords bool) int {
+	if fundingRecords {
+		return feedSealVersionFunding
+	}
+	return base
 }
 
 func (doc *feedSealDoc) hasMacro() bool {
@@ -395,11 +507,12 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		}
 		r := entry.Readiness
 		sk := feedSealKey{
-			Host:       k.Host,
-			Namespace:  k.Namespace,
-			Symbol:     k.Symbol,
-			Timeframe:  k.Timeframe,
-			IntervalMs: entry.IntervalMs,
+			Host:              k.Host,
+			Namespace:         k.Namespace,
+			Symbol:            k.Symbol,
+			Timeframe:         k.Timeframe,
+			IntervalMs:        entry.IntervalMs,
+			FormingBarOmitted: entry.FormingBarOmitted,
 			Readiness: feedSealReadiness{
 				Status:        string(r.Status),
 				Detail:        r.Detail,
@@ -458,7 +571,21 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 			FetchedAtMs: feedTimeMs(f.FetchedAt),
 			Source:      f.Source,
 			Error:       f.Err,
+
+			RecordsContract: f.RecordsContract,
 		})
+		if f.RecordsContract != 0 {
+			sf := &doc.Funding[len(doc.Funding)-1]
+			sf.Error = ""
+			sf.RecordsFromMs, sf.RecordsToMs, sf.RecordsThroughMs = f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs
+			sf.RecordsError, sf.ScalarError = f.RecordsErr, f.ScalarErr
+			if f.HasRecords {
+				sf.RecordsFetchedAtMs = feedTimeMs(f.RecordsFetchedAt)
+			}
+			if f.HasScalar {
+				sf.ScalarFetchedAtMs = feedTimeMs(f.ScalarFetchedAt)
+			}
+		}
 	}
 	obsKeys := make([]feedObservationKey, 0, len(snap.observations))
 	for k := range snap.observations {
@@ -498,8 +625,22 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 	doc.VolumeProfiles = sealVolumeProfiles(snap.profiles)
 	doc.L2Books = sealL2Books(snap.books)
 	doc.Premiums = sealPremiums(snap.premiums)
-	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0)
+	doc.V = doc.contentVersion()
 	return doc, nil
+}
+
+func (doc *feedSealDoc) contentVersion() int {
+	for _, f := range doc.Funding {
+		if f.RecordsContract != 0 {
+			return feedSealVersionFunding
+		}
+	}
+	for _, key := range doc.Keys {
+		if key.FormingBarOmitted {
+			return feedSealVersionClosedReuse
+		}
+	}
+	return feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0)
 }
 
 func sealTradeFlows(flows map[feedObservationKey]*marketSnapshotTradeFlow) []feedSealTradeFlow {
@@ -702,10 +843,10 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionPremium)
+		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionFunding)
 	}
-	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0); doc.V != want {
-		return nil, fmt.Errorf("seal version %d carries %d observations, %d accounting funding entries, %d trade flows, %d macro inputs, %d volume profiles, %d l2 books and %d premium records; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), len(doc.TradeFlows), len(doc.MacroCalendars)+len(doc.MacroQuotes), len(doc.VolumeProfiles), len(doc.L2Books), len(doc.Premiums), want)
+	if want := doc.contentVersion(); doc.V != want {
+		return nil, fmt.Errorf("seal version %d does not match the content version %d", doc.V, want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
@@ -759,8 +900,8 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 		if i > 0 && doc.Funding[i-1].Coin >= f.Coin {
 			return fmt.Errorf("seal funding is not strictly ordered at %s", f.Coin)
 		}
-		if math.IsNaN(f.Current) || math.IsInf(f.Current, 0) || math.IsNaN(f.Avg7d) || math.IsInf(f.Avg7d, 0) {
-			return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
+		if err := validateFeedSealFunding(f); err != nil {
+			return err
 		}
 	}
 	if err := validateFeedSealObservations(doc.Observations); err != nil {
@@ -872,33 +1013,8 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 		snap.observations[key] = entry
 	}
 	for _, k := range doc.Keys {
-		key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}
-		bars := make([]feedBar, 0, len(k.Bars))
-		for _, b := range k.Bars {
-			bars = append(bars, feedBar{OpenMs: b.OpenMs, CloseMs: b.CloseMs, HasClose: b.HasClose, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume})
-		}
-		r := k.Readiness
-		snap.keys[key] = &marketSnapshotKey{
-			Key:        key,
-			IntervalMs: k.IntervalMs,
-			Bars:       bars,
-			Readiness: feedKeyReadiness{
-				Key:           key,
-				Bars:          r.Bars,
-				Required:      r.Required,
-				Ready:         r.Ready,
-				Stale:         r.Stale,
-				StaleReason:   r.StaleReason,
-				CoverageShort: r.CoverageShort,
-				Status:        feedKeyStatus(r.Status),
-				Detail:        r.Detail,
-				FirstOpenMs:   r.FirstOpenMs,
-				LastOpenMs:    r.LastOpenMs,
-				LastCloseMs:   r.LastCloseMs,
-				LastRecvAt:    feedMsTime(r.LastRecvAtMs),
-				Source:        r.Source,
-			},
-		}
+		key, entry := k.snapshotKey()
+		snap.keys[key] = entry
 	}
 	for _, m := range doc.Mids {
 		snap.mids[m.Coin] = feedMid{Px: m.Px, RecvAt: feedMsTime(m.RecvAtMs), Source: m.Source}
@@ -919,9 +1035,49 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 			FetchedAt:  feedMsTime(f.FetchedAtMs),
 			Source:     f.Source,
 			Err:        f.Error,
+
+			ScalarErr:        f.ScalarError,
+			RecordsErr:       f.RecordsError,
+			ScalarFetchedAt:  feedMsTime(f.ScalarFetchedAtMs),
+			RecordsFetchedAt: feedMsTime(f.RecordsFetchedAtMs),
+			RecordsContract:  f.RecordsContract,
+			RecordsFromMs:    f.RecordsFromMs,
+			RecordsToMs:      f.RecordsToMs,
+			RecordsThroughMs: f.RecordsThroughMs,
 		}
 	}
 	return snap
+}
+
+func (k feedSealKey) snapshotKey() (marketFeedKey, *marketSnapshotKey) {
+	key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}
+	bars := make([]feedBar, 0, len(k.Bars))
+	for _, b := range k.Bars {
+		bars = append(bars, feedBar{OpenMs: b.OpenMs, CloseMs: b.CloseMs, HasClose: b.HasClose, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume})
+	}
+	r := k.Readiness
+	return key, &marketSnapshotKey{
+		Key:               key,
+		IntervalMs:        k.IntervalMs,
+		FormingBarOmitted: k.FormingBarOmitted,
+		Bars:              bars,
+		Readiness: feedKeyReadiness{
+			Key:           key,
+			Bars:          r.Bars,
+			Required:      r.Required,
+			Ready:         r.Ready,
+			Stale:         r.Stale,
+			StaleReason:   r.StaleReason,
+			CoverageShort: r.CoverageShort,
+			Status:        feedKeyStatus(r.Status),
+			Detail:        r.Detail,
+			FirstOpenMs:   r.FirstOpenMs,
+			LastOpenMs:    r.LastOpenMs,
+			LastCloseMs:   r.LastCloseMs,
+			LastRecvAt:    feedMsTime(r.LastRecvAtMs),
+			Source:        r.Source,
+		},
+	}
 }
 
 func writeFeedFrame(w io.Writer, payload []byte) error {

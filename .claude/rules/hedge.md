@@ -1,0 +1,42 @@
+---
+paths:
+  - "scheduler/hedge*.go"
+  - "scheduler/config.go"
+  - "scheduler/config_reload.go"
+  - "scheduler/config_unknown_keys.go"
+  - "scheduler/db.go"
+  - "scheduler/discord_commands.go"
+  - "scheduler/hl_perps_step.go"
+  - "scheduler/hl_write_auth.go"
+  - "scheduler/hyperliquid_balance.go"
+  - "scheduler/hyperliquid_fills.go"
+  - "scheduler/hyperliquid_liquidation_guard.go"
+  - "scheduler/hyperliquid_own_share.go"
+  - "scheduler/hyperliquid_paper_funding_eligibility.go"
+  - "scheduler/hyperliquid_share_resize.go"
+  - "scheduler/hyperliquid_step_trade_alerts.go"
+  - "scheduler/inspect_cmd.go"
+  - "scheduler/kill_switch_close.go"
+  - "scheduler/main.go"
+  - "scheduler/manual.go"
+  - "scheduler/manual_core.go"
+  - "scheduler/manual_protection.go"
+  - "scheduler/model_only_reconcile.go"
+  - "scheduler/paper_close.go"
+  - "scheduler/portfolio.go"
+  - "scheduler/quote_config.go"
+  - "scheduler/regime_side.go"
+  - "scheduler/risk.go"
+  - "scheduler/server.go"
+  - "scheduler/shared_wallet_reconcile.go"
+  - "scheduler/state.go"
+  - "scheduler/state_store.go"
+  - "scheduler/trade_diagnostics.go"
+  - "scheduler/trade_protection_snapshot.go"
+  - "scheduler/trade_review.go"
+---
+
+## Hedge
+
+- `hyperliquidPublicTradeAlertRow`:hedge-leg rows private.
+- `hedge.go`:HL perps only;ONE reconciler(`hedgeTargetDecision`+`runHedgeSync`);ownership ONLY `Position.HedgeFor`;PnL via `RecordHedgeTradeResult`,never `RecordTradeResult`;fail-closed unwind+CRITICAL DM.

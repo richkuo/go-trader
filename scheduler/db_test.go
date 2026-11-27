@@ -16,7 +16,7 @@ import (
 func openTestDB(t *testing.T) *StateDB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
-	db, err := OpenStateDB(path)
+	db, err := openStateDBFromTemplate(path)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
@@ -81,7 +81,11 @@ func resetInitialCapitalGuardDedup(t *testing.T) {
 
 func TestOpenStateDB(t *testing.T) {
 	t.Run("OpenStateDB", func(t *testing.T) {
-		db := openTestDB(t)
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
 
 		var mode string
 		if err := db.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -493,7 +497,7 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 			CycleCount: 1,
 			Strategies: map[string]*StrategyState{
 				"s1": {
-					ID: "s1", Type: "options", Platform: "deribit",
+					ID: "s1", Type: "options", Platform: "ibkr",
 					Cash: 1000, InitialCapital: 1000,
 					Positions: map[string]*Position{
 						"BTC": {Symbol: "BTC", TradePositionID: "spot-position-1", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now},
@@ -1578,7 +1582,7 @@ func TestClosedPositionPersistence(t *testing.T) {
 			CycleCount: 1,
 			Strategies: map[string]*StrategyState{
 				"test": {
-					ID: "test", Type: "options", Cash: 1000, InitialCapital: 1000,
+					ID: "test", Type: "options", Platform: "ibkr", Cash: 1000, InitialCapital: 1000,
 					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
 					ClosedOptionPositions: []ClosedOptionPosition{
 						{
@@ -1636,7 +1640,7 @@ func TestClosedPositionPersistence(t *testing.T) {
 			OpenedAt: openedAt,
 		}
 		s := &StrategyState{
-			ID: "test", Type: "options", Platform: "deribit",
+			ID: "test", Type: "options", Platform: "ibkr",
 			Cash:            0,
 			Positions:       map[string]*Position{},
 			OptionPositions: map[string]*OptionPosition{pos.ID: pos},
@@ -1644,7 +1648,7 @@ func TestClosedPositionPersistence(t *testing.T) {
 		lm, _ := NewLogManager("")
 		logger, _ := lm.GetStrategyLogger("test")
 		result := &OptionsResult{
-			Underlying: "BTC", SpotPrice: 60000, Signal: -1, Platform: "deribit", PremiumUnit: optionPremiumUnitUnderlying,
+			Underlying: "BTC", SpotPrice: 60000, Signal: -1, Platform: "ibkr", PremiumUnit: optionPremiumUnitUnderlying,
 			Actions: []OptionsAction{{Action: "close", OptionType: "call", Strike: 55000, PremiumUSD: 2500}},
 		}
 		if _, err := ExecuteOptionsSignal(s, result, logger); err != nil {
@@ -2290,7 +2294,7 @@ func TestLifetimeTradeStatsAll(t *testing.T) {
 		s := &StrategyState{
 			ID:              "options",
 			Type:            "options",
-			Platform:        "deribit",
+			Platform:        "ibkr",
 			Cash:            100000,
 			InitialCapital:  100000,
 			Positions:       map[string]*Position{},
@@ -2300,7 +2304,7 @@ func TestLifetimeTradeStatsAll(t *testing.T) {
 		openResult := &OptionsResult{
 			Signal:            1,
 			Underlying:        "BTC",
-			Platform:          "deribit",
+			Platform:          "ibkr",
 			PremiumUnit:       optionPremiumUnitUnderlying,
 			StructureContract: optionsStructureContractV1,
 			SpotPrice:         60000,
@@ -2319,7 +2323,7 @@ func TestLifetimeTradeStatsAll(t *testing.T) {
 		closeResult := &OptionsResult{
 			Signal:      -1,
 			Underlying:  "BTC",
-			Platform:    "deribit",
+			Platform:    "ibkr",
 			PremiumUnit: optionPremiumUnitUnderlying,
 			SpotPrice:   60000,
 			Actions: []OptionsAction{{

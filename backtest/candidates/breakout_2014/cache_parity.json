@@ -1,0 +1,45 @@
+{
+  "dataset": "BTC/USDT 1h",
+  "engine_sha256": {
+    "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+    "backtest/eval_windows.py": "bd0e3f08a99aebe00eba1f7668b43575f6d1c340c624eaeb0aee4a553832289c",
+    "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+    "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+    "backtest/run_backtest.py": "955cb623b87ddac5bdcf0503582b8117432befdffd1bb4dc53cf34b13a25adcd",
+    "backtest/tune_live.py": "36a722b6bbfa1629a7157827cd9ecc1221dedc0af62c745f2e5e01333c7666c9",
+    "shared_strategies/close/trailing_tp_ratchet.py": "1d79b5d415c67d4b3075a01ae5e367dffbc4deced9386e323a0f5f018073788d",
+    "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+    "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+    "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae"
+  },
+  "identical": true,
+  "range": [
+    "2025-06-10",
+    "2026-01-01"
+  ],
+  "rows": {
+    "control": {
+      "identical": true,
+      "seconds": {
+        "cached": 0.8,
+        "uncached": 2247.4
+      },
+      "sha256_cached": "51435365aecba145159fbd6845326c492103693d959ff82d62b758977aee0d7d",
+      "sha256_uncached": "51435365aecba145159fbd6845326c492103693d959ff82d62b758977aee0d7d",
+      "trades": 96
+    },
+    "gate_p21": {
+      "identical": true,
+      "seconds": {
+        "cached": 2.0,
+        "uncached": 1766.4
+      },
+      "sha256_cached": "8c39fe131efbb684844da29929785cec3f918f1fcb01bf075770e4cbd9ec8a4d",
+      "sha256_uncached": "8c39fe131efbb684844da29929785cec3f918f1fcb01bf075770e4cbd9ec8a4d",
+      "trades": 14
+    }
+  },
+  "source_commit": "2e964cd44c960ee80bec897daad8f7b1052f0cc4",
+  "warmup_bars": 3011,
+  "window": "is"
+}

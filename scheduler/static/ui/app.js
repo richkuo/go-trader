@@ -106,6 +106,91 @@
     return msg;
   }
 
+  function blockedStorage() {
+    return {
+      read: function () { return { ok: false }; },
+      write: function () { return { ok: false }; },
+      remove: function () { return { ok: false }; },
+    };
+  }
+
+  function createTokenState(storage, key) {
+    let override = null;
+    let lastSubmitted = null;
+    let generation = 0;
+    return {
+      current: function () {
+        if (override !== null) return override;
+        const read = storage.read(key);
+        if (read.ok) return read.value === null ? "" : read.value;
+        return lastSubmitted === null ? "" : lastSubmitted;
+      },
+      generation: function () {
+        return generation;
+      },
+      submit: function (raw) {
+        const value = String(raw === undefined || raw === null ? "" : raw).trim();
+        generation += 1;
+        lastSubmitted = value;
+        const change = value ? storage.write(key, value) : storage.remove(key);
+        const check = change.ok ? storage.read(key) : { ok: false };
+        const persisted = change.ok && check.ok && (value ? check.value === value : check.value === null);
+        override = persisted ? null : value;
+        return { persisted: persisted, generation: generation };
+      },
+    };
+  }
+
+  function positiveFinite(value) {
+    return typeof value === "number" && isFinite(value) && value > 0;
+  }
+
+  function recognizedPartition(partition) {
+    return partition === "live" || partition === "paper" || /^paper:\S+$/.test(typeof partition === "string" ? partition : "");
+  }
+
+  function bookPositionLines(strategy, status, candles) {
+    function none(reason) {
+      return { lines: [], reason: reason };
+    }
+    if (!strategy || !status || !candles) return none("missing_input");
+    if (!recognizedPartition(strategy.partition)) return none("unknown_partition");
+    if (status.id !== strategy.id || candles.strategy_id !== strategy.id) return none("strategy_mismatch");
+    let source = typeof candles.source === "string" ? candles.source : "";
+    if (source.endsWith(":cached")) source = source.slice(0, -":cached".length);
+    if (!source || source === "trades") return none("ambiguous_candles");
+    const symbol = typeof status.symbol === "string" ? status.symbol : "";
+    if (!symbol || symbol !== strategy.symbol) return none("symbol_mismatch");
+    const positions = status.positions && typeof status.positions === "object" && !Array.isArray(status.positions)
+      ? status.positions
+      : {};
+    const matches = Object.keys(positions).filter(function (key) {
+      const pos = positions[key];
+      return !!pos && typeof pos === "object" && (key === symbol || pos.symbol === symbol);
+    });
+    if (matches.some(function (key) { return !!positions[key].hedge_for; })) return none("hedge_row");
+    if (matches.length === 0) return none("flat");
+    if (matches.length !== 1) return none("ambiguous_position");
+    const pos = positions[matches[0]];
+    if (matches[0] !== symbol || (pos.symbol !== undefined && pos.symbol !== symbol)) return none("ambiguous_position");
+    if (!positiveFinite(pos.quantity)) return none("flat");
+    if (typeof pos.position_id !== "string" || pos.position_id === "") return none("no_position_id");
+    const lines = [];
+    if (positiveFinite(pos.avg_cost)) {
+      lines.push({ price: pos.avg_cost, color: "#2563eb", title: "Book entry", style: "dashed" });
+    }
+    const stopOrderKnown = Number.isInteger(pos.stop_loss_oid) && pos.stop_loss_oid > 0;
+    if (positiveFinite(pos.stop_loss_trigger_px) && (strategy.partition !== "live" || stopOrderKnown)) {
+      lines.push({ price: pos.stop_loss_trigger_px, color: "#c23b3b", title: "Book-tracked stop", style: "dashed" });
+    }
+    return { lines: lines, reason: "" };
+  }
+
+  function bearerHeaders(token) {
+    if (!token || !/^[\t\x20-\x7e\x80-\xff]+$/.test(token)) return {};
+    return { Authorization: "Bearer " + token };
+  }
+
   const tuningLogic = {
     baselineState: tuningBaselineState,
     paramDiff: tuningParamDiff,
@@ -113,6 +198,10 @@
     detailLoadAction: tuningDetailLoadAction,
     applyButtonState: tuningApplyButtonState,
     applyConfirmMessage: tuningApplyConfirmMessage,
+    blockedStorage: blockedStorage,
+    bookPositionLines: bookPositionLines,
+    createTokenState: createTokenState,
+    bearerHeaders: bearerHeaders,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
   if (typeof document === "undefined") return;
@@ -120,6 +209,19 @@
   const SIDEBAR_STORAGE_KEY = "goTraderSidebarOpen";
   const MOBILE_SIDEBAR_MQ = "(max-width: 980px)";
   const VIEW_MODE_KEY = "goTraderViewMode";
+  const STATUS_TOKEN_KEY = "goTraderStatusToken";
+  const AUTH_CHECKING_TEXT = "Checking the token…";
+  const AUTH_CHECK_FAILED_TEXT = "The token check did not finish. Try again.";
+  const storageLib = window.GoTraderStorage && typeof window.GoTraderStorage.createGuardedStorage === "function"
+    ? window.GoTraderStorage
+    : null;
+  const guardedStorage = storageLib
+    ? storageLib.createGuardedStorage(function () { return window.localStorage; })
+    : blockedStorage();
+  const chartPreferences = storageLib && typeof storageLib.createPreferenceAccessor === "function"
+    ? storageLib.createPreferenceAccessor(guardedStorage, storageLib.CHART_PREFERENCES_KEY)
+    : null;
+  const statusToken = createTokenState(guardedStorage, STATUS_TOKEN_KEY);
 
   if (document.body.dataset.page === "tuning") {
     initTuningPage();
@@ -137,9 +239,28 @@
     partitions: [],
     sortDir: "asc",
     chart: null,
-    series: null,
     timer: 0,
     sparklines: {},
+    selectionEpoch: 0,
+    lanes: {
+      candles: { issued: 0, accepted: 0 },
+      older: { issued: 0, accepted: 0 },
+      trades: { issued: 0, accepted: 0 },
+      config: { issued: 0, accepted: 0 },
+      apply: { issued: 0, accepted: 0 },
+      pause: { issued: 0, accepted: 0 },
+      notify: { issued: 0, accepted: 0 },
+      status: { issued: 0, accepted: 0 },
+      feedback: { issued: 0, accepted: 0 },
+    },
+    chartData: null,
+    statusData: null,
+    chartSeries: null,
+    chartEpoch: 0,
+    chartTimeframe: "",
+    chartOlder: { inFlight: false, timer: 0 },
+    chartBackoff: { until: 0, attempt: 0 },
+    tradeHistory: null,
     tuner: {
       config: null,
       overrides: {},
@@ -150,7 +271,14 @@
       previewActive: false,
       simulateTimer: 0,
       loading: false,
+      previewSeq: 0,
+      previewFor: "",
+      pendingApply: null,
+      applyTicket: null,
+      notice: "",
+      ratchet: { confirmed: "inherit", held: null, ticket: null },
     },
+    lateResults: [],
   };
 
   const SPARKLINE_LIMIT = 40;
@@ -169,7 +297,13 @@
     subtitle: document.getElementById("active-subtitle"),
     chart: document.getElementById("chart"),
     empty: document.getElementById("empty-chart"),
+    chartFailure: document.getElementById("chart-failure"),
+    chartTimeframe: document.getElementById("chart-timeframe"),
+    chartSource: document.getElementById("chart-source"),
+    chartNote: document.getElementById("chart-note"),
     chartWrap: document.querySelector(".chart-wrap"),
+    chartFrame: document.getElementById("chart-frame"),
+    chartToolbar: document.getElementById("chart-toolbar"),
     tradeHistoryBody: document.getElementById("trade-history-body"),
     tradeHistoryEmpty: document.getElementById("trade-history-empty"),
     tradeHistoryTable: document.querySelector(".trade-history-table"),
@@ -183,6 +317,10 @@
     statusLabel: document.getElementById("status-label"),
     authPanel: document.getElementById("auth-panel"),
     authToken: document.getElementById("auth-token"),
+    authMessage: document.getElementById("auth-message"),
+    dashboardMessage: document.getElementById("dashboard-message"),
+    dashboardMessageList: document.getElementById("dashboard-message-list"),
+    dashboardMessageDismiss: document.getElementById("dashboard-message-dismiss"),
     statusGrid: document.getElementById("status-grid"),
     positions: document.getElementById("positions-list"),
     sidebar: document.getElementById("app-sidebar"),
@@ -344,11 +482,15 @@
   }
 
   function authHeaders() {
-    const token = window.localStorage.getItem("goTraderStatusToken");
-    return token ? { Authorization: "Bearer " + token } : {};
+    return bearerHeaders(statusToken.current());
+  }
+
+  function tokenStampCurrent(err) {
+    return !err || err.tokenGeneration === undefined || err.tokenGeneration === statusToken.generation();
   }
 
   async function postJSON(url, body) {
+    const generation = statusToken.generation();
     const res = await fetch(url, {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
@@ -358,17 +500,20 @@
       const text = await res.text();
       const err = new Error(text || res.statusText);
       err.status = res.status;
+      err.tokenGeneration = generation;
       throw err;
     }
     return res.json();
   }
 
   async function getJSON(url) {
+    const generation = statusToken.generation();
     const res = await fetch(url, { headers: authHeaders() });
     if (!res.ok) {
       const text = await res.text();
       const err = new Error(text || res.statusText);
       err.status = res.status;
+      err.tokenGeneration = generation;
       throw err;
     }
     return res.json();
@@ -383,6 +528,13 @@
       "partition=" + encodeURIComponent(state.partitionFilter);
   }
 
+  function stampErrorPartition(err, partition) {
+    if (err && typeof err === "object" && err.partition === undefined) {
+      err.partition = partition;
+    }
+    return err;
+  }
+
   // A reload can retire a source while the selector still names it. The server
   // answers 404 for a partition it does not own, and the dashboard falls back
   // to every partition rather than showing a stale view. Every 404 of a
@@ -392,19 +544,27 @@
   async function getJSONForPartition(url) {
     const requested = state.partitionFilter;
     if (requested === "all") {
-      return { data: await getJSON(url), partition: "all" };
+      try {
+        return { data: await getJSON(url), partition: "all" };
+      } catch (err) {
+        throw stampErrorPartition(err, "all");
+      }
     }
     try {
       return { data: await getJSON(withPartition(url)), partition: requested };
     } catch (err) {
-      if (err.status === 404) {
+      if (err && err.status === 404) {
         if (state.partitionFilter === requested) {
           state.partitionFilter = "all";
           renderPartitionSelect();
         }
-        return { data: await getJSON(url), partition: "all" };
+        try {
+          return { data: await getJSON(url), partition: "all" };
+        } catch (fallbackErr) {
+          throw stampErrorPartition(fallbackErr, "all");
+        }
       }
-      throw err;
+      throw stampErrorPartition(err, requested);
     }
   }
 
@@ -463,7 +623,7 @@
       return item.id === state.activeID;
     })[0];
     if (active && !partitionSelected(active.partition)) {
-      state.activeID = "";
+      setActiveStrategy("");
     }
     reloadForPartition().catch(handleRefreshError);
   }
@@ -492,6 +652,7 @@
       detailLoadingRunID: "",
       detailReloadPending: false,
       pollTimer: 0,
+      authFailures: 0,
     };
     const pageEls = {
       auth: document.getElementById("tuning-auth"),
@@ -542,16 +703,29 @@
       pageEls.launchMessage.className = "controls-message" + (kind ? " " + kind : "");
     }
 
+    function isAuthError(err) {
+      return !!err && (err.status === 401 || err.status === 403);
+    }
+
     function showAuth(err, prefix) {
-      pageEls.auth.hidden = false;
-      pageEls.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
+      if (!tokenStampCurrent(err)) return;
+      pageState.authFailures += 1;
       const detail = err ? apiErrorMessage(err) : "Authorization required";
       pageEls.authMessage.textContent = (prefix ? prefix + ": " : "") + detail;
+      if (pageEls.auth.hidden) {
+        pageEls.authToken.value = statusToken.current();
+        pageEls.auth.hidden = false;
+        pageEls.authToken.focus();
+      }
     }
 
     function handlePageError(err, prefix) {
-      if (err && (err.status === 401 || err.status === 403)) {
+      const current = tokenStampCurrent(err);
+      if (isAuthError(err)) {
+        if (!current) return;
         showAuth(err, prefix || "Authorization failed");
+      } else if (current && !pageEls.auth.hidden && pageEls.authMessage.textContent === AUTH_CHECKING_TEXT) {
+        pageEls.authMessage.textContent = AUTH_CHECK_FAILED_TEXT;
       }
       setLaunchMessage((prefix ? prefix + ": " : "") + apiErrorMessage(err), "error");
     }
@@ -1048,6 +1222,8 @@
     }
 
     async function refreshTuning(selectNewest) {
+      const generation = statusToken.generation();
+      const authFailures = pageState.authFailures;
       try {
         const strategies = await getJSON("/api/strategies");
         pageState.strategies = strategies.strategies || [];
@@ -1055,7 +1231,9 @@
         renderOverrides();
         await loadRuns(selectNewest);
         if (pageState.activeRunID) await loadRunDetail();
-        pageEls.auth.hidden = true;
+        if (generation === statusToken.generation() && authFailures === pageState.authFailures) {
+          pageEls.auth.hidden = true;
+        }
       } catch (err) {
         handlePageError(err, "Refresh failed");
       }
@@ -1079,7 +1257,11 @@
         await loadRuns(false);
         await loadRunDetail();
       } catch (err) {
-        handlePageError(err, "Launch failed");
+        if (isAuthError(err) && !tokenStampCurrent(err)) {
+          setLaunchMessage("Launch failed: the server refused the earlier token. Start the run again to use the new token.", "error");
+        } else {
+          handlePageError(err, "Launch failed");
+        }
       } finally {
         pageEls.launch.disabled = false;
       }
@@ -1087,9 +1269,8 @@
 
     pageEls.authForm.addEventListener("submit", function (event) {
       event.preventDefault();
-      const token = pageEls.authToken.value.trim();
-      if (token) window.localStorage.setItem("goTraderStatusToken", token);
-      else window.localStorage.removeItem("goTraderStatusToken");
+      statusToken.submit(pageEls.authToken.value);
+      pageEls.authMessage.textContent = AUTH_CHECKING_TEXT;
       refreshTuning(true);
     });
     pageEls.refresh.addEventListener("click", function () { refreshTuning(false); });
@@ -1100,7 +1281,7 @@
         await loadRuns(false);
         await loadRunDetail();
       } catch (err) {
-        if (err.status === 401 || err.status === 403) showAuth(err, "Polling authorization failed");
+        if (isAuthError(err)) showAuth(err, "Polling authorization failed");
       }
     }, 3000);
     window.addEventListener("pagehide", function () { window.clearInterval(pageState.pollTimer); });
@@ -1110,25 +1291,9 @@
     return document.documentElement.classList.contains("dark");
   }
 
-  function chartThemeOptions() {
-    const dark = isDarkMode();
-    return {
-      layout: {
-        background: { type: "solid", color: dark ? "#1a211c" : "#ffffff" },
-        textColor: dark ? "#c5cec8" : "#334139",
-      },
-      grid: {
-        vertLines: { color: dark ? "#2b342f" : "#eef1eb" },
-        horzLines: { color: dark ? "#2b342f" : "#eef1eb" },
-      },
-      rightPriceScale: { borderColor: dark ? "#3a4540" : "#d8ddd2" },
-      timeScale: { borderColor: dark ? "#3a4540" : "#d8ddd2", timeVisible: true },
-    };
-  }
-
   function applyChartTheme() {
     if (!state.chart) return;
-    state.chart.applyOptions(chartThemeOptions());
+    state.chart.applyTheme();
   }
 
   function updateDarkModeToggle() {
@@ -1149,12 +1314,12 @@
 
 
   function loadViewMode() {
-    const saved = window.localStorage.getItem(VIEW_MODE_KEY);
-    return saved === "table" ? "table" : "detail";
+    const saved = guardedStorage.read(VIEW_MODE_KEY);
+    return saved.ok && saved.value === "table" ? "table" : "detail";
   }
 
   function saveViewMode(mode) {
-    window.localStorage.setItem(VIEW_MODE_KEY, mode);
+    guardedStorage.write(VIEW_MODE_KEY, mode);
   }
 
   function applyViewMode() {
@@ -1168,28 +1333,128 @@
 
   function toggleViewMode() {
     state.viewMode = state.viewMode === "table" ? "detail" : "table";
-    saveViewMode(state.viewMode);
     applyViewMode();
+    saveViewMode(state.viewMode);
     refreshAll().catch(handleRefreshError);
   }
 
-  function initChart() {
-    if (state.chart) return;
-    state.chart = LightweightCharts.createChart(els.chart, Object.assign({}, chartThemeOptions(), {
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    }));
-    state.series = state.chart.addCandlestickSeries({
-      upColor: "#0f8a5f",
-      downColor: "#c23b3b",
-      borderUpColor: "#0f8a5f",
-      borderDownColor: "#c23b3b",
-      wickUpColor: "#0f8a5f",
-      wickDownColor: "#c23b3b",
+  function showChartFailure(message) {
+    els.chartFailure.textContent = "Chart unavailable: " + message;
+    els.chartFailure.hidden = false;
+    els.empty.style.display = "none";
+  }
+
+  function hideChartFailure() {
+    els.chartFailure.hidden = true;
+    els.chartFailure.textContent = "";
+  }
+
+  function ensureChart() {
+    if (state.chart) return state.chart;
+    if (!window.GoTraderChart || typeof window.GoTraderChart.create !== "function") {
+      showChartFailure("The chart script did not load. Reload the page to try again.");
+      return null;
+    }
+    const controller = window.GoTraderChart.create({
+      container: els.chart,
+      toolbar: els.chartToolbar,
+      fullscreenTarget: els.chartFrame,
+      preferences: chartPreferences,
+      exportName: function () { return state.activeID; },
+      minWidth: 320,
+      minHeight: 320,
+      isDark: isDarkMode,
+      onFailure: function (failure) {
+        showChartFailure(failure.message);
+      },
     });
-    new ResizeObserver(function () {
-      const rect = els.chart.getBoundingClientRect();
-      state.chart.resize(Math.max(320, rect.width), Math.max(320, rect.height));
-    }).observe(els.chart);
+    if (!controller.available()) {
+      controller.destroy();
+      return null;
+    }
+    controller.onNeedOlder(onChartNeedOlder);
+    state.chart = controller;
+    return controller;
+  }
+
+  function clearTradeHistoryTable() {
+    els.tradeHistoryBody.innerHTML = "";
+    delete els.tradeHistoryBody.dataset.strategyId;
+    els.tradeHistoryEmpty.hidden = true;
+    els.tradeHistoryTable.hidden = true;
+  }
+
+  function setActiveStrategy(id) {
+    state.activeID = id;
+    state.selectionEpoch += 1;
+    state.chartData = null;
+    state.statusData = null;
+    resetChartSeries("");
+    state.tradeHistory = null;
+    if (state.chart) state.chart.clear();
+    hideChartFailure();
+    els.empty.style.display = "none";
+    clearTradeHistoryTable();
+    resetStrategyDetail();
+    resetTunerState();
+  }
+
+  function resetStrategyDetail() {
+    const strategy = activeStrategy();
+    if (strategy) {
+      els.title.textContent = strategy.id;
+      els.subtitle.textContent = [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" / ");
+    } else if (state.activeID) {
+      els.title.textContent = state.activeID;
+      els.subtitle.textContent = "";
+    } else {
+      els.title.textContent = "Dashboard";
+      els.subtitle.textContent = "Select a strategy";
+    }
+    updateRegimeBadge("");
+    updateDivergenceBadge(null);
+    updatePausedBadge(false);
+    els.statusGrid.innerHTML = "";
+    els.positions.innerHTML = "";
+    if (els.tradePanel) els.tradePanel.hidden = true;
+    setTradeMessage("");
+    if (els.structuralPanel) els.structuralPanel.hidden = true;
+    setStructuralMessage("");
+    resetFeedbackPanel();
+  }
+
+  function takeTicket(lane) {
+    const entry = state.lanes[lane];
+    entry.issued += 1;
+    return { id: state.activeID, epoch: state.selectionEpoch, seq: entry.issued };
+  }
+
+  function ticketSelected(ticket) {
+    return ticket.id === state.activeID && ticket.epoch === state.selectionEpoch;
+  }
+
+  function acceptReply(lane, ticket) {
+    const entry = state.lanes[lane];
+    if (!ticketSelected(ticket) || ticket.seq <= entry.accepted) {
+      return false;
+    }
+    entry.accepted = ticket.seq;
+    return true;
+  }
+
+  function retireLane(lane) {
+    const entry = state.lanes[lane];
+    entry.accepted = entry.issued;
+  }
+
+  function previewTicketCurrent(ticket) {
+    return ticketSelected(ticket) && ticket.seq === state.tuner.previewSeq;
+  }
+
+  function invalidatePreview() {
+    state.tuner.previewSeq += 1;
+    state.tuner.previewFor = "";
+    state.tuner.loading = false;
   }
 
   function groupStrategies(strategies) {
@@ -1318,21 +1583,12 @@
 
   async function selectStrategy(id, options) {
     const opts = options || {};
-    state.activeID = id;
-    resetTunerState();
-    updateRegimeBadge("");
-    updateDivergenceBadge(null);
-    updatePausedBadge(false);
-    const strategy = activeStrategy();
-    if (strategy) {
-      els.title.textContent = strategy.id;
-      els.subtitle.textContent = [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" / ");
-    }
+    setActiveStrategy(id);
     renderStrategies();
     if (opts.switchToDetail) {
       state.viewMode = "detail";
-      saveViewMode(state.viewMode);
       applyViewMode();
+      saveViewMode(state.viewMode);
     }
     if (isMobileSidebar()) {
       setSidebarOpen(false);
@@ -1348,9 +1604,20 @@
     state.tuner.liveRefusal = "";
     state.tuner.simulatedRefusal = "";
     state.tuner.previewActive = false;
+    invalidatePreview();
     if (state.tuner.simulateTimer) {
       clearTimeout(state.tuner.simulateTimer);
       state.tuner.simulateTimer = 0;
+    }
+    state.tuner.pendingApply = null;
+    state.tuner.applyTicket = null;
+    state.tuner.notice = "";
+    state.tuner.ratchet = { confirmed: "inherit", held: null, ticket: null };
+    if (els.tunerApply) {
+      els.tunerApply.disabled = false;
+    }
+    if (els.tunerConfirmDialog && els.tunerConfirmDialog.open) {
+      els.tunerConfirmDialog.close("cancel");
     }
     updateTunerStatus();
     if (els.tunerPanel) {
@@ -1359,6 +1626,16 @@
     if (els.tunerForm) {
       els.tunerForm.innerHTML = "";
     }
+    updateControlsPanel(null);
+    setControlsMessage("");
+  }
+
+  function currentTunerConfig() {
+    const owned = state.tuner.config;
+    if (!owned || owned.strategyID !== state.activeID || owned.epoch !== state.selectionEpoch) {
+      return null;
+    }
+    return owned.resp;
   }
 
   function tunerHasOverrides() {
@@ -1367,6 +1644,11 @@
 
   function updateTunerStatus() {
     if (!els.tunerStatus) return;
+    if (state.tuner.notice) {
+      els.tunerStatus.textContent = state.tuner.notice;
+      els.tunerStatus.className = "tuner-status preview";
+      return;
+    }
     if (state.tuner.loading) {
       els.tunerStatus.textContent = "Simulating…";
       els.tunerStatus.className = "tuner-status preview";
@@ -1400,58 +1682,166 @@
     return groups;
   }
 
-  function renderTunerForm(config) {
+  const TUNER_GROUP_LABELS = {
+    runtime: "Runtime",
+    risk: "Risk",
+    open_params: "Indicator params",
+  };
+
+  function tunerFieldShape(field) {
+    return stableJSON({
+      type: String(field.type || ""),
+      options: field.type === "select" ? (field.options || []).map(String) : null,
+    });
+  }
+
+  function findTunerField(config, key) {
+    const fields = config && config.editable_fields ? config.editable_fields : [];
+    return fields.find(function (field) { return field.key === key; }) || null;
+  }
+
+  function pruneTunerDraft(previous, next) {
+    const dropped = [];
+    Object.keys(state.tuner.overrides).forEach(function (key) {
+      const before = findTunerField(previous, key);
+      const after = findTunerField(next, key);
+      if (!before || !after || tunerFieldShape(before) !== tunerFieldShape(after)) {
+        delete state.tuner.overrides[key];
+        dropped.push(key);
+      }
+    });
+    return dropped.sort();
+  }
+
+  function tunerFieldValue(field) {
+    return hasOwn(state.tuner.overrides, field.key) ? state.tuner.overrides[field.key] : field.value;
+  }
+
+  function createTunerFieldElement(field) {
+    const label = document.createElement("label");
+    label.className = "tuner-field";
+    label.dataset.key = field.key;
+    label.dataset.shape = tunerFieldShape(field);
+    label.appendChild(document.createElement("span"));
+    let control;
+    if (field.type === "boolean") {
+      control = document.createElement("input");
+      control.type = "checkbox";
+    } else if (field.type === "select") {
+      control = document.createElement("select");
+      (field.options || []).forEach(function (opt) {
+        const option = document.createElement("option");
+        option.value = String(opt);
+        option.textContent = String(opt);
+        control.appendChild(option);
+      });
+    } else {
+      control = document.createElement("input");
+      control.type = "number";
+      control.step = "any";
+    }
+    control.dataset.key = field.key;
+    label.appendChild(control);
+    return label;
+  }
+
+  function writeTunerFieldElement(label, field, keepInput) {
+    label.firstChild.textContent = field.label || field.key;
+    if (keepInput) return;
+    const control = label.lastChild;
+    const value = tunerFieldValue(field);
+    if (field.type === "boolean") {
+      control.checked = !!value;
+    } else if (field.type === "select") {
+      const match = Array.from(control.options).findIndex(function (option) {
+        return option.value === String(value);
+      });
+      control.selectedIndex = match >= 0 ? match : 0;
+    } else {
+      control.value = value === null || value === undefined ? "" : String(value);
+    }
+  }
+
+  function renderTunerForm(config, options) {
     if (!els.tunerForm || !els.tunerPanel) return;
-    if (!config || !config.editable_fields || !config.editable_fields.length) {
+    const force = !!(options && options.force);
+    const fields = config && config.editable_fields ? config.editable_fields : [];
+    if (!fields.length) {
       els.tunerPanel.hidden = true;
-      els.tunerForm.innerHTML = "";
+      els.tunerForm.replaceChildren();
       return;
     }
     els.tunerPanel.hidden = false;
-    const groups = groupEditableFields(config.editable_fields);
-    const groupLabels = {
-      runtime: "Runtime",
-      risk: "Risk",
-      open_params: "Indicator params",
-    };
-    let html = "";
+    const active = document.activeElement;
+    const focused = active && active !== els.tunerForm && els.tunerForm.contains(active)
+      ? active.closest("label.tuner-field")
+      : null;
+    const existing = {};
+    Array.from(els.tunerForm.querySelectorAll("label.tuner-field")).forEach(function (label) {
+      existing[label.dataset.key] = label;
+    });
+    const used = new Set();
+    const desired = [];
+    const groups = groupEditableFields(fields);
     ["runtime", "risk", "open_params"].forEach(function (groupKey) {
-      const fields = groups[groupKey] || [];
-      if (!fields.length) return;
-      html += '<div class="tuner-group-label">' + escapeHTML(groupLabels[groupKey] || groupKey) + "</div>";
-      fields.forEach(function (field) {
-        const value = state.tuner.overrides[field.key] !== undefined
-          ? state.tuner.overrides[field.key]
-          : field.value;
-        html += '<label class="tuner-field" data-key="' + escapeHTML(field.key) + '">';
-        html += "<span>" + escapeHTML(field.label || field.key) + "</span>";
-        if (field.type === "boolean") {
-          html += '<input type="checkbox" data-key="' + escapeHTML(field.key) + '"' +
-            (value ? " checked" : "") + ">";
-        } else if (field.type === "select") {
-          html += '<select data-key="' + escapeHTML(field.key) + '">';
-          (field.options || []).forEach(function (opt) {
-            html += '<option value="' + escapeHTML(opt) + '"' +
-              (String(value) === String(opt) ? " selected" : "") + ">" +
-              escapeHTML(opt) + "</option>";
-          });
-          html += "</select>";
-        } else {
-          html += '<input type="number" step="any" data-key="' + escapeHTML(field.key) + '" value="' +
-            escapeHTML(value === null || value === undefined ? "" : value) + '">';
+      const list = groups[groupKey] || [];
+      if (!list.length) return;
+      const heading = document.createElement("div");
+      heading.className = "tuner-group-label";
+      heading.textContent = TUNER_GROUP_LABELS[groupKey] || groupKey;
+      desired.push(heading);
+      list.forEach(function (field) {
+        let label = hasOwn(existing, field.key) ? existing[field.key] : null;
+        if (!label || used.has(label) || label.dataset.shape !== tunerFieldShape(field)) {
+          label = createTunerFieldElement(field);
         }
-        html += "</label>";
+        used.add(label);
+        writeTunerFieldElement(label, field, !force && label === focused);
+        desired.push(label);
       });
     });
-    els.tunerForm.innerHTML = html;
+    const anchor = focused && used.has(focused) ? focused : null;
+    Array.from(els.tunerForm.childNodes).forEach(function (node) {
+      if (node !== anchor) els.tunerForm.removeChild(node);
+    });
+    const at = anchor ? desired.indexOf(anchor) : -1;
+    desired.forEach(function (node, index) {
+      if (anchor && index < at) {
+        els.tunerForm.insertBefore(node, anchor);
+      } else if (index !== at) {
+        els.tunerForm.appendChild(node);
+      }
+    });
   }
 
   async function loadTunerConfig() {
     if (!state.activeID) return;
-    const config = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/config");
-    state.tuner.config = config;
+    const ticket = takeTicket("config");
+    let config;
+    try {
+      config = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/config");
+    } catch (err) {
+      if (!acceptReply("config", ticket)) return;
+      throw err;
+    }
+    if (!acceptReply("config", ticket)) return;
+    if (!config || config.strategy_id !== ticket.id) {
+      throw new Error("The config reply names strategy " +
+        JSON.stringify(config && config.strategy_id !== undefined ? config.strategy_id : null) +
+        " but the request was for " + JSON.stringify(ticket.id));
+    }
+    const previous = currentTunerConfig();
+    state.tuner.config = { strategyID: ticket.id, epoch: ticket.epoch, resp: config };
+    const dropped = pruneTunerDraft(previous, config);
+    acceptRatchetConfig(ticket.seq, config);
     renderTunerForm(config);
     updateControlsPanel(config);
+    if (dropped.length) {
+      state.tuner.notice = "The server changed or removed tuner field(s) " + dropped.join(", ") +
+        ". Their edits were dropped and will not be applied.";
+      updateTunerStatus();
+      scheduleSimulate();
+    }
     refreshGlobalNotifications().catch(function () {});
   }
 
@@ -1461,17 +1851,39 @@
     els.controlsMessage.hidden = !text;
   }
 
+  function ratchetChoice(value) {
+    return value === null || value === undefined ? "inherit" : (value ? "on" : "off");
+  }
+
+  function acceptRatchetConfig(seq, config) {
+    const ratchet = state.tuner.ratchet;
+    const reported = ratchetChoice(config.notify_ratchet_triggers);
+    const held = ratchet.held;
+    if (held) {
+      if (seq <= held.afterSeq) return;
+      if (reported !== held.value && held.pending.indexOf(reported) !== -1) return;
+      ratchet.held = null;
+    }
+    ratchet.confirmed = reported;
+  }
+
   function updateControlsPanel(config) {
     if (els.pauseToggle) {
       els.pauseToggle.hidden = !config;
       if (config) {
         els.pauseToggle.textContent = config.paused ? "Resume strategy" : "Pause strategy";
         els.pauseToggle.dataset.paused = config.paused ? "1" : "";
+      } else {
+        els.pauseToggle.disabled = false;
+        delete els.pauseToggle.dataset.paused;
       }
     }
-    if (els.ratchetNotifySelect && config) {
-      const v = config.notify_ratchet_triggers;
-      els.ratchetNotifySelect.value = v === null || v === undefined ? "inherit" : (v ? "on" : "off");
+    if (els.ratchetNotifySelect) {
+      const busy = !!state.tuner.ratchet.ticket;
+      els.ratchetNotifySelect.disabled = !config || busy;
+      if (!busy) {
+        els.ratchetNotifySelect.value = config ? state.tuner.ratchet.confirmed : "inherit";
+      }
     }
   }
 
@@ -1487,36 +1899,183 @@
     return v === "on";
   }
 
+  function writeOutcomeFromReply(resp) {
+    if (resp && resp.ok === true) {
+      return {
+        status: "success",
+        message: String(resp.message || ""),
+        restartRequired: !!resp.restart_required,
+      };
+    }
+    return { status: "unknown", detail: "the reply did not confirm the write" };
+  }
+
+  function writeOutcomeFromError(err) {
+    if (err && typeof err.status === "number") {
+      return { status: "failed", httpStatus: err.status, message: apiFeedbackError(err), err: err };
+    }
+    return {
+      status: "unknown",
+      detail: "the reply was lost or unreadable (" + String((err && err.message) || err || "no reply") + ")",
+      err: err,
+    };
+  }
+
+  function suppressedAuthOutcome(outcome) {
+    return outcome.status === "failed" && outcome.httpStatus === 401 && !tokenStampCurrent(outcome.err);
+  }
+
+  function describeWriteOutcome(action, strategyID, outcome) {
+    const head = action + " for strategy " + strategyID;
+    if (outcome.status === "success") {
+      return head + " succeeded. " + (outcome.message || "The server accepted the change.");
+    }
+    if (outcome.status === "failed") {
+      return head + " failed: " + outcome.message;
+    }
+    return head + " has an unknown outcome: " + outcome.detail +
+      ". Check the strategy's current config, positions and orders before you try again.";
+  }
+
+  function renderLateResults() {
+    if (!els.dashboardMessage || !els.dashboardMessageList) return;
+    els.dashboardMessageList.replaceChildren.apply(
+      els.dashboardMessageList,
+      state.lateResults.map(function (entry) {
+        const item = document.createElement("li");
+        item.className = "dashboard-message-item" + (entry.kind ? " " + entry.kind : "");
+        item.textContent = entry.text;
+        return item;
+      })
+    );
+    els.dashboardMessage.hidden = !state.lateResults.length;
+  }
+
+  function pushLateResult(kind, text) {
+    state.lateResults.push({ kind: kind, text: text + " This result arrived after the selection changed." });
+    renderLateResults();
+  }
+
+  function reportLateResult(action, strategyID, outcome) {
+    if (suppressedAuthOutcome(outcome)) return;
+    if (outcome.status === "failed" && outcome.httpStatus === 401) {
+      handleRefreshError(outcome.err);
+    }
+    pushLateResult(outcome.status === "success" ? "success" : "error", describeWriteOutcome(action, strategyID, outcome));
+  }
+
+  function reportLateNotSent(action, strategyID, reason) {
+    pushLateResult("error", action + " for strategy " + strategyID + " was not sent: " + reason + ".");
+  }
+
+  function reportLateFailure(action, strategyID, err, sent) {
+    if (sent) {
+      reportLateResult(action, strategyID, writeOutcomeFromError(err));
+      return;
+    }
+    const outcome = writeOutcomeFromError(err);
+    if (suppressedAuthOutcome(outcome)) return;
+    if (outcome.status === "failed" && outcome.httpStatus === 401) {
+      handleRefreshError(err);
+    }
+    reportLateNotSent(action, strategyID, outcome.status === "failed" ? outcome.message : outcome.detail);
+  }
+
+  function selectionTicket() {
+    return { id: state.activeID, epoch: state.selectionEpoch };
+  }
+
   async function togglePause() {
-    if (!state.activeID || !els.pauseToggle) return;
-    const next = !els.pauseToggle.dataset.paused;
+    const config = currentTunerConfig();
+    if (!state.activeID || !els.pauseToggle || !config) return;
+    const next = !config.paused;
+    const action = next ? "Pause" : "Resume";
+    const ticket = takeTicket("pause");
     els.pauseToggle.disabled = true;
+    let outcome;
     try {
-      const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/pause",
+      outcome = writeOutcomeFromReply(await postJSON(
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/pause",
         { paused: next }
-      );
-      setControlsMessage(resp.message || "");
-      await loadTunerConfig();
-      await refreshAll();
+      ));
     } catch (err) {
-      setControlsMessage("Pause failed: " + err.message);
+      outcome = writeOutcomeFromError(err);
+    }
+    if (!acceptReply("pause", ticket)) {
+      reportLateResult(action, ticket.id, outcome);
+      return;
+    }
+    try {
+      if (outcome.status !== "success") {
+        if (!suppressedAuthOutcome(outcome)) {
+          setControlsMessage(outcome.status === "failed"
+            ? action + " failed: " + outcome.message
+            : describeWriteOutcome(action, ticket.id, outcome));
+        }
+        return;
+      }
+      setControlsMessage(outcome.message);
+      try {
+        await loadTunerConfig();
+      } catch (err) {
+        if (ticketSelected(ticket)) handleRefreshError(err);
+      }
+      if (!ticketSelected(ticket)) {
+        reportLateResult(action, ticket.id, outcome);
+        return;
+      }
+      await refreshAll();
+      if (!ticketSelected(ticket)) {
+        reportLateResult(action, ticket.id, outcome);
+      }
     } finally {
-      els.pauseToggle.disabled = false;
+      if (ticketSelected(ticket)) {
+        els.pauseToggle.disabled = false;
+      }
     }
   }
 
   async function changeStrategyRatchetNotify() {
-    if (!state.activeID || !els.ratchetNotifySelect) return;
+    const select = els.ratchetNotifySelect;
+    if (!state.activeID || !select || !currentTunerConfig() || state.tuner.ratchet.ticket) return;
+    const choice = select.value;
+    const ticket = takeTicket("notify");
+    state.tuner.ratchet.ticket = ticket;
+    select.disabled = true;
+    let outcome;
     try {
-      const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/notifications",
-        { notify_ratchet_triggers: triStateToValue(els.ratchetNotifySelect.value, "inherit") }
-      );
-      setControlsMessage(resp.message || "");
+      outcome = writeOutcomeFromReply(await postJSON(
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/notifications",
+        { notify_ratchet_triggers: triStateToValue(choice, "inherit") }
+      ));
     } catch (err) {
-      setControlsMessage("Notification toggle failed: " + err.message);
+      outcome = writeOutcomeFromError(err);
     }
+    if (!acceptReply("notify", ticket)) {
+      reportLateResult("Ratchet alert change", ticket.id, outcome);
+      return;
+    }
+    const ratchet = state.tuner.ratchet;
+    ratchet.ticket = null;
+    if (outcome.status === "success") {
+      if (ratchet.held || choice !== ratchet.confirmed) {
+        const stale = ratchet.held ? ratchet.held.pending.concat([ratchet.held.value]) : [ratchet.confirmed];
+        ratchet.held = {
+          value: choice,
+          pending: stale.filter(function (value, index) {
+            return value !== choice && stale.indexOf(value) === index;
+          }),
+          afterSeq: state.lanes.config.issued,
+        };
+      }
+      ratchet.confirmed = choice;
+      setControlsMessage(outcome.message);
+    } else if (!suppressedAuthOutcome(outcome)) {
+      setControlsMessage(outcome.status === "failed"
+        ? "Ratchet alert change failed: " + outcome.message
+        : describeWriteOutcome("Ratchet alert change", ticket.id, outcome));
+    }
+    updateControlsPanel(currentTunerConfig());
   }
 
   async function changeGlobalRatchetNotify() {
@@ -1583,35 +2142,70 @@
     }
   }
 
-  async function confirmTradeAction(action, params) {
-    if (!state.activeID) return;
-    setTradeMessage("");
+  async function confirmedStrategyAction(spec) {
+    const ticket = spec.ticket;
+    spec.setMessage("");
     let confirm;
     try {
       confirm = await postJSON("/api/confirm", {
-        action: action,
-        strategy_id: state.activeID,
-        params: params,
+        action: spec.action,
+        strategy_id: ticket.id,
+        params: spec.params,
       });
     } catch (err) {
-      setTradeMessage("Confirm failed: " + err.message);
+      if (!ticketSelected(ticket)) {
+        reportLateFailure(spec.label, ticket.id, err, false);
+        return;
+      }
+      spec.setMessage("Confirm failed: " + err.message);
+      return;
+    }
+    if (!ticketSelected(ticket)) {
+      reportLateNotSent(spec.label, ticket.id, "the selection changed before its confirmation dialog opened");
       return;
     }
     const proceed = await showTradeConfirmDialog(confirm);
     if (!proceed) {
-      setTradeMessage("Cancelled.");
+      if (ticketSelected(ticket)) spec.setMessage("Cancelled.");
       return;
     }
+    let resp = null;
+    let failure = null;
     try {
-      const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/" + action,
-        { nonce: confirm.nonce, params: params }
-      );
-      setTradeMessage(resp.message || "Submitted.");
-      await refreshAll();
+      resp = await postJSON(spec.url, { nonce: confirm.nonce, params: spec.params });
     } catch (err) {
-      setTradeMessage(action + " failed: " + err.message);
+      failure = err;
     }
+    if (!ticketSelected(ticket)) {
+      reportLateResult(spec.label, ticket.id, failure ? writeOutcomeFromError(failure) : writeOutcomeFromReply(resp));
+      return;
+    }
+    const failureOutcome = failure ? writeOutcomeFromError(failure) : null;
+    if (failureOutcome && failureOutcome.status !== "unknown") {
+      spec.setMessage(spec.action + " failed: " + failure.message);
+      return;
+    }
+    spec.setMessage(failureOutcome
+      ? describeWriteOutcome(spec.label, ticket.id, failureOutcome)
+      : (resp && resp.message) || spec.doneText);
+    await refreshAll();
+    if (!ticketSelected(ticket)) {
+      reportLateResult(spec.label, ticket.id, failureOutcome || writeOutcomeFromReply(resp));
+    }
+  }
+
+  function confirmTradeAction(action, params) {
+    if (!state.activeID) return Promise.resolve();
+    const ticket = selectionTicket();
+    return confirmedStrategyAction({
+      ticket: ticket,
+      action: action,
+      label: "Trade action " + action,
+      params: params,
+      url: "/api/strategies/" + encodeURIComponent(ticket.id) + "/" + action,
+      setMessage: setTradeMessage,
+      doneText: "Submitted.",
+    });
   }
 
   function showTradeConfirmDialog(confirm) {
@@ -1706,6 +2300,18 @@
   }
 
   async function confirmStructuralAction(action, strategyID, params, url, messageEl) {
+    if (strategyID) {
+      if (strategyID !== state.activeID) return;
+      return confirmedStrategyAction({
+        ticket: selectionTicket(),
+        action: action,
+        label: "Structural action " + action,
+        params: params,
+        url: url,
+        setMessage: function (text) { setStructuralMessage(text, messageEl); },
+        doneText: "Done.",
+      });
+    }
     setStructuralMessage("", messageEl);
     let confirm;
     try {
@@ -1805,12 +2411,12 @@
     );
   }
 
-  function buildSimulateOverrides() {
+  function buildSimulateOverrides(config, draft) {
     const overrides = {};
-    Object.keys(state.tuner.overrides).forEach(function (key) {
-      overrides[key] = state.tuner.overrides[key];
+    Object.keys(draft).forEach(function (key) {
+      overrides[key] = draft[key];
     });
-    if (state.tuner.config && state.tuner.config.open_strategy && state.tuner.config.open_strategy.params) {
+    if (config && config.open_strategy && config.open_strategy.params) {
       const paramOverrides = {};
       Object.keys(overrides).forEach(function (key) {
         if (key.indexOf("open_strategy.params.") === 0) {
@@ -1820,7 +2426,7 @@
       });
       if (Object.keys(paramOverrides).length) {
         overrides.open_strategy = {
-          name: state.tuner.config.open_strategy.name,
+          name: config.open_strategy.name,
           params: paramOverrides,
         };
       }
@@ -1837,34 +2443,50 @@
     }, 450);
   }
 
+  function refreshChartAndTrades() {
+    return Promise.all([refreshChart(), refreshTradeHistory()]);
+  }
+
   async function runSimulate() {
     if (!state.activeID) return;
     if (!tunerHasOverrides()) {
+      invalidatePreview();
       state.tuner.previewActive = false;
       state.tuner.liveMarkers = [];
       state.tuner.simulatedMarkers = [];
       state.tuner.liveRefusal = "";
       state.tuner.simulatedRefusal = "";
       updateTunerStatus();
-      await refreshChart();
+      await refreshChartAndTrades();
       return;
     }
+    const config = currentTunerConfig();
+    if (!config) return;
+    state.tuner.previewSeq += 1;
+    const ticket = { id: state.activeID, epoch: state.selectionEpoch, seq: state.tuner.previewSeq };
     state.tuner.loading = true;
     updateTunerStatus();
     try {
       const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/simulate",
-        { overrides: buildSimulateOverrides(), limit: 400 }
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/simulate",
+        { overrides: buildSimulateOverrides(config, state.tuner.overrides), limit: 400 }
       );
+      if (!previewTicketCurrent(ticket)) return;
       state.tuner.liveMarkers = resp.live_markers || [];
       state.tuner.simulatedMarkers = resp.simulated_markers || [];
       state.tuner.liveRefusal = resp.live_refusal || "";
       state.tuner.simulatedRefusal = resp.simulated_refusal || "";
       state.tuner.previewActive = true;
-      await refreshChart();
+      state.tuner.previewFor = ticket.id;
+      await refreshChartAndTrades();
+    } catch (err) {
+      if (!previewTicketCurrent(ticket)) return;
+      throw err;
     } finally {
-      state.tuner.loading = false;
-      updateTunerStatus();
+      if (previewTicketCurrent(ticket)) {
+        state.tuner.loading = false;
+        updateTunerStatus();
+      }
     }
   }
 
@@ -1872,6 +2494,13 @@
     const target = event.target;
     const key = target.dataset.key;
     if (!key) return;
+    const config = currentTunerConfig();
+    if (!config) return;
+    const base = findTunerField(config, key);
+    const label = target.closest("label.tuner-field");
+    if (!base || !label || !els.tunerForm.contains(label) || label.dataset.shape !== tunerFieldShape(base)) {
+      return;
+    }
     let value;
     if (target.type === "checkbox") {
       value = target.checked;
@@ -1880,36 +2509,36 @@
     } else {
       value = target.value;
     }
-    const base = state.tuner.config && state.tuner.config.editable_fields
-      ? state.tuner.config.editable_fields.find(function (f) { return f.key === key; })
-      : null;
-    const baseline = base ? base.value : undefined;
+    const baseline = base.value;
     if (value === baseline || (value === null && (baseline === null || baseline === undefined))) {
       delete state.tuner.overrides[key];
     } else {
       state.tuner.overrides[key] = value;
     }
+    state.tuner.notice = "";
     updateTunerStatus();
     scheduleSimulate();
   }
 
   function resetTunerToLive() {
+    const config = currentTunerConfig();
+    if (!config) return;
     state.tuner.overrides = {};
-    if (state.tuner.config) {
-      renderTunerForm(state.tuner.config);
-    }
+    state.tuner.notice = "";
+    renderTunerForm(config, { force: true });
+    invalidatePreview();
     state.tuner.previewActive = false;
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
     state.tuner.liveRefusal = "";
     state.tuner.simulatedRefusal = "";
     updateTunerStatus();
-    refreshChart().catch(handleRefreshError);
+    refreshChartAndTrades().catch(handleRefreshError);
   }
 
-  function tunerApplyRequiresRestartClient() {
-    const keys = Object.keys(state.tuner.overrides);
-    if (state.tuner.config && state.tuner.config.has_open_position) {
+  function tunerApplyRequiresRestartClient(config, draft) {
+    const keys = Object.keys(draft);
+    if (config && config.has_open_position) {
       if (keys.indexOf("direction") >= 0 || keys.indexOf("invert_signal") >= 0 || keys.indexOf("leverage") >= 0) {
         return true;
       }
@@ -1917,17 +2546,145 @@
     return keys.indexOf("htf_filter") >= 0;
   }
 
-  async function applyTunerConfig() {
-    if (!state.activeID || !tunerHasOverrides()) return;
-    const resp = await postJSON(
-      "/api/strategies/" + encodeURIComponent(state.activeID) + "/config",
-      { overrides: buildSimulateOverrides() }
-    );
-    if (resp.ok) {
-      resetTunerState();
+  function tunerApplyConfirmText(record) {
+    const edits = Object.keys(record.draft).sort().map(function (key) {
+      return key + " = " + JSON.stringify(record.draft[key]);
+    });
+    const sentence = record.restart
+      ? "This writes tuned parameters to the live config file. Restart go-trader afterward — hot reload cannot apply most tuner fields."
+      : "This writes tuned parameters to the live config file. Send SIGHUP to reload when ready.";
+    return "Strategy " + record.id + ": " + edits.join("; ") + ". " + sentence;
+  }
+
+  function requestTunerApply() {
+    const config = currentTunerConfig();
+    if (!config || !tunerHasOverrides() || state.tuner.applyTicket) return;
+    const draft = JSON.parse(JSON.stringify(state.tuner.overrides));
+    const record = deepFreeze({
+      id: state.activeID,
+      epoch: state.selectionEpoch,
+      draft: draft,
+      overrides: buildSimulateOverrides(config, draft),
+      restart: tunerApplyRequiresRestartClient(config, draft),
+    });
+    state.tuner.pendingApply = record;
+    state.tuner.notice = "";
+    updateTunerStatus();
+    const text = tunerApplyConfirmText(record);
+    if (els.tunerConfirmText) {
+      els.tunerConfirmText.textContent = text;
+    }
+    if (els.tunerConfirmDialog && typeof els.tunerConfirmDialog.showModal === "function") {
+      els.tunerConfirmDialog.returnValue = "";
+      els.tunerConfirmDialog.showModal();
+    } else if (window.confirm(text)) {
+      submitConfirmedApply().catch(handleRefreshError);
+    } else {
+      state.tuner.pendingApply = null;
+    }
+  }
+
+  function submitConfirmedApply() {
+    const record = state.tuner.pendingApply;
+    state.tuner.pendingApply = null;
+    if (!record) return Promise.resolve();
+    const config = currentTunerConfig();
+    const draft = state.tuner.overrides;
+    const unchanged = !!config &&
+      !state.tuner.applyTicket &&
+      record.id === state.activeID &&
+      record.epoch === state.selectionEpoch &&
+      stableJSON(draft) === stableJSON(record.draft) &&
+      stableJSON(buildSimulateOverrides(config, draft)) === stableJSON(record.overrides) &&
+      tunerApplyRequiresRestartClient(config, draft) === record.restart;
+    if (!unchanged) {
+      state.tuner.notice = "The selection, the edits or the restart warning changed. Nothing was sent. Review and confirm again.";
+      updateTunerStatus();
+      return Promise.resolve();
+    }
+    return applyTunerConfig(record);
+  }
+
+  function releaseApplyBusy(ticket) {
+    if (state.tuner.applyTicket !== ticket) return;
+    state.tuner.applyTicket = null;
+    if (els.tunerApply) {
+      els.tunerApply.disabled = false;
+    }
+  }
+
+  async function applyTunerConfig(record) {
+    const ticket = takeTicket("apply");
+    state.tuner.applyTicket = ticket;
+    if (els.tunerApply) {
+      els.tunerApply.disabled = true;
+    }
+    let outcome;
+    try {
+      outcome = writeOutcomeFromReply(await postJSON(
+        "/api/strategies/" + encodeURIComponent(record.id) + "/config",
+        { overrides: record.overrides }
+      ));
+    } catch (err) {
+      outcome = writeOutcomeFromError(err);
+    }
+    releaseApplyBusy(ticket);
+    if (!acceptReply("apply", ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
+    if (outcome.status !== "success") {
+      if (!suppressedAuthOutcome(outcome)) {
+        state.tuner.notice = describeWriteOutcome("Apply", record.id, outcome);
+        updateTunerStatus();
+      }
+      if (outcome.err) throw outcome.err;
+      return;
+    }
+    state.tuner.notice = describeWriteOutcome("Apply", record.id, outcome);
+    Object.keys(record.draft).forEach(function (key) {
+      if (hasOwn(state.tuner.overrides, key) && sameValue(state.tuner.overrides[key], record.draft[key])) {
+        delete state.tuner.overrides[key];
+      }
+    });
+    if (tunerHasOverrides()) {
+      scheduleSimulate();
+    } else {
+      invalidatePreview();
+      state.tuner.previewActive = false;
+      state.tuner.liveMarkers = [];
+      state.tuner.simulatedMarkers = [];
+      state.tuner.liveRefusal = "";
+      state.tuner.simulatedRefusal = "";
+      if (state.tuner.simulateTimer) {
+        clearTimeout(state.tuner.simulateTimer);
+        state.tuner.simulateTimer = 0;
+      }
+    }
+    updateTunerStatus();
+    const config = currentTunerConfig();
+    if (config) {
+      renderTunerForm(config);
+    }
+    retireLane("config");
+    let refreshFailed = false;
+    try {
       await loadTunerConfig();
-      await refreshAll();
-      els.statusLabel.textContent = resp.restart_required ? "Apply OK — restart" : "Apply OK";
+    } catch (err) {
+      refreshFailed = true;
+      if (ticketSelected(ticket)) handleRefreshError(err);
+    }
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
+    await refreshAll();
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
+    if (!refreshFailed) {
+      els.statusLabel.textContent = outcome.restartRequired ? "Apply OK — restart" : "Apply OK";
     }
   }
 
@@ -1938,7 +2695,7 @@
   }
 
   function chartMarkersFromResponse(tradeResp) {
-    if (state.tuner.previewActive && state.tuner.simulatedMarkers.length) {
+    if (state.tuner.previewActive && state.tuner.previewFor === state.activeID && state.tuner.simulatedMarkers.length) {
       const faded = (state.tuner.liveMarkers || []).map(function (m) {
         return {
           time: m.time,
@@ -1959,7 +2716,7 @@
       });
       return faded.concat(bright);
     }
-    return (tradeResp.markers || []).map(function (m) {
+    return ((tradeResp && tradeResp.markers) || []).map(function (m) {
       return {
         time: m.time,
         position: m.position,
@@ -1970,19 +2727,406 @@
     });
   }
 
+  const CHART_INITIAL_LIMIT = 400;
+  const CHART_TAIL_LIMIT = 50;
+  const CHART_PAGE_LIMIT = 300;
+  const CHART_GAP_LIMIT = 1000;
+  const CHART_OLDER_DEBOUNCE_MS = 300;
+  const CHART_UNAVAILABLE_RETRY_S = 10;
+
+  function chartLogic() {
+    return (window.GoTraderChart && window.GoTraderChart.logic) || null;
+  }
+
+  function resetChartSeries(timeframe) {
+    state.chartEpoch += 1;
+    state.chartTimeframe = timeframe || "";
+    state.chartSeries = null;
+    if (state.chartOlder.timer) clearTimeout(state.chartOlder.timer);
+    state.chartOlder = { inFlight: false, timer: 0 };
+    state.chartBackoff = { until: 0, attempt: 0 };
+    setChartNote("");
+    if (els.chartSource) els.chartSource.textContent = "";
+    if (!timeframe && els.chartTimeframe) {
+      els.chartTimeframe.replaceChildren();
+      els.chartTimeframe.disabled = true;
+    }
+  }
+
+  function setChartNote(text) {
+    if (!els.chartNote) return;
+    els.chartNote.textContent = text || "";
+    els.chartNote.hidden = !text;
+  }
+
+  function candleTicket(lane) {
+    const ticket = takeTicket(lane);
+    ticket.chartEpoch = state.chartEpoch;
+    ticket.timeframe = state.chartTimeframe;
+    return ticket;
+  }
+
+  function candleTicketCurrent(ticket) {
+    return ticketSelected(ticket) && ticket.chartEpoch === state.chartEpoch && ticket.timeframe === state.chartTimeframe;
+  }
+
+  function acceptCandleReply(lane, ticket) {
+    return candleTicketCurrent(ticket) && acceptReply(lane, ticket);
+  }
+
+  function candleReplyMatches(body, ticket) {
+    return !!body && body.strategy_id === ticket.id && (!ticket.timeframe || body.timeframe === ticket.timeframe);
+  }
+
+  function currentChartSeries() {
+    const s = state.chartSeries;
+    if (!s || s.strategyID !== state.activeID || s.selectionEpoch !== state.selectionEpoch || s.chartEpoch !== state.chartEpoch) return null;
+    return s;
+  }
+
+  function candlesURL(id, params) {
+    const q = new URLSearchParams();
+    Object.keys(params).forEach(function (key) {
+      if (params[key] !== undefined && params[key] !== null && params[key] !== "") q.set(key, String(params[key]));
+    });
+    return "/api/strategies/" + encodeURIComponent(id) + "/candles?" + q.toString();
+  }
+
+  async function fetchCandles(url, etag) {
+    const generation = statusToken.generation();
+    const headers = Object.assign({}, authHeaders());
+    if (etag) headers["If-None-Match"] = etag;
+    const res = await fetch(url, { headers: headers, cache: "no-store" });
+    const out = {
+      status: res.status,
+      etag: res.headers.get("ETag") || "",
+      retryAfter: Number(res.headers.get("Retry-After")) || 0,
+      body: null,
+      text: "",
+    };
+    if (res.status === 401) {
+      const err = new Error(await res.text() || res.statusText);
+      err.status = 401;
+      err.tokenGeneration = generation;
+      throw err;
+    }
+    if (res.status === 304) return out;
+    out.text = await res.text();
+    try {
+      out.body = out.text ? JSON.parse(out.text) : null;
+    } catch (_err) {
+      out.body = null;
+    }
+    return out;
+  }
+
+  function chartHasBars() {
+    return !!(state.chart && state.chart.lastBarTime() !== null);
+  }
+
+  function candleRefusal(r) {
+    if (r.status === 200 || r.status === 304) return "";
+    const body = r.body || {};
+    const code = body.code || "";
+    const detail = body.error || r.text || ("HTTP " + r.status);
+    const logic = chartLogic();
+    if (r.status === 429 || r.status === 503) {
+      const retry = r.status === 429 ? r.retryAfter : (r.retryAfter || CHART_UNAVAILABLE_RETRY_S);
+      const delay = logic ? logic.backoffDelay(retry, state.chartBackoff.attempt) : retry * 1000;
+      state.chartBackoff = { until: Date.now() + delay, attempt: state.chartBackoff.attempt + 1 };
+      setChartNote((r.status === 429 ? "Chart reads are at their local limit" : "Candle source unavailable (" + code + "): " + detail) +
+        ". The chart keeps its bars and retries in " + Math.ceil(delay / 1000) + " s.");
+      return code || String(r.status);
+    }
+    if (r.status === 409 && code === "strategy_changed") {
+      state.chartSeries = null;
+      setChartNote("The strategy changed during the read; the chart reloads.");
+      return code;
+    }
+    if (r.status === 409 && code === "cursor_expired") return code;
+    if (r.status === 400 && (code === "timeframe_unsupported" || code === "timeframe_invalid") && state.chartTimeframe) {
+      resetChartSeries("");
+      setChartNote("Timeframe no longer available (" + detail + "); the chart went back to the configured timeframe.");
+      return code;
+    }
+    if (chartHasBars()) {
+      setChartNote("The candle request failed: " + detail);
+    } else {
+      showChartFailure("The candle request failed: " + detail);
+    }
+    return code || String(r.status);
+  }
+
+  function describeChartSource(body) {
+    const parts = [];
+    if (body.source_class === "synthetic") {
+      parts.push("Trade-built bars (volume and indicators hidden)");
+    } else if (body.origin) {
+      parts.push(body.origin === "published" ? "Feed bars" : "Archive bars");
+    }
+    if (body.source) parts.push(body.source);
+    if (body.freshness === "stale") parts.push("stale" + (body.freshness_detail ? ": " + body.freshness_detail : ""));
+    return parts.join(" · ");
+  }
+
+  function renderTimeframeSelect(caps, current) {
+    const select = els.chartTimeframe;
+    if (!select || !caps) return;
+    const list = caps.timeframes || [];
+    const key = list.map(function (t) { return t.timeframe + ":" + t.origin; }).join(",") + "|" + current;
+    if (select.dataset.key === key) return;
+    select.dataset.key = key;
+    select.replaceChildren();
+    list.forEach(function (t) {
+      const opt = document.createElement("option");
+      opt.value = t.timeframe;
+      opt.textContent = t.timeframe + (t.timeframe === caps.default_timeframe ? " (configured)" : "") + " · " + t.origin;
+      select.append(opt);
+    });
+    select.value = current;
+    select.disabled = list.length < 2;
+  }
+
+  function afterChartDraw(body) {
+    state.chartData = { strategyID: body.strategy_id, epoch: state.selectionEpoch, resp: body };
+    drawChartMarkers();
+    drawPositionLines();
+    hideChartFailure();
+    els.empty.style.display = chartHasBars() ? "none" : "flex";
+    if (els.chartSource) els.chartSource.textContent = describeChartSource(body);
+    if (body.market_availability && body.source_class === "synthetic") {
+      setChartNote("Market bars unavailable (" + body.market_availability.code + "): " + body.market_availability.detail);
+    } else if (body.market_availability && !chartHasBars()) {
+      setChartNote("No bars (" + body.market_availability.code + "): " + body.market_availability.detail);
+    }
+  }
+
+  function drawChartMarkers() {
+    const chart = state.chart;
+    const series = currentChartSeries();
+    if (!chart || !series) return false;
+    const history = state.tradeHistory && state.tradeHistory.strategyID === state.activeID
+      ? state.tradeHistory.resp
+      : null;
+    const logic = chartLogic();
+    const markers = chartMarkersFromResponse(history);
+    const mapped = logic ? logic.mapMarkersToBars(markers, chart.barTimes(), series.barSeconds) : markers;
+    return chart.setMarkers(mapped);
+  }
+
+  function currentInput(record) {
+    return !!record && record.strategyID === state.activeID && record.epoch === state.selectionEpoch;
+  }
+
+  function drawPositionLines() {
+    const chart = state.chart;
+    if (!chart) return true;
+    let lines = [];
+    if (currentInput(state.chartData) && currentInput(state.statusData)) {
+      lines = bookPositionLines(activeStrategy(), state.statusData.resp, state.chartData.resp).lines;
+    }
+    return chart.setPriceLines("position", lines);
+  }
+
+  function newChartSeries(ticket, r) {
+    const body = r.body;
+    return {
+      strategyID: ticket.id,
+      selectionEpoch: ticket.epoch,
+      chartEpoch: ticket.chartEpoch,
+      timeframe: body.timeframe,
+      token: body.series_token,
+      sourceClass: body.source_class,
+      barSeconds: body.bar_seconds,
+      older: (body.page && body.page.older) || "",
+      boundary: (body.page && body.page.boundary) || "",
+      etag: r.etag,
+      resp: body,
+    };
+  }
+
+  async function loadChartSeries(notice) {
+    const chart = state.chart;
+    const ticket = candleTicket("candles");
+    const params = { limit: CHART_INITIAL_LIMIT, timeframe: ticket.timeframe };
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, params), "");
+    } catch (err) {
+      if (!acceptCandleReply("candles", ticket)) return;
+      state.chartData = null;
+      drawPositionLines();
+      if (err.status === 401) throw err;
+      showChartFailure("The candle request failed: " + (err.message || String(err)));
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket)) return;
+    if (candleRefusal(r)) {
+      state.chartData = null;
+      drawPositionLines();
+      return;
+    }
+    if (!candleReplyMatches(r.body, ticket)) return;
+    state.chartBackoff = { until: 0, attempt: 0 };
+    const series = newChartSeries(ticket, r);
+    state.chartSeries = series;
+    renderTimeframeSelect(r.body.capabilities, r.body.timeframe);
+    if (!chart.setSeries({ candles: r.body.candles, source: r.body.source, sourceClass: r.body.source_class, formingTime: r.body.forming_time }, false)) return;
+    setChartNote(notice || "");
+    afterChartDraw(r.body);
+  }
+
+  async function recoverChartGap(series, last, tailFirst) {
+    const ticket = candleTicket("candles");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, from: last, limit: CHART_GAP_LIMIT }), "");
+    } catch (err) {
+      if (err.status === 401) throw err;
+      if (acceptCandleReply("candles", ticket)) setChartNote("The gap refresh failed; the chart keeps its bars.");
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket) || currentChartSeries() !== series) return;
+    if (candleRefusal(r)) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    if (r.body.series_token !== series.token) {
+      state.chartSeries = null;
+      return;
+    }
+    const logic = chartLogic();
+    if (!logic || logic.gapRecoveryOutcome(last, r.body.candles, tailFirst, series.barSeconds, CHART_GAP_LIMIT) === "reload") {
+      resetChartSeries(series.timeframe);
+      await loadChartSeries("The chart could not join its bars to the newest bars; it reloaded from the newest bars.");
+      return;
+    }
+    state.chart.applyTail(r.body.candles || [], r.body.forming_time);
+    afterChartDraw(r.body);
+  }
+
+  async function pollChartTail(series) {
+    const chart = state.chart;
+    const ticket = candleTicket("candles");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, limit: CHART_TAIL_LIMIT }), series.etag);
+    } catch (err) {
+      if (err.status === 401) throw err;
+      if (acceptCandleReply("candles", ticket)) setChartNote("The candle refresh failed; the chart keeps its bars.");
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket) || currentChartSeries() !== series) return;
+    if (r.status === 304) {
+      state.chartBackoff = { until: 0, attempt: 0 };
+      return;
+    }
+    if (candleRefusal(r)) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    state.chartBackoff = { until: 0, attempt: 0 };
+    const body = r.body;
+    renderTimeframeSelect(body.capabilities, body.timeframe);
+    if (body.series_token !== series.token || body.source_class !== series.sourceClass) {
+      const next = newChartSeries(ticket, r);
+      state.chartSeries = next;
+      if (!chart.setSeries({ candles: body.candles, source: body.source, sourceClass: body.source_class, formingTime: body.forming_time }, true)) return;
+      setChartNote("The chart source changed to " + describeChartSource(body) + "; older pages restart from here.");
+      afterChartDraw(body);
+      return;
+    }
+    const last = chart.lastBarTime();
+    const fresh = (body.candles || []).filter(function (c) {
+      return last === null || Number(c.time) >= last;
+    });
+    const logic = chartLogic();
+    const tail = fresh.length ? fresh : body.candles;
+    if (last !== null && logic && logic.detectGap(last, tail, series.barSeconds)) {
+      await recoverChartGap(series, last, Number(tail[0].time));
+      return;
+    }
+    if (!chart.applyTail(fresh, body.forming_time)) return;
+    series.etag = r.etag;
+    series.resp = body;
+    afterChartDraw(body);
+  }
+
+  function onChartNeedOlder() {
+    if (state.chartOlder.timer || state.chartOlder.inFlight) return;
+    state.chartOlder.timer = setTimeout(function () {
+      state.chartOlder.timer = 0;
+      loadOlderPage().catch(handleRefreshError);
+    }, CHART_OLDER_DEBOUNCE_MS);
+  }
+
+  async function loadOlderPage() {
+    const series = currentChartSeries();
+    if (!series || !series.older || series.boundary || state.chartOlder.inFlight) return;
+    if (Date.now() < state.chartBackoff.until) return;
+    const older = state.chartOlder;
+    older.inFlight = true;
+    const ticket = candleTicket("older");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, limit: CHART_PAGE_LIMIT, before: series.older }), "");
+    } catch (err) {
+      older.inFlight = false;
+      if (err.status === 401) throw err;
+      if (candleTicketCurrent(ticket)) setChartNote("The older-page request failed; scroll again to retry.");
+      return;
+    }
+    older.inFlight = false;
+    if (!acceptCandleReply("older", ticket) || currentChartSeries() !== series) return;
+    const refused = candleRefusal(r);
+    if (refused === "cursor_expired") {
+      resetChartSeries(series.timeframe);
+      await loadChartSeries("The candle history changed; paging restarted from the newest bars.");
+      return;
+    }
+    if (refused) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    const page = r.body.page || {};
+    state.chart.prependBars(r.body.candles || []);
+    series.older = page.older || "";
+    series.boundary = page.boundary || "";
+    if (!series.older && !series.boundary) series.boundary = "unsupported";
+    if (series.boundary && page.detail) setChartNote("Older history stops here: " + page.detail);
+    drawChartMarkers();
+  }
+
   async function refreshChart() {
     if (!state.activeID) return;
-    initChart();
-    const [candleResp, tradeResp] = await Promise.all([
-      getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/candles?limit=400"),
-      getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/trades?limit=400"),
-    ]);
-    const candles = candleResp.candles || [];
-    state.series.setData(candles);
-    state.series.setMarkers(chartMarkersFromResponse(tradeResp));
-    els.empty.style.display = candles.length ? "none" : "flex";
-    if (candles.length) state.chart.timeScale().fitContent();
-    renderTradeHistory(tradeResp.trades || tradeResp.markers || []);
+    if (!ensureChart()) return;
+    if (Date.now() < state.chartBackoff.until) return;
+    const series = currentChartSeries();
+    if (!series) {
+      await loadChartSeries("");
+      return;
+    }
+    await pollChartTail(series);
+  }
+
+  function onChartTimeframeChange() {
+    const value = els.chartTimeframe.value;
+    const series = currentChartSeries();
+    if (series && value === series.timeframe) return;
+    if (state.chart) state.chart.clear();
+    resetChartSeries(value);
+    refreshChart().catch(handleRefreshError);
+  }
+
+  async function refreshTradeHistory() {
+    if (!state.activeID) return;
+    const ticket = takeTicket("trades");
+    let resp;
+    try {
+      resp = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/trades?limit=400");
+    } catch (err) {
+      if (!acceptReply("trades", ticket)) return;
+      throw err;
+    }
+    if (!acceptReply("trades", ticket)) return;
+    state.tradeHistory = { strategyID: ticket.id, resp: resp };
+    renderTradeHistory(resp.trades || resp.markers || []);
+    els.tradeHistoryBody.dataset.strategyId = ticket.id;
+    drawChartMarkers();
   }
 
   function tradeRowsForDisplay(rows) {
@@ -2070,10 +3214,11 @@
   }
 
   function openTradeReview(row) {
-    if (!row || !state.activeID) return;
+    const stampedID = els.tradeHistoryBody.dataset.strategyId || "";
+    if (!row || !stampedID || stampedID !== state.activeID) return;
     const positionID = row.getAttribute("data-position-id");
     if (!positionID) return;
-    window.open(tradeReviewURL(state.activeID, positionID), "_blank", "noopener");
+    window.open(tradeReviewURL(stampedID, positionID), "_blank", "noopener");
   }
 
   function initTradeHistoryActivation() {
@@ -2164,7 +3309,23 @@
 
   async function refreshStatus() {
     if (!state.activeID) return;
-    const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
+    const ticket = takeTicket("status");
+    let status;
+    try {
+      status = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/status");
+    } catch (err) {
+      if (!acceptReply("status", ticket)) return;
+      state.statusData = null;
+      drawPositionLines();
+      throw err;
+    }
+    if (!acceptReply("status", ticket)) return;
+    state.statusData = { strategyID: ticket.id, epoch: ticket.epoch, resp: status };
+    drawPositionLines();
+    renderStatus(status);
+  }
+
+  function renderStatus(status) {
     updateRegimeBadge(status.regime);
     updateDivergenceBadge(status.regime_divergence);
     updatePausedBadge(!!status.paused);
@@ -2746,9 +3907,16 @@
   }
 
   function handleRefreshError(err) {
-    if (err.status === 401) {
-      showAuthPrompt();
+    const current = tokenStampCurrent(err);
+    if (err && err.status === 401) {
+      if (!current) return;
+      showAuthPrompt(statusToken.generation() > 0
+        ? "The server rejected this token. Enter the configured status token."
+        : "This server requires a status token.");
       return;
+    }
+    if (current && !els.authPanel.hidden && els.authMessage.textContent === AUTH_CHECKING_TEXT) {
+      els.authMessage.textContent = AUTH_CHECK_FAILED_TEXT;
     }
     els.statusDot.className = "status-dot error";
     els.statusLabel.textContent = "Error";
@@ -2764,6 +3932,7 @@
       }
       await Promise.all([
         refreshChart(),
+        refreshTradeHistory(),
         refreshStatus(),
         refreshRiskPanel(),
         refreshRegimeStorePanel(),
@@ -2789,7 +3958,7 @@
     }
   }
 
-  const feedbackState = { submitting: false, apiSubmitting: false, partitionFetched: "all", cache: null };
+  const feedbackState = { submittingIDs: new Set(), apiSubmittingIDs: new Set(), cache: null };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -2832,31 +4001,50 @@
     });
   }
 
-  async function feedbackHistoryUnchanged(id, cached) {
-    const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
-    if (state.activeID !== id || !partitionStillSelected(hist.partition)) return true;
-    return feedbackCacheKey(id, hist.partition) === cached.key &&
+  function feedbackReplyCurrent(ticket, partition) {
+    return ticketSelected(ticket) && ticket.seq > state.lanes.feedback.accepted &&
+      partitionStillSelected(partition);
+  }
+
+  function feedbackHistoryMatchesCache(id, hist) {
+    const cached = feedbackState.cache;
+    return !!cached && feedbackCacheKey(id, hist.partition) === cached.key &&
       !!hist.data.input_signature && hist.data.input_signature === cached.inputSignature &&
       feedbackHistorySignature(hist.data) === cached.historySignature;
   }
 
+  function resetFeedbackPanel() {
+    feedbackState.cache = null;
+    if (!els.feedbackPanel) return;
+    els.feedbackPanel.hidden = true;
+    els.feedbackStatus.textContent = "";
+    els.feedbackSummary.replaceChildren();
+    els.feedbackList.replaceChildren();
+    setFeedbackMessage("", "");
+  }
+
   async function refreshFeedbackAnalysis(options) {
     if (!els.feedbackPanel) return;
-    const id = state.activeID;
-    if (!id) {
+    if (!state.activeID) {
       els.feedbackPanel.hidden = true;
       return;
     }
     els.feedbackPanel.hidden = false;
+    const ticket = takeTicket("feedback");
+    const id = ticket.id;
+    const requested = state.partitionFilter;
     try {
       const cached = feedbackState.cache;
-      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, state.partitionFilter) &&
-          await feedbackHistoryUnchanged(id, cached)) {
-        return;
+      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, requested)) {
+        const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
+        if (!feedbackReplyCurrent(ticket, hist.partition)) return;
+        if (feedbackHistoryMatchesCache(id, hist)) {
+          acceptReply("feedback", ticket);
+          return;
+        }
       }
       const fetched = await getJSONForPartition(feedbackAnalysesURL(id));
-      if (state.activeID !== id || !partitionStillSelected(fetched.partition)) return;
-      feedbackState.partitionFetched = fetched.partition;
+      if (!partitionStillSelected(fetched.partition) || !acceptReply("feedback", ticket)) return;
       feedbackState.cache = {
         key: feedbackCacheKey(id, fetched.partition),
         inputSignature: fetched.data.input_signature || "",
@@ -2864,7 +4052,10 @@
       };
       renderFeedbackAnalysis(id, fetched.data);
     } catch (err) {
-      if (state.activeID !== id) return;
+      const partition = err && typeof err === "object" && typeof err.partition === "string"
+        ? err.partition
+        : requested;
+      if (!partitionStillSelected(partition) || !acceptReply("feedback", ticket)) return;
       feedbackState.cache = null;
       els.feedbackStatus.textContent = "Unavailable";
       els.feedbackSummary.replaceChildren(feedbackNode("p", "tuner-note", apiFeedbackError(err)));
@@ -2920,31 +4111,54 @@
     if (!data.available) blocked = data.reason || "analysis is unavailable";
     else if (!provider.available) blocked = provider.reason || "the Anthropic API provider is unavailable";
     else if (!(sel.included > 0)) blocked = "there are no usable saved marks to analyze";
-    button.disabled = !!blocked || feedbackState.submitting || feedbackState.apiSubmitting;
+    button.disabled = !!blocked || feedbackState.submittingIDs.has(id) || feedbackState.apiSubmittingIDs.has(id);
     button.addEventListener("click", function () { submitFeedbackAPIAnalysis(id, sel.included || 0, provider.reason || ""); });
     box.appendChild(button);
     if (blocked) box.appendChild(feedbackNode("p", "tuner-note", "Anthropic API: " + blocked));
     return box;
   }
 
+  function settleFeedbackSubmission(ticket, strategyID) {
+    if (ticketSelected(ticket)) {
+      refreshFeedbackAnalysis().catch(function () {});
+    } else if (state.activeID === strategyID) {
+      feedbackState.cache = null;
+      refreshFeedbackAnalysis().catch(function () {});
+    }
+  }
+
   async function submitFeedbackAPIAnalysis(strategyID, included, settings) {
-    if (feedbackState.apiSubmitting || state.activeID !== strategyID) return;
+    if (feedbackState.apiSubmittingIDs.has(strategyID) || state.activeID !== strategyID) return;
+    const ticket = selectionTicket();
     const question = "Send " + included + " saved mark(s) of " + strategyID + " to the Anthropic API" +
       (settings ? " (" + settings + ")" : "") + "? This is one paid call. It is never retried by itself, and the result changes no setting.";
     if (!window.confirm(question)) {
-      setFeedbackMessage("Cancelled. No analysis request was sent.", "");
+      if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No analysis request was sent.", "");
       return;
     }
-    feedbackState.apiSubmitting = true;
+    feedbackState.apiSubmittingIDs.add(strategyID);
+    let resp = null;
+    let failure = null;
     try {
-      const resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
-      setFeedbackMessage("Analysis " + (resp.request_id || "") + " is accepted. Its progress shows below.", "success");
+      resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
     } catch (err) {
-      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(err), "error");
-    } finally {
-      feedbackState.apiSubmitting = false;
-      refreshFeedbackAnalysis().catch(function () {});
+      failure = err;
     }
+    feedbackState.apiSubmittingIDs.delete(strategyID);
+    const requestID = (resp && resp.request_id) || "";
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Trade mark analysis request (Anthropic API)", strategyID, failure
+        ? writeOutcomeFromError(failure)
+        : { status: "success", message: "Analysis " + requestID + " is accepted. Its progress shows in that strategy's analysis list." });
+    } else if (failure) {
+      const outcome = writeOutcomeFromError(failure);
+      setFeedbackMessage(outcome.status === "unknown"
+        ? describeWriteOutcome("Trade mark analysis request (Anthropic API)", strategyID, outcome)
+        : "The analysis was not started: " + apiFeedbackError(failure), "error");
+    } else {
+      setFeedbackMessage("Analysis " + requestID + " is accepted. Its progress shows below.", "success");
+    }
+    settleFeedbackSubmission(ticket, strategyID);
   }
 
   function feedbackShellQuote(text) {
@@ -3014,7 +4228,7 @@
         const button = feedbackNode("button", "tuner-button secondary", "Start research…");
         button.type = "button";
         button.dataset.proposalIndex = String(index);
-        button.disabled = !r.available || feedbackState.submitting;
+        button.disabled = !r.available || feedbackState.submittingIDs.has(id) || feedbackState.apiSubmittingIDs.has(id);
         button.addEventListener("click", function () { confirmFeedbackResearch(id, a, index); });
         box.appendChild(button);
         if (!r.available && r.reason) box.appendChild(feedbackNode("p", "tuner-note", r.reason));
@@ -3041,9 +4255,11 @@
   }
 
   async function confirmFeedbackResearch(strategyID, analysis, index) {
-    if (feedbackState.submitting) return;
+    if (feedbackState.submittingIDs.has(strategyID)) return;
     const proposal = analysis.result && analysis.result.proposals && analysis.result.proposals[index];
     if (!proposal || proposal.kind !== "param_grid") return;
+    const ticket = selectionTicket();
+    const label = "Research run";
     const frozen = deepFreeze({
       strategyID: strategyID,
       requestID: analysis.request_id,
@@ -3055,11 +4271,19 @@
     els.feedbackResearchGrid.textContent = JSON.stringify(frozen.params, null, 2);
     const choice = await showFeedbackResearchDialog();
     if (choice !== "confirm") {
-      setFeedbackMessage("Cancelled. No research request was sent.", "");
+      if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No research request was sent.", "");
       return;
     }
-    feedbackState.submitting = true;
-    els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    if (feedbackState.submittingIDs.has(frozen.strategyID)) {
+      if (ticketSelected(ticket)) setFeedbackMessage("A research request for this strategy is already in progress. Nothing was sent.", "error");
+      return;
+    }
+    feedbackState.submittingIDs.add(frozen.strategyID);
+    if (ticketSelected(ticket)) {
+      els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    }
+    const readTicket = takeTicket("feedback");
+    let sent = false;
     try {
       const fresh = await getJSONForPartition(feedbackAnalysesURL(frozen.strategyID));
       const match = (fresh.data.analyses || []).find(function (x) { return x.request_id === frozen.requestID; });
@@ -3067,12 +4291,21 @@
       const current = match && match.result && match.result.proposals && match.result.proposals[frozen.index];
       if (state.activeID !== frozen.strategyID || !match || !decision || !decision.available ||
           match.bundle_sha256 !== frozen.bundle || !current || stableJSON(current.params) !== stableJSON(frozen.params)) {
+        if (!ticketSelected(ticket)) {
+          reportLateNotSent(label, frozen.strategyID, "the selection, the marks, the settings or the analysis changed");
+          return;
+        }
         setFeedbackMessage("The marks, the settings or the analysis changed. Nothing was sent. Review the proposal and confirm again.", "error");
-        if (state.activeID === frozen.strategyID) renderFeedbackAnalysis(frozen.strategyID, fresh.data);
+        if (readTicket.id === frozen.strategyID && partitionStillSelected(fresh.partition) &&
+            acceptReply("feedback", readTicket)) {
+          renderFeedbackAnalysis(frozen.strategyID, fresh.data);
+        }
         return;
       }
       const overrides = {};
       overrides[frozen.strategyID] = { params: frozen.params };
+      const generation = statusToken.generation();
+      sent = true;
       const res = await fetch("/api/tuning/runs", {
         method: "POST",
         headers: Object.assign({
@@ -3085,17 +4318,40 @@
       if (!res.ok) {
         let msg = text;
         try { msg = JSON.parse(text).error || text; } catch (e) { msg = text; }
+        if (!ticketSelected(ticket)) {
+          reportLateResult(label, frozen.strategyID, {
+            status: "failed",
+            httpStatus: res.status,
+            message: msg,
+            err: { status: res.status, tokenGeneration: generation },
+          });
+          return;
+        }
         setFeedbackMessage("Research was not started: " + msg, "error");
         return;
       }
       let run = {};
       try { run = JSON.parse(text); } catch (e) { run = {}; }
+      if (!ticketSelected(ticket)) {
+        reportLateResult(label, frozen.strategyID, {
+          status: "success",
+          message: "Research run " + (run.id || "") + " is queued. Open /tuning to follow it.",
+        });
+        return;
+      }
       setFeedbackMessage("Research run " + (run.id || "") + " is queued. Open /tuning to follow it.", "success");
     } catch (err) {
-      setFeedbackMessage("Research was not started: " + apiFeedbackError(err), "error");
+      if (!ticketSelected(ticket)) {
+        reportLateFailure(label, frozen.strategyID, err, sent);
+        return;
+      }
+      const outcome = writeOutcomeFromError(err);
+      setFeedbackMessage(sent && outcome.status === "unknown"
+        ? describeWriteOutcome(label, frozen.strategyID, outcome)
+        : "Research was not started: " + apiFeedbackError(err), "error");
     } finally {
-      feedbackState.submitting = false;
-      refreshFeedbackAnalysis().catch(function () {});
+      feedbackState.submittingIDs.delete(frozen.strategyID);
+      settleFeedbackSubmission(ticket, frozen.strategyID);
     }
   }
 
@@ -3133,17 +4389,28 @@
     });
   }
 
-  async function boot() {
+  function initDashboardView() {
     state.viewMode = loadViewMode();
     applyViewMode();
     updateDarkModeToggle();
-    initChart();
+  }
+
+  async function loadDashboard() {
+    const generation = statusToken.generation();
     const read = await getJSONForPartition("/api/strategies");
+    if (generation !== statusToken.generation()) return;
+    hideAuthPrompt();
     state.strategies = read.data.strategies || [];
     renderStrategies();
-    if (state.strategies.length) {
+    const keepActive = !!state.activeID && state.strategies.some(function (s) {
+      return s.id === state.activeID;
+    });
+    if (keepActive) {
+      await refreshAll();
+    } else if (state.strategies.length) {
       await selectStrategy(state.strategies[0].id);
     } else {
+      if (state.activeID) setActiveStrategy("");
       await refreshAll();
     }
     scheduleRefresh();
@@ -3151,9 +4418,11 @@
 
   initSidebar();
   initTradeHistoryActivation();
+  updateControlsPanel(null);
   if (els.tunerForm) {
     els.tunerForm.addEventListener("input", onTunerFieldChange);
     els.tunerForm.addEventListener("change", onTunerFieldChange);
+    if (els.chartTimeframe) els.chartTimeframe.addEventListener("change", onChartTimeframeChange);
   }
   if (els.tunerReset) {
     els.tunerReset.addEventListener("click", resetTunerToLive);
@@ -3234,26 +4503,21 @@
     });
   }
   if (els.tunerApply) {
-    els.tunerApply.addEventListener("click", function () {
-      if (!state.tuner.config) return;
-      const restart = tunerApplyRequiresRestartClient();
-      if (els.tunerConfirmText) {
-        els.tunerConfirmText.textContent = restart
-          ? "This writes tuned parameters to the live config file. Restart go-trader afterward — hot reload cannot apply most tuner fields."
-          : "This writes tuned parameters to the live config file. Send SIGHUP to reload when ready.";
-      }
-      if (els.tunerConfirmDialog && typeof els.tunerConfirmDialog.showModal === "function") {
-        els.tunerConfirmDialog.showModal();
-      } else if (window.confirm(els.tunerConfirmText ? els.tunerConfirmText.textContent : "Apply tuned config?")) {
-        applyTunerConfig().catch(handleRefreshError);
-      }
-    });
+    els.tunerApply.addEventListener("click", requestTunerApply);
   }
   if (els.tunerConfirmDialog) {
     els.tunerConfirmDialog.addEventListener("close", function () {
       if (els.tunerConfirmDialog.returnValue === "apply") {
-        applyTunerConfig().catch(handleRefreshError);
+        submitConfirmedApply().catch(handleRefreshError);
+      } else {
+        state.tuner.pendingApply = null;
       }
+    });
+  }
+  if (els.dashboardMessageDismiss) {
+    els.dashboardMessageDismiss.addEventListener("click", function () {
+      state.lateResults = [];
+      renderLateResults();
     });
   }
   els.search.addEventListener("input", renderStrategies);
@@ -3295,29 +4559,27 @@
   });
   els.authPanel.addEventListener("submit", function (event) {
     event.preventDefault();
-    const token = els.authToken.value.trim();
-    if (token) {
-      window.localStorage.setItem("goTraderStatusToken", token);
-    } else {
-      window.localStorage.removeItem("goTraderStatusToken");
-    }
-    els.authPanel.hidden = true;
-    boot();
+    statusToken.submit(els.authToken.value);
+    els.authMessage.textContent = AUTH_CHECKING_TEXT;
+    loadDashboard().catch(handleRefreshError);
   });
-  boot().catch(function (err) {
-    if (err.status === 401) {
-      showAuthPrompt();
-      return;
-    }
-    handleRefreshError(err);
-  });
+  initDashboardView();
+  loadDashboard().catch(handleRefreshError);
 
-  function showAuthPrompt() {
+  function showAuthPrompt(message) {
     els.statusDot.className = "status-dot error";
     els.statusLabel.textContent = "Token required";
-    els.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
-    els.authPanel.hidden = false;
     els.statusGrid.innerHTML = "<dt>API</dt><dd>Unauthorized</dd>";
-    els.authToken.focus();
+    els.authMessage.textContent = message;
+    if (els.authPanel.hidden) {
+      els.authToken.value = statusToken.current();
+      els.authPanel.hidden = false;
+      els.authToken.focus();
+    }
+  }
+
+  function hideAuthPrompt() {
+    els.authPanel.hidden = true;
+    els.authMessage.textContent = "";
   }
 })();

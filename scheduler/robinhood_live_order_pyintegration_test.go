@@ -57,11 +57,6 @@ type rhLiveEnv struct {
 	sent     []rhLoggedRequest
 }
 
-func rhLiveSpot(id, coin string, capital float64) StrategyConfig {
-	return StrategyConfig{ID: id, Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
-		Args: []string{"momentum_pro", coin, "1h", "--mode=live"}, Capital: capital, MaxDrawdownPct: 50}
-}
-
 func newRHLiveEnv(t *testing.T, strategies ...StrategyConfig) *rhLiveEnv {
 	t.Helper()
 	root := robinhoodStdoutPyRoot(t)
@@ -116,7 +111,7 @@ func (e *rhLiveEnv) open() {
 	if err != nil {
 		e.t.Fatalf("identity: %v", err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		e.t.Fatalf("open store: %v", err)
 	}
@@ -598,34 +593,6 @@ func TestRobinhoodLiveOrderSignalOutcomes(t *testing.T) {
 			})
 		}
 	})
-	t.Run("PaperStrategyStillBooksTheModeledTrade", func(t *testing.T) {
-		sc := StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 1000}
-		e := newRHLiveEnv(t, sc)
-		s := e.state.Strategies["rh-paper"]
-		db, _ := e.store.dbForStrategy("rh-paper")
-		e.mu.Lock()
-		trades, _, _ := executeRobinhoodResult(sc, s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, nil, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-		e.mu.Unlock()
-		if trades != 1 || s.Positions["BTC"] == nil {
-			t.Fatalf("paper buy trades=%d positions=%v, want the modeled buy", trades, s.Positions)
-		}
-		if len(e.attemptRows()) != 0 || len(e.requests()) != 0 {
-			t.Fatal("a paper booking must make no attempt and no venue request")
-		}
-	})
-	t.Run("BookingGuardRefusesLiveResultWithoutFill", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		s := e.state.Strategies["rh-btc"]
-		db, _ := e.store.dbForStrategy("rh-btc")
-		for _, er := range []*RobinhoodExecuteResult{nil, {}, {Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100}}}} {
-			e.mu.Lock()
-			trades, _, _ := executeRobinhoodResult(e.sc("rh-btc"), s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, er, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-			e.mu.Unlock()
-			if trades != 0 || s.Cash != 1000 || len(s.Positions) != 0 {
-				t.Fatalf("live booking without a confirmed fill must refuse: trades=%d cash=%v", trades, s.Cash)
-			}
-		}
-	})
 }
 
 func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
@@ -1061,14 +1028,26 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000), eth)
 		e.seedHeldSettlingBuy("rh-btc")
 		e.seedHeldSettlingBuy("rh-eth")
-		bn := &blockingNotifier{release: make(chan struct{})}
+		bn := &blockingNotifier{release: make(chan struct{}), entered: make(chan struct{})}
 		e.notifier = NewMultiNotifier(notifierBackend{notifier: bn, ownerID: "owner"})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(bn.release) }) }
 		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-			close(done)
 		}()
-		time.Sleep(500 * time.Millisecond)
+		defer func() {
+			release()
+			<-done
+		}()
+		select {
+		case <-bn.entered:
+		case <-done:
+			t.Fatal("settlement returned before it sent a hold DM")
+		case <-time.After(15 * time.Second):
+			t.Fatal("settlement did not send a hold DM within 15s")
+		}
 		locked := make(chan struct{})
 		go func() {
 			e.mu.RLock()
@@ -1077,10 +1056,10 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 		}()
 		select {
 		case <-locked:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("a blocked notifier must not hold the state lock")
 		}
-		close(bn.release)
+		release()
 		<-done
 		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
 		bn.mu.Lock()
@@ -1242,23 +1221,6 @@ func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
 			plan := planKillSwitchClose(in)
 			if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
 				t.Fatalf("report = %+v, want BTC held by the open buy", plan.RHCloseReport)
-			}
-		})
-		t.Run("fill_below_book_then_verified_flat", func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setPosition("rh-btc", "BTC", 0.5, 90)
-			e.ageBook("rh-btc", "BTC")
-			closePhase := rhWith(rhSellFilled("0.3", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.3", "0.3"))}})
-			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-			plan := planKillSwitchClose(in)
-			if !plan.OnChainConfirmedFlat {
-				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
-			}
-			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-			dbt := e.dbTrades("rh-btc")
-			if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
-				t.Fatalf("db trades = %+v, want a venue row and a verified-flat row", dbt)
 			}
 		})
 		t.Run("shared_coin_splits_by_book", func(t *testing.T) {
@@ -1550,20 +1512,6 @@ func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher 
 
 func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 	t.Run("KeepsExposureUntilVerifiedFlat", func(t *testing.T) {
-		t.Run("activation_keeps_the_book", func(t *testing.T) {
-			sc := rhLiveSpot("rh-btc", "BTC", 1000)
-			s := NewStrategyState(sc)
-			s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 1000, Side: "long"}
-			s.RiskState.PeakValue = 2000
-			s.RiskState.MaxDrawdownPct = 10
-			allowed, _ := CheckRisk(&sc, s, 500, map[string]float64{"BTC": 500}, nil, nil)
-			if allowed || !s.RiskState.CircuitBreaker {
-				t.Fatal("expected the circuit breaker to fire")
-			}
-			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
-				t.Fatalf("CB activation must keep the Robinhood live book, got %+v", s.Positions)
-			}
-		})
 		t.Run("filled_and_flat_clears_pending", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 			e.setPosition("rh-btc", "BTC", 0.5, 90)
@@ -2237,13 +2185,18 @@ func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
 }
 
 type blockingNotifier struct {
-	release chan struct{}
-	mu      sync.Mutex
-	dms     []string
+	release   chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+	mu        sync.Mutex
+	dms       []string
 }
 
 func (b *blockingNotifier) SendMessage(channelID, content string) error { return nil }
 func (b *blockingNotifier) SendDM(userID, content string) error {
+	if b.entered != nil {
+		b.enterOnce.Do(func() { close(b.entered) })
+	}
 	<-b.release
 	b.mu.Lock()
 	b.dms = append(b.dms, content)

@@ -6,9 +6,14 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('go-trader-ci-pr-{0}', github.ref) || format('go-trader-ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' }}
+
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     outputs:
       code: ${{ steps.diff.outputs.code }}
       quote: ${{ steps.diff.outputs.quote }}
@@ -17,7 +22,7 @@ jobs:
       update: ${{ steps.diff.outputs.update }}
       migrate: ${{ steps.diff.outputs.migrate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
           persist-credentials: false
@@ -29,25 +34,51 @@ jobs:
         id: diff
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_FORCED: ${{ github.event.forced }}
         run: bash scripts/ci_code_changed.sh
 
   go:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - name: Build
-        run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
+      - name: Copy the checkout before any Python setup
+        run: cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"
 
-      - name: Remaining Go tests
-        run: cd scheduler && go test ./...
+      - name: Start the remaining Go tests
+        run: bash scripts/ci_lane.sh start --ram-tmp go -- go -C "$RUNNER_TEMP/go-only/scheduler" test -skip '^(TestFeedWeight.*|TestL2BookMixedRecordingKeepsEveryImporter|TestL2BookObservationPipeline|TestOpenInterestObservationPipeline|TestPremiumObservationPipeline|TestQuoteReplayRecordingHarness|TestTradeFlowObservationPipeline|TestV3RecordingSchemaTypesEachKind|TestVolumeProfileObservationPipeline)$' ./...
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Build the Python-backed Go tests once for every lane
+        run: go -C scheduler test -tags pyintegration -run '^$' ./...
+
+      - name: Build the Python-backed binary once for every lane
+        run: go -C scheduler build -tags pyintegration -o /dev/null .
+
+      - name: Start the feed and quote tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips feed-quotes -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
+
+      - name: Start the Robinhood order tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips robinhood-orders -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRobinhoodLiveOrder[A-Za-z]*$' ./...
+
+      - name: Start the regime and update helper tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips regime-gates -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestUpdateHelpersEnvfileParsing790|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -59,107 +90,161 @@ jobs:
             exit 1
           fi
 
-      - name: Quote coordinator race check
+      - name: Wait for every lane
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_lane.sh join
+
+  go-race:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
+    steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build the race tests once for every lane
+        run: go -C scheduler test -race -run '^$' .
+
+      - name: Start the feed weight ledger race check
+        run: bash scripts/ci_lane.sh start --ram-tmp feed-weight -- go -C scheduler test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
+
+      - name: Start the quote coordinator race check
         if: ${{ needs.changes.outputs.quote == 'true' }}
-        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
+        run: bash scripts/ci_lane.sh start --ram-tmp quote -- go -C scheduler test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
+
+      - name: Wait for every lane
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_lane.sh join
 
   go-python-integration:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContractIntegration|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*)$' -skip '^(TestMergePaperInstance|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Build the Python-backed Go tests once for every lane
+        run: go -C scheduler test -tags pyintegration -run '^$' ./...
 
-  go-python-integration-robinhood-quote-precision:
+      - name: Build the Python-backed binary once for every lane
+        run: go -C scheduler build -tags pyintegration -o /dev/null .
+
+      - name: Start the remaining Python-backed Go tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips main -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestTunerPreview[A-Za-z]*|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestFeedFundingProofRealCheckScript|TestChartPatternHTFGate[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestPaperOnlyConfig[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*)$' ./...
+
+      - name: Start the check script tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips check-scripts -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHTFFilterIntegration[A-Za-z]*|TestTunerPreview[A-Za-z]*|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestFeedFundingProofRealCheckScript|TestChartPatternHTFGate[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestPaperOnlyConfig[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*)$' ./...
+
+      - name: Start the Robinhood tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips robinhood -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./...
+
+      - name: Start the paper merge suite
+        if: ${{ needs.changes.outputs.merge_paper == 'true' }}
+        run: bash scripts/ci_lane.sh start --no-skips merge-paper-instance -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./...
+
+      - name: Wait for every lane
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_lane.sh join
+
+  go-python-integration-process-cycles:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Start the process cycle tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRegimeReadinessContractProcesses$' ./...
 
-  go-python-integration-merge-paper-instance:
+      - name: Wait for every lane
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_lane.sh join
+
+  go-python-integration-paper-manual:
     needs: changes
-    if: ${{ needs.changes.outputs.merge_paper == 'true' }}
-    runs-on: ubuntu-latest
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Start the paper manual tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips paper-manual -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestPaperManualVenueGuard[A-Za-z]*$' ./...
+
+      - name: Wait for every lane
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_lane.sh join
 
   shell-suites:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: |
           uv sync
-          sudo apt-get update
-          sudo apt-get install -y strace nftables iproute2
+          apt_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${apt_sources[@]}" update
+          sudo apt-get "${apt_sources[@]}" install -y strace nftables iproute2
           sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/egress
           UV_PYTHON_INSTALL_DIR=/opt/egress/python UV_PROJECT_ENVIRONMENT=/opt/egress/venv uv sync --no-dev --compile-bytecode
           chmod -R a+rX /opt/egress
@@ -212,6 +297,18 @@ jobs:
             --marker 'PASS: quote replay harness (recorder output replays through the real quote coordinator with an equal independent ledger; resume reproduces records; the frozen study scores every split; depth-only, raw-trade-gap, tampered, altered, credentialed and archive-cache inputs refused or unscored; ordinary discovery unchanged)' \
             -- bash scripts/test_quote_replay.sh
 
+      - name: Feed parity audit suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)' \
+            -- bash scripts/test_feed_parity.sh
+
+      - name: Shared feed conversion budget suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate refuses a backup that is not steady, keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)' \
+            -- env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" bash scripts/test_shared_feed_convert_budget.sh
+
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
@@ -246,31 +343,26 @@ jobs:
             --forbid 'NOTE: systemd is not running; the unit sandbox and the launcher are not checked' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_VENV_PYTHON=/opt/egress/venv/bin/python3 EGRESS_FIXTURE_REQUIRE_RUN=1 EGRESS_REQUIRE_SYSTEMD=1 bash scripts/test_egress_enforcement.sh
 
-      - name: Build the image for the egress docker suite
-        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
-        run: docker build -t ghcr.io/richkuo/go-trader:egress-ci .
-
-      - name: Egress docker suite (root, rootful Docker)
-        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
-        run: |
-          bash scripts/run_ci_shell_suite.sh \
-            --marker 'PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)' \
-            -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
-
   shell-suites-migrate-1:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
 
       - name: Service layout migration fixture (root, systemd)
         run: |
@@ -282,11 +374,12 @@ jobs:
   shell-suites-migrate-2:
     needs: changes
     if: ${{ needs.changes.outputs.migrate == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
@@ -297,24 +390,53 @@ jobs:
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (stages kill refuse plan confirm apply latch conflict resume signal fold newtarget)' \
+            --marker 'OK: migrate-service-layout fixture passed (stages kill refuse plan)' \
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill refuse plan' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  shell-suites-migrate-3:
+  shell-suites-migrate-6:
     needs: changes
-    if: ${{ needs.changes.outputs.update == 'true' }}
-    runs-on: ubuntu-latest
+    if: ${{ needs.changes.outputs.migrate == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (confirm apply latch conflict resume signal fold newtarget)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  shell-suites-migrate-3:
+    needs: changes
+    if: ${{ needs.changes.outputs.update == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
 
       - name: Service layout migration fixture (root, systemd)
         run: |
@@ -323,71 +445,107 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  checks:
-    runs-on: ubuntu-latest
-    outputs:
-      python: ${{ steps.python.outputs.result }}
+  shell-suites-migrate-4:
+    needs: changes
+    if: ${{ needs.changes.outputs.update == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (update_recovery_restart)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery_restart' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  checks:
+    needs: changes
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync
 
-      - name: Syntax check
-        run: bash scripts/check_pre_pr.sh syntax
+      - name: Every pre-PR check
+        run: bash scripts/check_pre_pr.sh
 
-      - name: Test budget
-        run: bash scripts/check_pre_pr.sh test-budget
+      - name: Check the lane runner
+        run: bash scripts/check_ci_lane.sh
 
-      - name: Collect every Python test
-        run: |
-          uv run python3 scripts/check_pytest_shards.py collect default --out "$RUNNER_TEMP/pytest-collect/default.json"
-          uv run python3 scripts/check_pytest_shards.py collect shared_scripts --out "$RUNNER_TEMP/pytest-collect/shared_scripts.json" -- shared_scripts/
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-go@v7
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
         with:
-          name: pytest-collect
-          path: ${{ runner.temp }}/pytest-collect/
-          if-no-files-found: error
-          retention-days: 7
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
-      - name: Python checks passed
-        id: python
-        run: echo result=success >> "$GITHUB_OUTPUT"
+      - name: Install the egress suite tools
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          apt_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${apt_sources[@]}" update
+          sudo apt-get "${apt_sources[@]}" install -y nftables iproute2
 
-      - name: Agent instructions size and layout
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh agent-docs
+      - name: Build the egress suite binaries
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          go -C scheduler build -o "$RUNNER_TEMP/go-trader-egress-controller" ./cmd/egress-controller
+          go -C scheduler build -o "$RUNNER_TEMP/egress-fixture" ./cmd/egress-fixture
 
-      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh doc-lines
+      - name: Build the image for the egress docker suite
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: docker build -t ghcr.io/richkuo/go-trader:egress-ci .
 
-      - name: .github/scripts holds only test_workflow_logic.py
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh github-scripts
+      - name: Egress docker suite (root, rootful Docker)
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)' \
+            -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
 
   python-shard:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {suite: default, group: 1, splits: 2, paths: ''}
-          - {suite: default, group: 2, splits: 2, paths: ''}
+          - {suite: default, group: 1, splits: 1, paths: ''}
           - {suite: shared_scripts, group: 1, splits: 1, paths: shared_scripts/}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync
+
+      - name: Collect every test of the suite
+        env:
+          SUITE: ${{ matrix.suite }}
+          PATHS: ${{ matrix.paths }}
+        run: uv run python3 scripts/check_pytest_shards.py collect "$SUITE" --out "$RUNNER_TEMP/pytest-collect/$SUITE.json" ${PATHS:+-- "$PATHS"}
 
       - name: Run tests
         env:
@@ -401,7 +559,16 @@ jobs:
             --durations-path="scripts/pytest_durations/$SUITE.json" \
             --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
 
-      - uses: actions/upload-artifact@v4
+      - name: Every collected test ran exactly once and passed
+        if: ${{ !cancelled() }}
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          uv run --no-project python3 scripts/check_pytest_shards.py verify "$SUITE" \
+            --collected "$RUNNER_TEMP/pytest-collect/$SUITE.json" --logs "$RUNNER_TEMP/pytest-shards" \
+            --durations "scripts/pytest_durations/$SUITE.json" --durations-out "$RUNNER_TEMP/pytest-durations/$SUITE.json"
+
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: pytest-shard-${{ matrix.suite }}-${{ matrix.group }}-of-${{ matrix.splits }}
@@ -409,56 +576,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  python:
-    needs: [changes, checks, python-shard]
-    if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v6
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: pytest-collect
-          path: ${{ runner.temp }}/pytest-collect
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pytest-shard-*
-          path: ${{ runner.temp }}/pytest-shards
-          merge-multiple: true
-
-      - name: Every default test ran exactly once and passed
-        if: ${{ !cancelled() }}
-        run: |
-          uv run --no-project python3 scripts/check_pytest_shards.py verify default \
-            --collected "$RUNNER_TEMP/pytest-collect/default.json" --logs "$RUNNER_TEMP/pytest-shards" \
-            --durations scripts/pytest_durations/default.json --durations-out "$RUNNER_TEMP/pytest-durations/default.json"
-
-      - name: Every shared_scripts test ran exactly once and passed
-        if: ${{ !cancelled() }}
-        run: |
-          uv run --no-project python3 scripts/check_pytest_shards.py verify shared_scripts \
-            --collected "$RUNNER_TEMP/pytest-collect/shared_scripts.json" --logs "$RUNNER_TEMP/pytest-shards" \
-            --durations scripts/pytest_durations/shared_scripts.json --durations-out "$RUNNER_TEMP/pytest-durations/shared_scripts.json"
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
-          name: pytest-durations
+          name: pytest-durations-${{ matrix.suite }}
           path: ${{ runner.temp }}/pytest-durations/
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Every Python job passed
-        if: ${{ !cancelled() }}
-        env:
-          COLLECT: ${{ needs.checks.outputs.python }}
-          SHARDS: ${{ needs.python-shard.result }}
-        run: |
-          echo "python checks: ${COLLECT:-not run}, python-shard: $SHARDS"
-          if [ "$COLLECT" != success ] || [ "$SHARDS" != success ]; then
-            echo "::error::a Python CI job did not succeed"
-            exit 1
-          fi

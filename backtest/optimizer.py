@@ -152,6 +152,29 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             for merged in ({**defaults, **p} for p in param_grid)
         )
         return max(history, max_indicator_lookback(param_ranges))
+    if strategy_name == "sweep_absorption_ifvg":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from sweep_absorption_ifvg import support_for_params
+        return max(support_for_params(p)["decision_bars"] for p in param_grid)
+    if strategy_name == "volume_spike_breakout":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from volume_spike_breakout import DEFAULT_PARAMS, required_history_bars
+        history = max(
+            required_history_bars(merged["lookback"], merged["vol_period"])
+            for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
+        )
+        return max(history, max_indicator_lookback(param_ranges))
+    if strategy_name == "inversion_fvg":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from inversion_fvg import DEFAULT_PARAMS, required_history_bars
+        history = max(
+            required_history_bars(merged["max_gap_age"], merged["retest_window"])
+            for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
+        )
+        return max(history, max_indicator_lookback(param_ranges))
     lookback = max_indicator_lookback(param_ranges)
     if strategy_name in RECURSION_HISTORY_STRATEGIES:
         if _OPEN_STRATEGIES not in sys.path:
@@ -836,6 +859,18 @@ DEFAULT_PARAM_RANGES = {
         "breakout_window": [10, 20, 40, 80],
         "flow_threshold": [0.0, 0.05, 0.10, 0.20],
     },
+    "volume_spike_breakout": {
+        "lookback": [10, 20, 40, 80, 100],
+        "vol_period": [10, 20, 40, 80, 100],
+        "vol_multiplier": [1.0, 1.5, 2.0, 3.0],
+        "min_body_frac": [0.0, 0.25, 0.5],
+    },
+    "inversion_fvg": {
+        "min_fvg_atr": [0.0, 0.25, 0.5, 1.0],
+        "max_gap_age": [24, 48, 96],
+        "retest_window": [12, 24, 48],
+        "entry_level": [0.25, 0.5, 0.75],
+    },
     "open_interest_breakout": {
         "price_lookback": [10, 20, 40],
         "oi_lookback": [2, 4, 8],
@@ -897,6 +932,15 @@ DEFAULT_PARAM_RANGES = {
         "setup_expiry": [3, 6, 12],
         "session_hours": [4],
         "delta_confirmation": [True],
+    },
+    "sweep_absorption_ifvg": {
+        "sweep_atr_mult": [0.0, 0.1, 0.25],
+        "absorption_threshold": [0.0, 0.05, 0.1],
+        "min_fvg_atr": [0.1, 0.25],
+        "min_displacement_atr": [0.25, 0.5],
+        "setup_expiry": [6, 12],
+        "entry_level": [0.5],
+        "absorption_filter": [True],
     },
     "volume_profile_reclaim": {
         "profile_bins": [32, 64, 128],
@@ -1047,7 +1091,7 @@ DEFAULT_PARAM_RANGES = {
         "pivot_lookback": [3, 5, 7],
         "tolerance": [0.02, 0.03, 0.05],
         "vol_multiplier": [1.2, 1.5, 2.0],
-        "htf_gate_factor": [0, 6, 10],
+        "htf_gate_factor": [0, 2, 4],
     },
     "liquidity_sweeps": {
         "swing_lookback": [10, 20, 30],

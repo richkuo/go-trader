@@ -30,6 +30,15 @@ type StateStore struct {
 	appliedActions map[storageKey]bool
 	failures       map[RiskPartition]int
 	saveExtra      func(tx *sql.Tx, role storageRole) error
+	holdSignal     func(p RiskPartition, held bool)
+	holdCauses     func(p RiskPartition, causes []string)
+	limitRecovery  limitRecoveryHold
+}
+
+type limitRecoveryHold struct {
+	startup    bool
+	unreadable string
+	failed     map[int64]int64
 }
 
 func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
@@ -442,17 +451,61 @@ func strategyIDs(states []*StrategyState) []string {
 
 // ------------------------------------------------------- persistence hold
 
+var stateSaveOutcomeFault = func(p RiskPartition) error { return nil }
+
 func (st *StateStore) recordSaveOutcome(p RiskPartition, err error) {
 	if st == nil {
 		return
+	}
+	if err == nil {
+		err = stateSaveOutcomeFault(p)
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if err != nil {
 		st.failures[p]++
+	} else {
+		delete(st.failures, p)
+	}
+	st.emitHoldLocked(p)
+}
+
+func (st *StateStore) emitHoldLocked(p RiskPartition) {
+	causes := st.holdCausesLocked(p)
+	if st.holdCauses != nil {
+		st.holdCauses(p, causes)
 		return
 	}
-	delete(st.failures, p)
+	if st.holdSignal != nil {
+		st.holdSignal(p, len(causes) > 0)
+	}
+}
+
+func (st *StateStore) setHoldSignal(signal func(p RiskPartition, held bool)) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	st.holdSignal = signal
+	st.mu.Unlock()
+}
+
+func (st *StateStore) setHoldCauseSignal(signal func(p RiskPartition, causes []string)) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.holdCauses = signal
+	seen := make(map[RiskPartition]bool)
+	for _, spec := range st.layout.Files {
+		for _, p := range st.layout.partitionsForRole(spec.Role) {
+			if !seen[p] {
+				seen[p] = true
+				st.emitHoldLocked(p)
+			}
+		}
+	}
 }
 
 func (st *StateStore) saveFailures(p RiskPartition) int {
@@ -464,11 +517,154 @@ func (st *StateStore) saveFailures(p RiskPartition) int {
 	return st.failures[p]
 }
 
-// persistenceHoldsPartition reports an unacknowledged save failure. While it
-// holds, the partition takes no position-increasing action; closes, trailing
-// stops, ratchet, protection sync and hedge management keep running.
+const (
+	persistenceHoldSaveFailed          = "save_failed"
+	persistenceHoldLimitQueueStartup   = "limit_queue_startup"
+	persistenceHoldLimitQueueUnread    = "limit_queue_unreadable"
+	persistenceHoldLimitCommitRetrying = "limit_fill_commit"
+)
+
+func persistenceHoldCauseText(cause string) (string, bool) {
+	switch cause {
+	case persistenceHoldSaveFailed:
+		return "a state save failed and no later save succeeded", true
+	case persistenceHoldLimitQueueStartup:
+		return "the scheduler has not finished its first pass over the resting limit order queue since it started", true
+	case persistenceHoldLimitQueueUnread:
+		return "the resting limit order queue could not be read, so a filled order may not be booked yet", true
+	case persistenceHoldLimitCommitRetrying:
+		return "a proven limit fill could not be committed with its book and is waiting for a retry", true
+	}
+	return "", false
+}
+
+func (st *StateStore) holdCausesLocked(p RiskPartition) []string {
+	var causes []string
+	if st.failures[p] > 0 {
+		causes = append(causes, persistenceHoldSaveFailed)
+	}
+	if p == livePartition {
+		if st.limitRecovery.startup {
+			causes = append(causes, persistenceHoldLimitQueueStartup)
+		}
+		if st.limitRecovery.unreadable != "" {
+			causes = append(causes, persistenceHoldLimitQueueUnread)
+		}
+		if len(st.limitRecovery.failed) > 0 {
+			causes = append(causes, persistenceHoldLimitCommitRetrying)
+		}
+	}
+	return causes
+}
+
+func (st *StateStore) persistenceHoldCauses(p RiskPartition) []string {
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.holdCausesLocked(p)
+}
+
+// persistenceHoldsPartition reports an unacknowledged save failure, and for the
+// live partition a resting limit queue that is not yet verified, unreadable or
+// waiting on a failed fill commit. While it holds, the partition takes no
+// position-increasing action; closes, trailing stops, ratchet, protection sync
+// and hedge management keep running.
 func (st *StateStore) persistenceHoldsPartition(p RiskPartition) bool {
-	return st.saveFailures(p) > 0
+	return len(st.persistenceHoldCauses(p)) > 0
+}
+
+func (st *StateStore) persistenceHoldReason(p RiskPartition) string {
+	causes := st.persistenceHoldCauses(p)
+	if len(causes) == 0 {
+		return ""
+	}
+	texts := make([]string, 0, len(causes))
+	for _, c := range causes {
+		if text, ok := persistenceHoldCauseText(c); ok {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "; ")
+}
+
+func (st *StateStore) beginLimitRecovery() {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.limitRecovery.startup = true
+	st.emitHoldLocked(livePartition)
+}
+
+func (st *StateStore) noteLimitFillCommitFailed(rows map[int64]int64) {
+	if st == nil || len(rows) == 0 {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.limitRecovery.failed == nil {
+		st.limitRecovery.failed = make(map[int64]int64)
+	}
+	for id, oid := range rows {
+		st.limitRecovery.failed[id] = oid
+	}
+	st.emitHoldLocked(livePartition)
+}
+
+func (st *StateStore) clearLimitFillCommitFailed(id int64) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if _, ok := st.limitRecovery.failed[id]; !ok {
+		return
+	}
+	delete(st.limitRecovery.failed, id)
+	st.emitHoldLocked(livePartition)
+}
+
+func (st *StateStore) limitFillCommitPending() map[int64]int64 {
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make(map[int64]int64, len(st.limitRecovery.failed))
+	for id, oid := range st.limitRecovery.failed {
+		out[id] = oid
+	}
+	return out
+}
+
+type limitRecoveryPass struct {
+	read       bool
+	unreadable string
+	present    map[int64]int64
+	deferred   bool
+}
+
+func (st *StateStore) finishLimitRecoveryPass(pass limitRecoveryPass) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.limitRecovery.unreadable = pass.unreadable
+	if pass.read && pass.unreadable == "" {
+		for id, oid := range st.limitRecovery.failed {
+			if got, ok := pass.present[id]; !ok || got != oid {
+				delete(st.limitRecovery.failed, id)
+			}
+		}
+		if !pass.deferred {
+			st.limitRecovery.startup = false
+		}
+	}
+	st.emitHoldLocked(livePartition)
 }
 
 // ------------------------------------------------------------ routed writes

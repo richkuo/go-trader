@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,7 @@ var knownSubcommands = []string{
 	"notify-broker",
 	"egress-anchor",
 	"cpu-class",
+	"feed-weight-release",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -124,6 +126,10 @@ func main() {
 			os.Exit(runRobinhoodLogin(os.Args[2:]))
 		case "cpu-class":
 			os.Exit(runCPUClass(os.Args[2:]))
+		case "feed-weight-release":
+			os.Exit(runFeedWeightRelease(os.Args[2:]))
+		case "candle-archive":
+			os.Exit(runCandleArchiveCommand(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 
@@ -166,6 +172,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	applyProcessVenueWritePolicy(cfg)
 	exportRobinhoodSessionDir(*configPath, cfg)
 	if code := startEgress(cfg, *configPath, false); code != 0 {
 		os.Exit(code)
@@ -276,7 +283,7 @@ func main() {
 
 	var ownership *stateOwnership
 	if !readOnlyReport && schedulerNeedsOwnership(*once) {
-		owned, lockErr := acquireStateOwnership(storageLayoutCfg.Files)
+		owned, lockErr := acquireSchedulerStateOwnership(storageLayoutCfg.Files)
 		if lockErr != nil {
 			msg := reportStateOwnershipFailure(lockErr)
 			sendStartupRefusalDM(notifier, "Singleton guard", msg)
@@ -336,9 +343,14 @@ func main() {
 	}
 	defer store.Close()
 
+	if !readOnlyReport {
+		store.beginLimitRecovery()
+	}
 	if ownership != nil {
-		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
-			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; command-line regime admission stays disabled for this process: %v\n", err)
+		if err := globalManualRegimeOwner.publishHeld(storageLayoutCfg, store.persistenceHoldCauses); err != nil {
+			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; every command-line manual-open and manual-add that sends an order refuses in every feed mode, and command-line regime admission stays disabled, until this scheduler restarts and publishes: %v\n", err)
+		} else {
+			store.setHoldCauseSignal(globalManualRegimeOwner.signalPersistenceCauses)
 		}
 		defer globalManualRegimeOwner.withdraw()
 	}
@@ -499,6 +511,33 @@ func main() {
 		for _, line := range robinhoodOrderStartupLines(state) {
 			fmt.Println(line)
 		}
+		if err := store.LoadOKXProtections(state, cfg.Strategies); err != nil {
+			msg := fmt.Sprintf("OKX stop protection: %v", err)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s (exit %d)\n", msg, ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Storage layout", fmt.Sprintf("%s (exit %d)", msg, ExitStorageOwnership))
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		if err := validateOKXStopStartup(state, cfg.Strategies); err != nil {
+			fmt.Fprintf(os.Stderr, "[okx-stop] CRITICAL: refusing to start: %v\n", err)
+			sendStartupRefusalDM(notifier, "OKX stop", err.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
+		for _, sc := range cfg.Strategies {
+			if !okxIsLive(sc.Args) || !okxStopWanted(sc) || state.Strategies[sc.ID].OKXProtection.unresolved() {
+				continue
+			}
+			_, err := okxPreflightAllowsEntry(okxSymbol(sc.Args))
+			if err == nil && strategyHasOpenPositions(state.Strategies[sc.ID]) {
+				err = fmt.Errorf("the book has an open position with no saved stop")
+			}
+			if err != nil {
+				msg := fmt.Sprintf("OKX stop startup check for %s failed: %v. New entries require a fresh preflight. Verify any open position has a stop.", sc.ID, err)
+				fmt.Fprintln(os.Stderr, "[okx-stop] WARN:", msg)
+				notifier.SendOwnerDM(msg)
+			}
+		}
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &sync.RWMutex{}, notifier, time.Now())
 	}
 
@@ -524,7 +563,7 @@ func main() {
 	if pruned {
 		for _, part := range startupPartitions {
 			prs := state.partitionRisk(part)
-			if prs.PeakValue <= 0 {
+			if prs.PeakValue <= 0 || prs.PeakRebaselinePending {
 				continue
 			}
 			oldPeak := prs.PeakValue
@@ -541,6 +580,13 @@ func main() {
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
+	paperManualWarnings := newPaperManualWarningTracker()
+	paperManualWarnings.printNew(collectPaperManualPositionWarnings(cfg, state))
+	paperManualLimitWarnings := paperManualLimitRowStartupWarnings(cfg, store.LoadPendingLimitOrders)
+	for _, msg := range paperManualLimitWarnings {
+		fmt.Printf("[WARN] %s\n", msg)
+	}
 
 	for _, part := range startupPartitions {
 		prs := state.partitionRisk(part)
@@ -586,7 +632,9 @@ func main() {
 		go tuningManager.run(shutdownReadOnlyCtx)
 	}
 	armMainLoopDeadline(mainLoopWorkBudget)
+	server.ConfigureDashboardCandles(cfg.DashboardCandles)
 	server.Start(statusBindHost, statusPort)
+	server.StartDashboardCandles(shutdownReadOnlyCtx)
 
 	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, store.UpdateTradeDiagnosticsMetrics)
 	diagWorker.splitStorage = store.Split()
@@ -655,17 +703,10 @@ func main() {
 		fmt.Printf("[WARN] llm_entry_analysis enabled but %s is not set — analyses will fail (advisory only, trading unaffected)\n", llmEntryAnalysisAPIKeyEnv)
 	}
 
+	slashPolicy := slashCommandPolicyFor(cfg)
 	if d := notifier.DiscordBackend(); d != nil {
-		if err := d.RegisterSlashCommands(server, cfg); errors.Is(err, errSlashCommandsDeferred) {
-			fmt.Printf("[WARN] Discord slash commands: %v\n", err)
-		} else if err != nil {
-			fmt.Printf("[WARN] Discord slash command registration failed: %v\n", err)
-			if notifier.HasOwner() {
-				notifier.SendOwnerDM("[slash] registration failed: " + err.Error())
-			}
-		} else {
-			fmt.Println("Discord slash commands registered")
-		}
+		d.bindSlashCommandContext(server, cfg)
+		slashCommandsOffHint.Store(!slashPolicy.Enabled)
 	}
 
 	defer func() {
@@ -730,6 +771,8 @@ func main() {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
+
+	sendPaperManualStartupWarnings(notifier, paperManualLimitWarnings)
 
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
@@ -814,6 +857,9 @@ func main() {
 	deadlineFeed := cfg.marketFeedDeadlineScheduled()
 	fmt.Println(marketFeedStartupLine(cfg))
 	var feedOwner *marketFeedOwner
+	var feedLedger *feedRequestLedger
+	var feedAuthority *feedWeightAuthority
+	var feedRateLimitSender *feedAlertSender
 	feedOwnerCtx := shutdownReadOnlyCtx
 	var feedReq feedRequirements
 	var sharedClient *sharedFeedClient
@@ -843,12 +889,32 @@ func main() {
 		}
 		feedReq = derived
 		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
-		feedLedger := newFeedRequestLedger(nil, false, nil)
+		feedLedger = newFeedRequestLedger(cfg.MarketFeedWeightBudget.budget(), false, nil)
+		if policy := cfg.MarketFeedWeightBudget.budget().weightPolicy(); policy != nil {
+			feedAuthority = newFeedWeightAuthority(feedAuthorityRoleEmbedded, *configPath, nil)
+			feedAuthority.attach(feedLedger)
+			fmt.Printf("[feed] %s\n", feedAuthorityStartupLine(feedAuthority))
+			if code := startFeedAuthority(feedAuthority, policy, notifier, "[feed]"); code != 0 {
+				cleanupNotifier()
+				os.Exit(code)
+			}
+			go feedAuthority.runHeartbeat(shutdownReadOnlyCtx)
+		} else {
+			fmt.Printf("[feed] shared weight: coverage=%q (no market_feed_weight_budget; embedded reads are outside the shared host record)\n", feedSharedCoverageNoPolicy)
+		}
 		feedOwner.SetRequestLedger(feedLedger)
+		fmt.Printf("[feed] embedded owner request totals are logged without a limit; %s\n", formatFeedWeightPolicy(cfg.MarketFeedWeightBudget.budget().weightPolicy()))
+		feedRateLimitSender = newFeedAlertSender(func(msg string) {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(msg)
+			}
+		}, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+		defer feedRateLimitSender.drain(feedAlertSenderDrainBound)
 		feedOwnerCtx = withFeedLedger(shutdownReadOnlyCtx, feedLedger)
 		fmt.Printf("[feed] closed-bar correction: re-read at close%s, counted as request reason correction\n",
 			formatFeedCorrectionOffsets(feedCorrectionOffsets))
 		globalMarketFeedStatus.setOwner(feedOwner)
+		feedLedger.openStartup()
 		ready := feedOwner.ApplyGeneration(feedOwnerCtx, feedReq)
 		go feedOwner.Run(feedOwnerCtx)
 		select {
@@ -862,6 +928,7 @@ func main() {
 	}
 
 	hlLotMetadata.configure(feedOwnerCtx)
+	hlKillSwitchPositionReader := newHLKillSwitchPositionReader(feedOwnerCtx)
 
 	lastRun := make(map[string]time.Time)
 	var lastLiquidationAudit time.Time
@@ -913,6 +980,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "[reload] ERROR: market feed requirements rejected; keeping the previous requirements: %v\n", reqErr)
 			} else {
 				feedReq = nextReq
+				if closed := sharedClient.closeFallbackEpisodes(feedReq); len(closed) > 0 {
+					fmt.Printf("[reload] shared market feed key fallback closed without an alert for %s: the reloaded config no longer needs these keys\n", strings.Join(closed, ","))
+				}
 				fmt.Printf("[reload] shared market feed requirements refreshed (%d keys); each seal is checked against them\n", len(nextReq.Order))
 				checkSharedFeedCoverage(sharedClient, "reload", feedReq, feedConsumerCadences(cfg), notifier)
 			}
@@ -972,10 +1042,18 @@ func main() {
 	lastAutoUpdateCheck := time.Now()
 
 	var resetGoroutineRunning atomic.Bool
+	resetReplies := make(chan killSwitchResetRequest, 1)
+	resetReplyWake := make(chan struct{}, 1)
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
 	backfillMovedStopMarkers(cfg, state, &mu)
 	var pendingDrainReports []manualDrainReport
+	if d := notifier.DiscordBackend(); d != nil && !*once && !readOnlyReport {
+		if slashPolicy.Enabled {
+			d.installSlashCommandHandler()
+		}
+		d.startSlashCommandWorker(shutdownReadOnlyCtx, slashPolicy)
+	}
 
 	for {
 		if isDraining() {
@@ -991,6 +1069,26 @@ func main() {
 		state.CycleCount++
 		cycle := state.CycleCount
 		mu.Unlock()
+		select {
+		case req := <-resetReplies:
+			mu.Lock()
+			res := applyKillSwitchResetReply(state, req, func(p RiskPartition) error { return store.SavePartition(state, p) })
+			mu.Unlock()
+			if res.Err != nil {
+				if res.SaveErr != nil {
+					fmt.Printf("[CRITICAL] Failed to save state after kill switch reset (%s scope): %v; latch kept\n", partitionLabel(res.Target), res.SaveErr)
+				} else {
+					fmt.Printf("[update] Kill switch reset DM got a reply that changed nothing: %q (%v)\n", req.Reply, res.Err)
+				}
+				notifier.SendOwnerDM(res.Err.Error())
+			} else {
+				notifier.SendOwnerDM(formatKillSwitchResetAck(res))
+				fmt.Printf("[update] Kill switch reset by owner via DM (%s scope); peak $%.2f kept until the first eligible equity reading\n", partitionLabel(res.Target), res.PeakValue)
+			}
+			releaseKillSwitchResetPrompt(&resetGoroutineRunning)
+		default:
+		}
+		cycleInputsFrom := tradingNow().UTC()
 		totalTrades := 0
 		channelTrades := make(map[string]int)
 		channelTradeDetails := make(map[string][]string)
@@ -1012,8 +1110,17 @@ func main() {
 		}
 
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, tradingNow())
+		for _, sc := range cfg.Strategies {
+			ss := state.Strategies[sc.ID]
+			if ss != nil && ss.OKXProtection.unresolved() {
+				logger := entryRecoveryLogger(logMgr, sc.ID)
+				reconcileOKXProtection(store, sc, ss, &mu, notifier, logger)
+				logger.Close()
+			}
+		}
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
+		runPaperManualPositionWarnings(cfg, state, store, &mu, notifier, paperManualWarnings, ownership != nil)
 
 		resolveCapitalPct(cfg.Strategies)
 
@@ -1080,6 +1187,9 @@ func main() {
 				select {
 				case <-timer.C:
 					continue
+				case <-resetReplyWake:
+					timer.Stop()
+					continue
 				case <-reloadCh:
 					timer.Stop()
 					reloadConfig()
@@ -1096,6 +1206,9 @@ func main() {
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
+				continue
+			case <-resetReplyWake:
+				timer.Stop()
 				continue
 			case <-reloadCh:
 				timer.Stop()
@@ -1124,6 +1237,7 @@ func main() {
 			sharedKey := sharedDeadline.Unix()
 			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
 			feedCtx.Snapshot = snap
+			server.PublishMarketSnapshot(snap, cycleFeedReqs, true)
 			feedCtx.SharedKey = sharedKey
 			globalMarketFeedStatus.setSnapshotID(snap.EvaluationID)
 			fmt.Println(sharedFeedAuditLine(report, len(evaluationMarks), feedEffectiveCadences(cfg, intervals)))
@@ -1139,6 +1253,28 @@ func main() {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
+			server.PublishMarketSnapshot(feedCtx.Snapshot, cycleFeedReqs, false)
+			for _, ev := range feedLedger.rateLimitReport(feedRateLimitOutstanding(feedOwner)) {
+				fmt.Printf("[feed-ratelimit] evaluation=%s %s\n", evalID, ev.logLine())
+				fmt.Printf("[feed] %s\n", formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
+				feedRateLimitSender.enqueue(formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
+			}
+			for _, ev := range feedLedger.weightReport(feedOwner.weightRefusedInputs(), feedOwner.weightInputRequired) {
+				fmt.Printf("[feed-weight] evaluation=%s %s\n", evalID, ev.logLine())
+				if msg := formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"); msg != "" {
+					fmt.Printf("[feed] %s\n", msg)
+					feedRateLimitSender.enqueue(msg)
+				}
+			}
+			for _, ev := range feedAuthority.sharedReport() {
+				msg := formatFeedSharedAlert(ev, marketFeedWebsocket, "scheduler", feedAuthority.key)
+				fmt.Printf("[feed-weight-shared] evaluation=%s %s\n", evalID, ev.logLine())
+				fmt.Printf("[feed] %s\n", msg)
+				feedRateLimitSender.enqueue(msg)
+			}
+			if line := feedSharedCycleLine(feedLedger); line != "" {
+				fmt.Printf("[feed-weight-shared] evaluation=%s %s\n", evalID, line)
+			}
 			globalMarketFeedStatus.setSnapshotID(evalID)
 			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {
 				logOnChangef("feed-snapshot", marketSnapshotHealth(feedCtx.Snapshot, cycleFeedReqs), "%s\n", line)
@@ -1167,6 +1303,8 @@ func main() {
 				continue
 			}
 		}
+		priceSources := cyclePriceSources{}
+		priceSources.label(prices, priceSourceSpot)
 		if len(hlPerpsCoins) > 0 && feedCtx.active() {
 			feedMarks := feedCtx.Snapshot.freshMids()
 			mergePerpsMarks(prices, feedMarks)
@@ -1208,6 +1346,7 @@ func main() {
 				}
 			}
 		}
+		priceSources.label(prices, priceSourceHyperliquid)
 		paperFundingMarks := make(map[string]float64, len(hlPerpsCoins))
 		for _, coin := range hlPerpsCoins {
 			if px, ok := prices[coin]; ok {
@@ -1220,6 +1359,7 @@ func main() {
 				fmt.Printf("[WARN] OKX perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open OKX perps positions\n", okxPerpsCoins, err)
 			} else {
 				mergePerpsMarks(prices, okxMarks)
+				priceSources.label(prices, priceSourceOKX)
 				for _, coin := range okxPerpsCoins {
 					if _, ok := prices[coin]; !ok {
 						fmt.Printf("[WARN] No OKX perps mark for %s — PortfolioNotional/Value will fall back to entry cost\n", coin)
@@ -1236,6 +1376,11 @@ func main() {
 					fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
 				}
 				mergeFuturesMarks(prices, marks)
+				if mode == FuturesMarkModePaperFallback {
+					priceSources.label(prices, priceSourceFuturesDegraded)
+				} else {
+					priceSources.label(prices, priceSourceFutures)
+				}
 				for _, sym := range futuresSymbols {
 					if _, ok := prices[sym]; !ok {
 						fmt.Printf("[WARN] No futures mark for %s — PortfolioNotional/Value will fall back to entry cost\n", sym)
@@ -1430,6 +1575,8 @@ func main() {
 			for _, part := range cyclePartitions {
 				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
 					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
+				measureScopeRebaselineValuation(sr, state.partitionRiskIfPresent(part), cfg.Strategies, state, prices, priceSources,
+					riskWalletBalances, sharedWallets, cfg.IntervalSeconds, cycleInputsFrom, tradingNow().UTC())
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
@@ -1440,7 +1587,7 @@ func main() {
 			if liveSR := scopeRisk[livePartition]; liveSR != nil {
 				livePrs := state.partitionRisk(livePartition)
 				liveCfgs := strategiesInScope(cfg.Strategies, ScopeLive)
-				if !livePrs.ManualMarkBasisRebaselined {
+				if !livePrs.ManualMarkBasisRebaselined && !livePrs.PeakRebaselinePending {
 					if unmarked := missingManualOnlyMarks(liveCfgs, riskOpenSymbols, prices); len(unmarked) > 0 {
 						fmt.Printf("[INFO] manual mark valuation-basis peak migration deferred: no live mark this cycle for open manual-only coin(s) %s\n", strings.Join(unmarked, ", "))
 					} else {
@@ -1465,9 +1612,24 @@ func main() {
 
 			quotePrecisionRebaselineDM := runQuotePrecisionPeakRebaseline(cyclePartitions, cfg.Strategies, state, prices, scopeRisk)
 
+			var rebaselineNotices []string
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]
-				applyScopeCycleRisk(sr, state.partitionRisk(part))
+				prs := state.partitionRisk(part)
+				applyScopeCycleRiskCommitted(sr, prs, func(p RiskPartition) error { return store.SavePartition(state, p) })
+				switch {
+				case sr.Rebaselined:
+					fmt.Printf("[WARN] [%s] kill-switch reset peak rebaseline committed: peak $%.2f -> $%.2f (first eligible equity reading after the reset)\n",
+						partitionLabel(part), sr.RebaselineOldPeak, sr.RebaselineNewPeak)
+					rebaselineNotices = append(rebaselineNotices, formatPeakRebaselineDM(part, sr.RebaselineOldPeak, sr.RebaselineNewPeak))
+				case sr.RebaselineSaveErr != nil:
+					fmt.Printf("[CRITICAL] [%s] kill-switch reset peak rebaseline NOT committed (state save failed: %v); peak $%.2f and the pending flag are kept, entries held until a save succeeds\n",
+						partitionLabel(part), sr.RebaselineSaveErr, prs.PeakValue)
+				default:
+					if wait := scopeRebaselineWaitReason(sr, prs); wait != "" {
+						logOnChangef("peak-rebaseline-wait:"+part.String(), wait, "[INFO] [%s] kill-switch reset peak rebaseline waiting: %s (peak $%.2f kept)\n", partitionLabel(part), wait, prs.PeakValue)
+					}
+				}
 				if sr.KillSwitchFired {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %s\n", partitionLabel(part), sr.Reason)
 					for _, id := range stateIDsInPartition(state.Strategies, cfg.Strategies, part) {
@@ -1494,6 +1656,9 @@ func main() {
 
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
+			}
+			for _, msg := range rebaselineNotices {
+				notifier.SendOwnerDM(msg)
 			}
 			if quotePrecisionRebaselineDM != "" {
 				notifier.SendOwnerDM(quotePrecisionRebaselineDM)
@@ -1569,14 +1734,18 @@ func main() {
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlKillSwitchAll)
 				mu.RUnlock()
 
+				var hlCycleStart *hlStrictPositionSnapshot
+				if hlStateFetched {
+					hlCycleStart = &hlStrictPositionSnapshot{Target: hlPositionTarget{Account: hlAddr, Endpoint: hlMainnetURL}, Positions: hlPositions}
+				}
 				inputs := KillSwitchCloseInputs{
 					HLAddr:            hlAddr,
-					HLStateFetched:    hlStateFetched,
-					HLPositions:       hlPositions,
+					HLCycleStart:      hlCycleStart,
+					HLEndpoint:        hlInfoEndpoint(),
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
 					HLCloser:          defaultHyperliquidLiveCloser,
-					HLFetcher:         defaultHLStateFetcher,
+					HLReader:          hlKillSwitchPositionReader,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
 					HLLimitOrderLoader: func() ([]PendingLimitOrder, error) {
@@ -1591,21 +1760,24 @@ func main() {
 					HLLimitOrderRoster: killSwitchLimitOrderRoster(cfg.Strategies),
 					HLLimitOrderDeps: killSwitchLimitOrderDeps{
 						Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-							return runHyperliquidCancelOrderFn(script, symbol, oid)
+							return runHyperliquidCancelOrderFn(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
 						},
 						Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
 						},
-						Delete: func(id int64) error {
+						Delete: func(o PendingLimitOrder) error {
 							if store == nil {
 								return fmt.Errorf("state db unavailable")
 							}
-							return store.DeletePendingLimitOrder(id)
-						},
-						Flush: func() error {
-							mu.Lock()
-							defer mu.Unlock()
-							return SaveStateWithStore(state, store)
+							unlock, err := store.tryLiveManualActionLock()
+							if err != nil {
+								return fmt.Errorf("a manual command holds the manual-action lock (%w)", err)
+							}
+							defer unlock()
+							if why := recheckLimitRow(store, o); why != "" {
+								return fmt.Errorf("%s", why)
+							}
+							return store.DeletePendingLimitOrderIfUnchanged(o)
 						},
 						MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
 							if store == nil {
@@ -1617,8 +1789,9 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           defaultOKXLiveCloser,
-					OKXFetcher:          defaultOKXPositionsFetcher,
+					OKXCloser:           protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, false, defaultOKXLiveCloser),
+					OKXAccount:          okxEntryAccountKey("swap"),
+					OKXReader:           defaultOKXStrictPositionReader,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
 					RHCloser:            newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginKillSwitch),
@@ -1663,31 +1836,33 @@ func main() {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
 				rhFlatProofs := plan.RHCloseReport.VerifiedFlatCoins()
-				var rhBooksKept []string
+				var venueBooksKept []string
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						for _, coin := range forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatProofs, nil) {
-							rhBooksKept = append(rhBooksKept, sc.ID+" "+coin)
+							venueBooksKept = append(venueBooksKept, sc.ID+" "+coin)
 						}
 					}
 				}
-				if len(rhBooksKept) > 0 {
-					sort.Strings(rhBooksKept)
-					fmt.Printf("[CRITICAL] Portfolio kill switch: Robinhood books %v stay open without fresh account-qualified flat proof; the latch cannot auto-reset this cycle (#1921)\n", rhBooksKept)
+				if len(venueBooksKept) > 0 {
+					sort.Strings(venueBooksKept)
+					fmt.Printf("[CRITICAL] Portfolio kill switch: Venue books %v await verified settlement; the latch cannot auto-reset this cycle\n", venueBooksKept)
 				}
 				if !notifier.HasOwner() {
-					if len(rhBooksKept) > 0 {
-						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
+					if len(venueBooksKept) > 0 {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: venue books await verified settlement")
 					} else if plan.CanAutoResetWithoutOwner() {
-						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
-						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
-							peakRebaselineAvailable,
+						livePrs := state.partitionRisk(livePartition)
+						before := clonePortfolioRiskState(livePrs)
+						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(livePrs, liveSR.TotalPV,
 							"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared")
 						if killSwitchAutoReset {
-							if peakRebaselineAvailable {
-								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", liveSR.TotalPV)
+							if err := store.SavePartition(state, livePartition); err != nil {
+								*livePrs = before
+								killSwitchAutoReset = false
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset NOT applied: state save failed (%v); the latch stays in force and retries next cycle\n", err)
 							} else {
-								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, prior peak retained because current equity is not trustworthy)\n")
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured); peak $%.2f kept until the first eligible equity reading after this close\n", livePrs.PeakValue)
 							}
 						}
 					} else {
@@ -1717,6 +1892,10 @@ func main() {
 				}
 				mu.Lock()
 				paperKillSwitch := applyPaperKillSwitchCycle(state, cfg, prices, paperSR, notifier.HasOwner())
+				if err := commitPaperKillSwitchAutoReset(state, part, &paperKillSwitch, func(p RiskPartition) error { return store.SavePartition(state, p) }); err != nil {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset NOT applied: state save failed (%v); the latch stays in force and retries next cycle\n", partitionLabel(part), err)
+				}
+				paperPeak := state.partitionRisk(part).PeakValue
 				mu.Unlock()
 				if paperKillSwitch.CloseApplied {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
@@ -1725,7 +1904,7 @@ func main() {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %d option leg(s) at or past their expiry cutoff stay open until settlement books them: %s\n", partitionLabel(part), len(paperKillSwitch.Kept), strings.Join(paperKillSwitch.Kept, ", "))
 				}
 				if paperKillSwitch.AutoReset {
-					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured); peak $%.2f kept until the first eligible valuation after this close\n", partitionLabel(part), paperPeak)
 				}
 				if paperKillSwitch.Message != "" && notifier.HasBackends() {
 					notifier.SendToPartitionChannels(part, paperKillSwitch.Message)
@@ -1853,42 +2032,25 @@ func main() {
 				}
 			}
 			if len(promptScopes) > 0 && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
-				resetPrompt := formatKillSwitchResetPromptForScopes(killSwitchInstanceLabel(*configPath), hlAddr, promptPlans, promptScopes, latchedNow)
+				resetCode := newKillSwitchResetCode()
+				mu.RLock()
+				promptedLatches := captureKillSwitchLatchInstances(state, latchedNow)
+				mu.RUnlock()
+				resetPrompt := formatKillSwitchResetPromptForScopes(killSwitchInstanceLabel(*configPath), hlAddr, resetCode, promptPlans, promptScopes, latchedNow)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
-					defer releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
+						releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 						return
 					}
-					mu.RLock()
-					latched := state.latchedPartitions()
-					mu.RUnlock()
-					target, parseErr := parseKillSwitchResetReply(resp, latched)
-					if parseErr != nil {
-						fmt.Printf("[update] Kill switch reset DM got unexpected reply: %q (%v)\n", resp, parseErr)
-						notifier.SendOwnerDM(parseErr.Error())
-						return
+					resetReplies <- killSwitchResetRequest{Code: resetCode, Prompted: promptedLatches, Reply: resp}
+					select {
+					case resetReplyWake <- struct{}{}:
+					default:
 					}
-					mu.Lock()
-					prs := state.partitionRisk(target)
-					resetDrawdownPct := ResetPortfolioKillSwitchManual(prs)
-					addKillSwitchEvent(prs, "reset", "", resetDrawdownPct, 0, prs.PeakValue,
-						fmt.Sprintf("manual reset via DM (%s scope)", partitionLabel(target)))
-					prs.Events[len(prs.Events)-1].Partition = target
-					if err := SaveStateWithStore(state, store); err != nil {
-						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
-					}
-					remaining := state.latchedPartitions()
-					mu.Unlock()
-					ack := fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", partitionLabel(target))
-					if len(remaining) > 0 {
-						ack += fmt.Sprintf(" The %s scope stays latched; a new prompt follows next cycle.", joinScopeLabels(remaining))
-					}
-					notifier.SendOwnerDM(ack)
-					fmt.Printf("[update] Kill switch reset by owner via DM (%s scope)\n", partitionLabel(target))
-					return
+					fmt.Printf("[update] Kill switch reset DM reply queued; it applies at the next cycle boundary\n")
 				}()
 			}
 
@@ -1925,13 +2087,14 @@ func main() {
 				if len(okxLivePerps) > 0 && okxHasCreds {
 					runPendingOKXCircuitCloses(
 						shutdownSideEffectCtx,
+						store,
 						state,
 						cfg.Strategies,
 						okxHasCreds,
 						okxPositions,
 						okxStateFetched,
 						defaultOKXPositionsFetcher,
-						defaultOKXLiveCloser,
+						protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, true, defaultOKXLiveCloser),
 						90*time.Second,
 						&mu,
 						notifier.SendOwnerDM,
@@ -2274,7 +2437,9 @@ func main() {
 				}
 				cbManageOnly := false
 				if !allowed {
-					notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stratDB, notifier, sr.KillSwitchFired)
+					if perStrategyCircuitBreakerAlertEnabled(cfg, sc) {
+						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stratDB, notifier, sr.KillSwitchFired)
+					}
 					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 					if circuitBreakerPermitsManagement(reason, sc.Platform, sc.Type, hlPosQty) {
 						cbManageOnly = true
@@ -2329,6 +2494,7 @@ func main() {
 								logHTFFilterHold(signalStr, htfWhy, logger)
 								result.Signal = 0
 							}
+							applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, rhPosQty, rhPosSide, true, false, signalStr, logger)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
@@ -2400,6 +2566,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
@@ -2547,6 +2714,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, tsContracts, tsPosSide, true, true, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
@@ -2603,7 +2771,14 @@ func main() {
 					if feedHeld, feedWhy := feedCtx.feedHoldsSignal(sc); feedHeld {
 						logger.Warn("Market feed: %s — the manual close evaluation is degraded, so no candle-derived close runs; stop-loss, ratchet and protection continue (#1524)", feedWhy)
 					}
-					closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger, feedCtx)
+					var evalPos *Position
+					mu.RLock()
+					if p := stratState.Positions[sc.Symbol]; p != nil {
+						cp := *p
+						evalPos = &cp
+					}
+					mu.RUnlock()
+					manualEvalResult, closeFraction, manualEvalPrice, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger, feedCtx)
 					manualRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 					if manualOK {
 						mu.Lock()
@@ -2645,6 +2820,10 @@ func main() {
 							hlStep.bindWindow(&mu, trailAt, manualDetail)
 						}
 						completeAndNotifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), manualRatchetAlert, sc, stratState, sc.Symbol, &mu, manualStopEvidence)
+					}
+					if manualOK && closeFraction > 0 && !hyperliquidIsLive(sc.Args) {
+						queuePaperManualCycleClose(paperManualCycleCloseInput{SC: sc, State: stratState, Store: store, Pinned: evalPos, Result: manualEvalResult, Price: manualEvalPrice, Mu: &mu, Logger: logger})
+						break
 					}
 					if manualOK && closeFraction > 0 {
 						mu.RLock()
@@ -2715,7 +2894,7 @@ func main() {
 							}
 							rearmCtx := hlCloseRearmContext{Price: prices[sc.Symbol], PrevStopOID: cancelOID, PrevTPOIDs: cloneInt64s(extraCancelOIDs), PrevTriggerPx: pos.StopLossTriggerPx, PrevHighWater: pos.StopLossHighWaterPx, FillHintsJSON: hlReconcileFillHintsJSON, LiqPxByCoin: hlLiquidationPx, NetSideByCoin: hlNetSideByCoin, Backing: backing}
 							execResult, execStderr, execErr := runHyperliquidExecuteFn(
-								sc.Script, sc.Symbol, closeSide, closeQty,
+								hlStrategyWriteAuth(sc, sc.Symbol, hlWriteExecute), sc.Script, sc.Symbol, closeSide, closeQty,
 								0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
 							)
 							if execStderr != "" {
@@ -2992,6 +3171,8 @@ func main() {
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
+		case <-resetReplyWake:
+			timer.Stop()
 		case <-reloadCh:
 			timer.Stop()
 			reloadConfig()
@@ -3339,6 +3520,13 @@ func notifyPerStrategyCircuitBreakerWithSnapshot(sc StrategyConfig, snap perStra
 	})
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
+}
+
+func perStrategyCircuitBreakerAlertEnabled(cfg *Config, sc StrategyConfig) bool {
+	if portfolioScopeFor(sc) == ScopeLive {
+		return true
+	}
+	return cfg.NotifyPaperCircuitBreakersEnabled()
 }
 
 func isFreshPerStrategyCircuitBreaker(reason string) bool {
@@ -3819,6 +4007,16 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else {
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
+	execAuth := hlStrategyWriteAuth(sc, result.Symbol, hlWriteExecute)
+	if err := execAuth.check(hlWriteExecute, result.Symbol, 0); err != nil {
+		refusedDirection := directionOpen
+		if posQty > 0 && ((posSide == "long" && side == "sell") || (posSide == "short" && side == "buy")) {
+			refusedDirection = directionClose
+		}
+		logger.Error("CRITICAL: live %s %s not sent: %v", side, result.Symbol, err)
+		notifyLiveExecFailure(notifier, sc, refusedDirection, result.Symbol, err.Error())
+		return nil, false
+	}
 	if result.EntrySubmitGate != nil {
 		tags, gateErr := result.EntrySubmitGate(side, size, slPct)
 		if gateErr != nil {
@@ -3829,7 +4027,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 	result.LiveOrderSubmitted = true
 	result.LiveOrderCancelRequested = cancelOID > 0 || len(extraCancelOIDs) > 0
-	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
+	execResult, stderr, err := runHyperliquidExecuteFn(execAuth, sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -4877,6 +5075,18 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	}
 	instType := okxInstType(sc.Args)
 	var opts okxExecuteOptions
+	if okxStopWanted(sc) && result.EntrySubmitGate != nil {
+		ref, err := okxPreflightAllowsEntry(result.Symbol, strconv.FormatFloat(size, 'f', -1, 64))
+		if err != nil {
+			logger.Warn("OKX stop entry held: %v", err)
+			return nil, false
+		}
+		size, err = strconv.ParseFloat(ref.Contracts, 64)
+		if err != nil || !okxUsablePrice(size) {
+			logger.Warn("OKX stop entry held: no executable contract size")
+			return nil, false
+		}
+	}
 	if result.EntrySubmitGate != nil {
 		tags, gateErr := result.EntrySubmitGate(side, size)
 		if gateErr != nil {
@@ -4909,6 +5119,10 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		logger.Error("Live execute failed: %v", err)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return execResult, false
+	}
+	if execResult == nil {
+		logger.Error("OKX execute returned no order result")
+		return nil, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
@@ -4947,7 +5161,10 @@ func confirmOKXEntryFill(res *OKXExecuteResult) error {
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
-	var fillQty float64
+	fillQty := result.PaperOpenQty
+	if fillQty > 0 {
+		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
+	}
 	var fillFee float64
 	var fillOID string
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {

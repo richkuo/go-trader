@@ -120,6 +120,7 @@ var addStrategyResearchCandidates = map[string]addStrategyEntryOnlyCandidate{
 	volumeProfileReclaimStrategyName: {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "15m", IntervalSeconds: 900},
 	perpetualPremiumStrategyName:     {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "1m", IntervalSeconds: 60},
 	orderBookImbalanceStrategyName:   {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "1m", IntervalSeconds: 60},
+	sweepAbsorptionStrategyName:      {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, ClosedBarDecisions: true, StopLossATRMult: 1.0, Timeframe: "5m", IntervalSeconds: 300},
 }
 
 var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{

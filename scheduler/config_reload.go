@@ -36,6 +36,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("notify_ratchet_triggers: %s -> %s", formatNotifyRatchetTriggers(cfg.NotifyRatchetTriggers), formatNotifyRatchetTriggers(next.NotifyRatchetTriggers))
 		cfg.NotifyRatchetTriggers = next.NotifyRatchetTriggers
 	}
+	if !boolPtrEqual(cfg.PaperCircuitBreakers, next.PaperCircuitBreakers) {
+		addChange("paper_circuit_breakers: %s -> %s (paper strategies without their own circuit_breaker follow it for new fires only; a latched breaker still drains)", formatPaperCircuitBreakers(cfg.PaperCircuitBreakers), formatPaperCircuitBreakers(next.PaperCircuitBreakers))
+		cfg.PaperCircuitBreakers = next.PaperCircuitBreakers
+	}
+	if !boolPtrEqual(cfg.NotifyPaperCircuitBreakers, next.NotifyPaperCircuitBreakers) {
+		addChange("notify_paper_circuit_breakers: %s -> %s", formatNotifyPaperCircuitBreakers(cfg.NotifyPaperCircuitBreakers), formatNotifyPaperCircuitBreakers(next.NotifyPaperCircuitBreakers))
+		cfg.NotifyPaperCircuitBreakers = next.NotifyPaperCircuitBreakers
+	}
 	if !floatPtrEqual(cfg.DefaultStopLossATRMult, next.DefaultStopLossATRMult) {
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
@@ -153,6 +161,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			}
 		}
 		sc.leverageDefaulted = ns.leverageDefaulted
+		sc.paperCircuitBreakerOff = ns.paperCircuitBreakerOff
 		if sc.Leverage != ns.Leverage {
 			addChange("strategy[%s].leverage: %.2fx -> %.2fx", sc.ID, sc.Leverage, ns.Leverage)
 			sc.Leverage = ns.Leverage
@@ -466,6 +475,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
 	}
+	if cur, nxt := formatMarketFeedWeightBudget(cfg.MarketFeedWeightBudget), formatMarketFeedWeightBudget(next.MarketFeedWeightBudget); cur != nxt {
+		errs = append(errs, fmt.Sprintf("market_feed_weight_budget changed (%s -> %s; restart required: the embedded owner's ledger keeps its policy)", cur, nxt))
+	}
 	if cfg.PaperOnly != next.PaperOnly {
 		errs = append(errs, fmt.Sprintf("paper_only changed (%t -> %t; restart required)", cfg.PaperOnly, next.PaperOnly))
 	}
@@ -479,6 +491,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	}
 	if curBackup != nextBackup {
 		errs = append(errs, fmt.Sprintf("shared_market_feed.backup_socket changed (%q -> %q; restart required)", curBackup, nextBackup))
+	}
+	if cur, nxt := cfg.DashboardCandles.describe(), next.DashboardCandles.describe(); cur != nxt {
+		errs = append(errs, fmt.Sprintf("dashboard_candles changed (%s -> %s; restart required)", cur, nxt))
 	}
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
@@ -534,6 +549,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	}
 	if cfg.Discord.GuildID != next.Discord.GuildID {
 		errs = append(errs, "discord.guild_id changed (restart required)")
+	}
+	if cfg.Discord.SlashCommands != next.Discord.SlashCommands {
+		errs = append(errs, "discord.slash_commands changed (restart required)")
 	}
 	if cfg.Telegram.Enabled != next.Telegram.Enabled {
 		errs = append(errs, "telegram.enabled changed (restart required)")
@@ -704,6 +722,9 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		if okxPerpsStrategy(sc) && (strategyHasOpenPositions(stateStrategy(state, sc.ID)) || okxProtectionUnresolved(state, sc.ID)) && !okxStopPolicyEqual(sc, ns) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] OKX stop policy changed while a position or unresolved stop remains (flatten and resolve the stop first)", sc.ID))
+		}
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
 			newConfigured := ns.RegimeDirectionalPolicy.IsConfigured()
@@ -803,6 +824,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.leverageDefaulted = false
+	sc.paperCircuitBreakerOff = false
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil
 	sc.RiskPerTradePct = nil
@@ -905,6 +927,26 @@ func formatCBThreshold(p *int) string {
 func formatCircuitBreaker(p *bool) string {
 	if p == nil {
 		return "default(on)"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
+}
+
+func formatPaperCircuitBreakers(p *bool) string {
+	if p == nil {
+		return "default-off"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
+}
+
+func formatNotifyPaperCircuitBreakers(p *bool) string {
+	if p == nil {
+		return "default-off"
 	}
 	if *p {
 		return "on"

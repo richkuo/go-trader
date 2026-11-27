@@ -1,8 +1,9 @@
 
 import sys
 import os as _os
-sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
-sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timedelta
@@ -11,11 +12,11 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from adapter import (
-    DeribitOptionsAdapter, OptionContract, OptionPosition, OptionType,
+from shared_tools.option_types import (
+    OptionsBook, OptionContract, OptionPosition, OptionType,
     OptionSide, Greeks
 )
-from risk import OptionsRiskManager
+from shared_strategies.options.risk import OptionsRiskManager
 
 
 OPTIONS_STRATEGY_REGISTRY: Dict[str, dict] = {}
@@ -45,7 +46,7 @@ def list_options_strategies() -> List[str]:
     return list(OPTIONS_STRATEGY_REGISTRY.keys())
 
 
-def create_options_strategy(name: str, adapter: DeribitOptionsAdapter,
+def create_options_strategy(name: str, adapter: OptionsBook,
                              risk_manager: OptionsRiskManager,
                              params: Optional[dict] = None):
     strat = get_options_strategy(name)
@@ -55,7 +56,7 @@ def create_options_strategy(name: str, adapter: DeribitOptionsAdapter,
 
 class BaseOptionsStrategy:
 
-    def __init__(self, adapter: DeribitOptionsAdapter,
+    def __init__(self, adapter: OptionsBook,
                  risk_manager: OptionsRiskManager, **kwargs):
         self.adapter = adapter
         self.risk = risk_manager

@@ -41,7 +41,7 @@ Read the whole guide before you put real money behind it.
 | Image | `ghcr.io/richkuo/go-trader:<release>` | One image holds the Go binary and the Python scripts of one source commit. Images exist for `linux/amd64` and `linux/arm64`, for releases published after the Docker setup was added. |
 | Service `go-trader` | `docker/compose.yaml` | The long-running bot. It restarts by itself after a crash or an internal restart. |
 | Service `cli` | `docker/compose.yaml`, profile `cli` | One-shot commands: setup, probe, inspect, manual trades, `--once`. It never restarts by itself. |
-| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs, the OHLCV cache and the Robinhood login session (`/data/robinhood-session`). |
+| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs, the OHLCV cache, the Robinhood login session (`/data/robinhood-session`) and the feed weight record (`/data/feed-weight`, only with `market_feed_weight_budget`). |
 | Log volume | `go-trader_logs`, mounted at `/app/logs` | Strategy log files. The bot's main output goes to `docker compose logs`. |
 | Secrets file | `docker/go-trader.env` | Tokens and exchange keys. It stays on your computer and never goes into an image. |
 | Dashboard | `http://127.0.0.1:8099/dashboard` | Only your own computer can open it, and every data request needs your token. |
@@ -116,7 +116,8 @@ Write one value per line as `NAME=value`, with no quotes and no spaces around `=
 | `STATUS_AUTH_TOKEN` | Required. The dashboard and every status request need it. |
 | `DISCORD_BOT_TOKEN`, `DISCORD_OWNER_ID` | Discord notifications and owner commands. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_CHAT_ID` | Telegram notifications. |
-| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS`, `OKX_*`, `TOPSTEP_*`, `ROBINHOOD_*`, `LUNO_*` | Exchange keys for live trading only. Paper trading needs none. When the `ROBINHOOD_*` credentials are set, paper Robinhood checks and the options check also log in for authenticated data (option expiry, strikes, premiums, Greeks). Options run as paper only on every platform. |
+| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS`, `OKX_*`, `TOPSTEP_*`, `ROBINHOOD_*` | Exchange keys for live trading only. Paper trading needs none. When the `ROBINHOOD_*` credentials are set, paper Robinhood checks and the options check also log in for authenticated data (option expiry, strikes, premiums, Greeks). Options run as paper only on every platform. |
+| `LUNO_API_KEY`, `LUNO_API_SECRET` | Optional. The Luno adapter reads them for data access only. Luno is unmaintained, and the generated Luno spot strategy has no Luno order route. |
 | `ANTHROPIC_API_KEY` | The optional LLM entry analysis. |
 
 On macOS and Linux, make the file private: `chmod 600 go-trader.env`.
@@ -192,6 +193,11 @@ The page asks for your token: paste the `STATUS_AUTH_TOKEN` value. The browser k
 Only your own computer can open the page, because Compose publishes the port on `127.0.0.1` only.
 Inside Docker the bot listens on all container addresses so that the port can be published, and for that reason it refuses to start without a token.
 The health endpoint (`/health`) answers without a token and shows only the status, version and process id.
+
+The chart, the tuner preview and trade review never ask the exchange for candles.
+To save trade review marks, mount a candle archive read-only into the container, for example `- /srv/go-trader-candles:/candles:ro` under the service `volumes:`, and set `"dashboard_candles": {"archive_dir": "/candles"}` in the config.
+Publish the archive outside the container with `scripts/candle-archive-publish.py` (SKILL.md § Dashboard Candle Sources).
+Without an archive, trade review shows your fills but cannot save, and the chart shows feed bars or bars built from your trades.
 
 To read the status from a terminal:
 
@@ -272,12 +278,14 @@ docker compose run --rm cli storage-inspect --config /data/config.json
 **Manual Hyperliquid trades** (these need live Hyperliquid keys in `go-trader.env` and a manual strategy; see [Live trading](#live-trading)):
 
 ```bash
-docker compose run --rm cli manual-open hl-manual-btc --config /data/config.json --side long --margin 50
+docker compose exec go-trader /app/go-trader manual-open hl-manual-btc --config /data/config.json --side long --margin 50
 docker compose run --rm cli manual-update-sl hl-manual-btc --config /data/config.json --trigger 66000
 docker compose run --rm cli manual-close hl-manual-btc --config /data/config.json
 ```
 
-Manual commands take only the manual-action lock, so they run beside the running bot, as on a host.
+**Entries while the bot runs use `docker compose exec go-trader /app/go-trader ...`.** A `manual-open` or `manual-add` that sends an order must see the bot's process to prove that the bot owns the state files and holds no save-failure hold. The `cli` service is a separate container with its own process namespace, so `docker compose run --rm cli manual-open ...` (and `manual-add`) refuses with `is not visible from this process` while the bot runs. This is the same with the `compose.egress.yaml` overlay.
+**Entries while the bot is stopped use `docker compose run --rm cli manual-open ...`** (`docker compose exec` needs a running container). The command then holds every state-file lock until it ends. A bot that starts in that time waits up to 45 seconds for the command and then starts; if the command runs longer, the bot exits 79 and stays down until you start it again.
+The other manual commands (closes, stop-loss edits, cancels) take only the manual-action lock, so they run beside the running bot from either service, as on a host.
 The full list of manual commands is in [SKILL.md](../SKILL.md) § Manual Trading.
 
 ## Run one cycle with --once
@@ -368,15 +376,18 @@ The same steps work with a stopped container, after `docker compose down`, and o
 docker compose stop
 docker compose ps -a
 docker compose create go-trader
-docker compose run --rm --entrypoint find cli /data -mindepth 1 -delete
+docker compose run --rm --entrypoint sh cli -c 'set -e; if [ ! -d /data/.feed-weight-current ] && [ -d /data/feed-weight ]; then mv /data/feed-weight /data/.feed-weight-current; fi; find /data -mindepth 1 -maxdepth 1 ! -name .feed-weight-current -exec rm -rf {} +'
 docker compose cp ./backups/2026-10-07/data/. go-trader:/data
+docker compose run --rm --entrypoint sh cli -c 'set -e; if [ -d /data/.feed-weight-current ]; then rm -rf /data/feed-weight; mv /data/.feed-weight-current /data/feed-weight; elif [ -d /data/feed-weight ]; then rm -f /data/feed-weight/authority.json; fi'
 docker compose run --rm --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data
 docker compose run --rm cli probe --config /data/config.json
 docker compose start
 ```
 
 `docker compose create` makes the bot's container (and the volumes, when they do not exist) without starting it, so that the copy has a target; it changes nothing when the stopped container already exists. It runs before `find`, so a failure stops the restore before anything is deleted.
-The `find` command deletes the current content of the data volume. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
+The first `sh` command moves the current feed weight record (`/data/feed-weight`) aside to `/data/.feed-weight-current` and deletes the rest of the data volume; when an earlier restore stopped after that move, it keeps the copy that is already there.
+The second `sh` command puts the current feed weight record back in place of the backup's copy, because an old copy would forget weight used after the backup and could hold an older reserve. With no current record (a new volume), it keeps the backup's `policies/` folder, which holds the reserve each owner committed, and removes only the backup's `authority.json`: the next start rebuilds the record from `policies/` and holds embedded feed reads for one minute.
+Never delete `/data/feed-weight/policies`: it is the only proof of the reserve this bot keeps for live orders. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
 Use the image release recorded in the backup's `image.json`, or a newer one (see [Roll back](#roll-back)).
 
 ## Upgrade
@@ -423,7 +434,8 @@ So a rollback goes back to the old image **together with** the backup taken just
 1. `docker compose stop`
 2. Set `GO_TRADER_TAG` in `.env` back to the old tag (the release in the backup's `image.json`).
 3. [Restore](#restore) the pre-upgrade backup.
-4. `docker compose up -d`
+4. When the old image's `version --json` lacks `go-trader-capability:feed-weight-record-v2` and `/data/feed-weight/authority.json` exists, move that file aside, because the old image refuses the newer record and holds embedded feed reads: `docker compose run --rm --entrypoint mv cli /data/feed-weight/authority.json /data/feed-weight/authority.json.v2`. Keep `/data/feed-weight/policies`; a later upgrade reads the held reserves from it again. The next start holds embedded feed reads for one minute.
+5. `docker compose up -d`
 
 Paper trades made after the backup are lost.
 
@@ -483,6 +495,7 @@ The first setup creates paper strategies only.
 To trade with real money later, change a strategy to live mode in the config (see [SKILL.md](../SKILL.md) § Configure), put the exchange keys in `go-trader.env`, run `docker compose up -d --force-recreate go-trader`, and watch the first cycles.
 Every database must stay in `/data`: the container refuses a config whose `db_file`, `paper_db_file`, `paper_sources[].db_file` or `replay_log_path` points somewhere else.
 The container does not support `role: "feed"` services or `market_feed: "shared"`.
+With `market_feed: "websocket"` and `market_feed_weight_budget`, the bot keeps its venue weight record in `/data/feed-weight` (see [SKILL.md](../SKILL.md) § Shared market feed, Shared weight record). The record covers only this container; it does not coordinate with other containers or computers on the same public address. The first start with a budget holds the embedded feed reads for one minute. The record keeps the bot's reserve while the bot is stopped; a restore keeps it (see [Restore](#restore)), and only a start with a new budget or `go-trader feed-weight-release` changes it.
 Understand the [Roll back](#roll-back) limits before you trade live.
 
 **Robinhood device approval.** Robinhood logins keep their session in `/data/robinhood-session` (mode 0700, files 0600), and the bot never answers a Robinhood device verification prompt.

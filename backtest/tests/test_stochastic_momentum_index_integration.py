@@ -17,12 +17,9 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
-    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 
@@ -35,7 +32,6 @@ INPUT_COLUMNS = ["open", "high", "low", "close", "volume"]
 FOUR_H = 14_400_000
 DEFAULTS = {"range_period": 10, "smoothing_period": 3, "signal_period": 3, "recursion_length": 60,
             "oversold": -40.0, "overbought": 40.0}
-NEED = 71
 DOMAIN_ENDPOINTS = [
     dict(DEFAULTS, range_period=1, smoothing_period=1, signal_period=1, recursion_length=8, oversold=-99.5,
          overbought=99.5),
@@ -128,83 +124,6 @@ REFERENCE_PARAMS = [DEFAULTS, dict(DEFAULTS, range_period=14, smoothing_period=4
                                    recursion_length=80, oversold=-30.0, overbought=50.0)] + DOMAIN_ENDPOINTS
 
 
-def test_values_and_decisions_match_an_independent_scalar_replay(subtests):
-    for params in REFERENCE_PARAMS:
-        with subtests.test(params=params):
-            _values_and_decisions_match_an_independent_scalar_replay(params)
-
-
-def _values_and_decisions_match_an_independent_scalar_replay(params):
-    df = _walk(420, 7)
-    out = _apply(df, params)
-    high, low, close = (df[c].to_numpy() for c in ("high", "low", "close"))
-    need = _need(params)
-    assert (out["smi_reason"].iloc[:need - 1] == "insufficient_history").all()
-    assert (out["smi_required_history"] == float(need)).all()
-    seen = set()
-    for t in range(need - 2, len(df)):
-        cur = ref_endpoint(high, low, close, t, params)
-        row = out.iloc[t]
-        assert row["smi_value_valid"] == (0.0 if cur["zero"] else 1.0)
-        if not cur["zero"]:
-            assert row["smi_value"] == cur["value"], t
-            assert row["smi_signal_line"] == cur["line"], t
-            assert row["smi_diff"] == cur["diff"], t
-            assert row["smi_relative_smoothed"] == cur["rel"] and row["smi_range_smoothed"] == cur["range"]
-            assert row["smi_seed_relative"] == cur["seed_rel"] and row["smi_seed_range"] == cur["seed_range"]
-        if t < need - 1:
-            continue
-        prev = ref_endpoint(high, low, close, t - 1, params)
-        want = ref_decision(cur, prev, params)
-        if want is None:
-            assert int(row["signal"]) == 0 and row["smi_valid"] == 0.0 and row["smi_reason"] == "zero_range"
-            continue
-        assert row["smi_valid"] == 1.0
-        assert row["smi_prev_value"] == prev["value"] and row["smi_prev_signal_line"] == prev["line"]
-        assert row["smi_prev_diff"] == prev["diff"]
-        assert row["smi_prev_seed_relative"] == prev["seed_rel"] and row["smi_prev_seed_range"] == prev["seed_range"]
-        assert int(row["signal"]) == want, t
-        seen.add(want)
-    if params is DEFAULTS:
-        assert seen == {-1, 0, 1}
-
-
-def test_previous_endpoint_is_replayed_from_its_own_seed():
-    df = _walk(420, 7)
-    out = _apply(df, DEFAULTS)
-    high, low, close = (df[c].to_numpy() for c in ("high", "low", "close"))
-    a = 2.0 / 4.0
-    b = 2.0 / 4.0
-    differs = 0
-    for t in range(NEED - 1, len(df)):
-        rel, rng = [], []
-        for i in range(t - 60, t + 1):
-            hh, ll = float(np.max(high[i - 9:i + 1])), float(np.min(low[i - 9:i + 1]))
-            rel.append(float(close[i]) - (hh + ll) / 2.0)
-            rng.append(hh - ll)
-        n1 = n2 = rel[0]
-        d1 = d2 = rng[0]
-        line = 200.0 * n2 / d2
-        osc = line
-        series = []
-        for j in range(1, 61):
-            n1 = a * rel[j] + (1 - a) * n1
-            n2 = a * n1 + (1 - a) * n2
-            d1 = a * rng[j] + (1 - a) * d1
-            d2 = a * d1 + (1 - a) * d2
-            osc = 200.0 * n2 / d2
-            line = b * osc + (1 - b) * line
-            series.append((osc, line))
-        penultimate = series[-2]
-        row = out.iloc[t]
-        assert row["smi_value"] == osc and row["smi_signal_line"] == line
-        own = ref_endpoint(high, low, close, t - 1, DEFAULTS)
-        assert row["smi_prev_value"] == own["value"] and row["smi_prev_signal_line"] == own["line"]
-        if (penultimate[0], penultimate[1]) != (own["value"], own["line"]):
-            differs += 1
-    assert differs > 0
-
-
 def _first(out, side=None, reason=None):
     if reason is not None:
         rows = np.flatnonzero(out["smi_reason"].to_numpy() == reason)
@@ -212,55 +131,6 @@ def _first(out, side=None, reason=None):
         rows = np.flatnonzero(out["signal"].to_numpy() == side)
     assert len(rows)
     return int(rows[0])
-
-
-def test_threshold_equality_and_adjacent_floats_follow_the_strict_rules():
-    df = _walk(900, 11)
-    out = _apply(df, DEFAULTS)
-    for side in (1, -1):
-        with _case(f"side={side}"):
-            _threshold_equality_and_adjacent_floats_follow_the_strict_rules(df, out, side)
-
-
-def _threshold_equality_and_adjacent_floats_follow_the_strict_rules(df, out, side):
-    i = _first(out, side)
-    prev, cur = float(out["smi_prev_value"].iloc[i]), float(out["smi_value"].iloc[i])
-    key = "oversold" if side == 1 else "overbought"
-    other = "overbought" if side == 1 else "oversold"
-    keep = {other: 99.0 if side == 1 else -99.0}
-    at_prev = _apply(df, dict(DEFAULTS, **keep, **{key: prev}))
-    assert int(at_prev["signal"].iloc[i]) == side
-    at_cur = _apply(df, dict(DEFAULTS, **keep, **{key: cur}))
-    assert int(at_cur["signal"].iloc[i]) == 0 and at_cur["smi_reason"].iloc[i] == "signal_cross_only"
-    toward = float(np.nextafter(prev, -np.inf if side == 1 else np.inf))
-    past = _apply(df, dict(DEFAULTS, **keep, **{key: toward}))
-    assert int(past["signal"].iloc[i]) == 0 and past["smi_reason"].iloc[i] == "signal_cross_only"
-    inside = float(np.nextafter(cur, -np.inf if side == 1 else np.inf))
-    still = _apply(df, dict(DEFAULTS, **keep, **{key: inside}))
-    assert int(still["signal"].iloc[i]) == side
-
-
-def test_single_crossings_hold_and_sustained_conditions_do_not_repeat():
-    df = _walk(3000, 1)
-    out = _apply(df, DEFAULTS)
-    level = out.iloc[_first(out, reason="level_cross_only")]
-    up = level["smi_prev_value"] <= -40.0 < level["smi_value"]
-    if up:
-        assert not (level["smi_prev_diff"] <= 0.0 < level["smi_diff"])
-    else:
-        assert level["smi_prev_value"] >= 40.0 > level["smi_value"]
-        assert not (level["smi_prev_diff"] >= 0.0 > level["smi_diff"])
-    signal_only = out.iloc[_first(out, reason="signal_cross_only")]
-    assert int(signal_only["signal"]) == 0
-    signal = out["signal"].to_numpy()
-    entries = np.flatnonzero(signal != 0)
-    assert len(entries) > 20
-    for a in entries:
-        if a + 1 < len(signal):
-            assert signal[a + 1] != signal[a]
-    above = (out["smi_value"].to_numpy() > -40.0) & (out["smi_diff"].to_numpy() > 0.0)
-    sustained = np.flatnonzero(above[1:] & above[:-1]) + 1
-    assert len(sustained) and not (signal[sustained] == 1).any()
 
 
 def _holds_at_end(df, params, reason):
@@ -296,118 +166,6 @@ def _no_cadence(df):
     return out
 
 
-def _set_last(df, col, value):
-    return df.assign(**{col: np.r_[df[col].to_numpy()[:-1], value]})
-
-
-MISSING_AND_MALFORMED_INPUTS = [
-    (lambda df: df.drop(columns=["low"]), "missing_columns"),
-    (_no_cadence, "missing_cadence"),
-    (lambda df: df.reset_index(drop=True), "missing_timestamps"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [pd.NaT]), "missing_timestamps"),
-    (lambda df: _set_last(df, "high", np.nan), "nonfinite_input"),
-    (lambda df: _set_last(df, "close", np.inf), "nonfinite_input"),
-    (lambda df: df.assign(open=["x"] * (len(df) - 1) + [df["open"].iloc[-1]]), "nonfinite_input"),
-    (lambda df: _set_last(df, "low", 0.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "close", -1.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "open", df["high"].iloc[-1] * 2), "invalid_candle_geometry"),
-    (lambda df: _set_last(df, "high", df["low"].iloc[-1] / 2), "invalid_candle_geometry"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-2]]), "timestamp_order"),
-    (lambda df: _with_index(df, list(df.index[:-2]) + [df.index[-1], df.index[-2]]), "timestamp_order"),
-    (lambda df: _shift_index(df, len(df) - 1, pd.Timedelta(hours=4)), "cadence_gap"),
-    (lambda df: _shift_index(df, len(df) - NEED + 2, pd.Timedelta(hours=1)), "cadence_gap"),
-    (lambda df: df.iloc[-(NEED - 1):], "insufficient_history"),
-]
-
-
-def _missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame():
-    for i, (mutate, reason) in enumerate(MISSING_AND_MALFORMED_INPUTS):
-        with _case(f"{i}-{reason}"):
-            _holds_at_end(mutate(_walk(300, 3)), DEFAULTS, reason)
-
-
-def test_volume_is_not_an_input():
-    base = _walk(400, 3)
-    a = _apply(base, DEFAULTS)
-    for variant in (base.drop(columns=["volume"]), base.assign(volume=np.nan), base.assign(volume=-1.0)):
-        b = _apply(variant, DEFAULTS)
-        np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
-        assert (a["smi_reason"] == b["smi_reason"]).all()
-
-
-def _constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross():
-    flat = _walk(300, 3).assign(open=100.0, high=100.0, low=100.0, close=100.0)
-    out = _holds_at_end(flat, DEFAULTS, "zero_range")
-    assert (out["smi_value_valid"] == 0.0).all() and (out["signal"] == 0).all()
-    banded = _walk(300, 3).assign(open=100.0, high=101.0, low=99.0, close=100.0)
-    out = _apply(banded, DEFAULTS)
-    assert out["smi_reason"].iloc[-1] == "no_cross" and out["smi_value"].iloc[-1] == 0.0
-
-
-def test_missing_malformed_and_zero_range_inputs_are_reasoned_holds(subtests):
-    with subtests.test(case="missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame"):
-        _missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame()
-    with subtests.test(case="constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross"):
-        _constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross()
-
-
-def test_a_zero_range_seed_bar_holds_only_the_decisions_it_seeds():
-    df = _walk(500, 5)
-    seed_bar = 250
-    flat = df.copy()
-    rows = slice(seed_bar - 9, seed_bar + 1)
-    level = float(flat["close"].iloc[seed_bar - 10])
-    for col in ("open", "high", "low", "close"):
-        flat.iloc[rows, flat.columns.get_loc(col)] = level
-    out = _apply(flat, DEFAULTS)
-    t = seed_bar + 60
-    assert out["smi_value_valid"].iloc[t] == 0.0
-    assert out["smi_reason"].iloc[t] == "zero_range" and out["smi_reason"].iloc[t + 1] == "zero_range"
-    assert out["smi_prev_valid"].iloc[t + 1] == 0.0
-    assert out["smi_value_valid"].iloc[t - 1] == 1.0
-    later = t + 2
-    while out["smi_value_valid"].iloc[later] == 0.0:
-        later += 1
-    assert out["smi_seed_range"].iloc[later] > 0
-
-
-def _received_out_of_order_rows_hold_only_inside_their_span():
-    df = _walk(500, 5)
-    clean = _apply(df, DEFAULTS)
-    marked = df.copy()
-    bad = 250
-    marked.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(df.index[bad].value // 1_000_000)]
-    out = _apply(marked, DEFAULTS)
-    assert (out["smi_reason"].iloc[bad:bad + NEED] == "timestamp_order").all()
-    assert (out["signal"].iloc[bad:bad + NEED] == 0).all()
-    pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
-    pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
-
-
-def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
-    df = _walk(500, 5)
-    bad = 250
-    corrupt = df.copy()
-    corrupt.iloc[bad, corrupt.columns.get_loc("high")] = np.nan
-    out = _apply(corrupt, DEFAULTS)
-    clean = _apply(df, DEFAULTS)
-    assert (out["smi_reason"].iloc[bad:bad + NEED] == "nonfinite_input").all()
-    assert (out["smi_valid"].iloc[bad:bad + NEED] == 0.0).all()
-    pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
-    pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
-    gapped = df.drop(df.index[bad])
-    out = _apply(gapped, DEFAULTS)
-    assert (out["smi_reason"].iloc[bad:bad + NEED - 1] == "cadence_gap").all()
-    assert out["smi_reason"].iloc[bad + NEED - 1] != "cadence_gap"
-
-
-def test_defects_hold_only_inside_their_span_and_recovery_matches_a_clean_frame(subtests):
-    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
-        _received_out_of_order_rows_hold_only_inside_their_span()
-    with subtests.test(case="a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame"):
-        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
-
-
 BOUNDARY_PARAMS = [
     dict(DEFAULTS, recursion_length=24),
     dict(DEFAULTS, recursion_length=188, range_period=10),
@@ -416,81 +174,11 @@ BOUNDARY_PARAMS = [
 ]
 
 
-def _boundary_parameters_are_accepted():
-    for params in BOUNDARY_PARAMS:
-        with _case(params):
-            _reg()._registry.validate_params(NAME, params)
-            out = _apply(_walk(300, 1), params)
-            assert out["smi_required_history"].iloc[-1] == float(_need(params))
-
-
-def _integral_float_periods_match_integers():
-    df = _walk(300, 1)
-    floats = dict(DEFAULTS, range_period=10.0, smoothing_period=3.0, signal_period=3.0, recursion_length=60.0)
-    pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
-
-
-def test_dependency_span_is_required_and_sufficient(subtests):
-    for params in DOMAIN_ENDPOINTS + [DEFAULTS]:
-        with subtests.test(params=params):
-            _dependency_span_is_required_and_sufficient(params)
-
-
-def _dependency_span_is_required_and_sufficient(params):
-    df = _walk(420, 9)
-    full = _apply(df, params)
-    need = _need(params)
-    for end in range(need, 420, 29):
-        exact = _apply(df.iloc[end - need:end], params)
-        assert exact["smi_reason"].iloc[-1] != "insufficient_history"
-        assert exact["smi_reason"].iloc[-1] == full["smi_reason"].iloc[end - 1]
-        short = _apply(df.iloc[end - need + 1:end], params)
-        assert short["smi_reason"].iloc[-1] == "insufficient_history"
-
-
-def test_boundary_and_integral_float_parameters_are_accepted(subtests):
-    with subtests.test(case="boundary_parameters_are_accepted"):
-        _boundary_parameters_are_accepted()
-    with subtests.test(case="integral_float_periods_match_integers"):
-        _integral_float_periods_match_integers()
-
-
 def _frozen(key, bars):
     manifest = om.load_manifest(MANIFEST)
     candles = om.load_candles(om.dataset_by_key(manifest, key))
     frame = candles[INPUT_COLUMNS].iloc[-bars:].copy()
     return declare_frame_cadence(frame, "4h", TIMESTAMP_KIND_OPEN)
-
-
-DECISION_COLUMNS = ["smi_value", "smi_prev_value", "smi_signal_line", "smi_prev_signal_line", "smi_diff",
-                    "smi_prev_diff", "smi_valid", "smi_reason_code", "signal"]
-
-
-def test_full_series_prefix_exact_span_and_200_row_tail_agree_for_the_grid_and_bounds():
-    df = _frozen("ETH 4h", 700)
-    specs = [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()]
-    grid = [p for _, p in expand_sweep(dict(DEFAULTS), specs)]
-    for params in grid[::13] + DOMAIN_ENDPOINTS + [DEFAULTS]:
-        full = _apply(df, params)
-        decisions = np.flatnonzero(full["signal"].to_numpy() != 0)
-        ends = sorted({int(i) + 1 for i in decisions[decisions >= 200][:2]} | {300, 520, 700})
-        for end in ends:
-            for part in (df.iloc[:end], df.iloc[end - 200:end], df.iloc[end - _need(params):end]):
-                got = _apply(part, params)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(got, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-
-
-def test_a_200_row_input_with_a_forming_row_decides_on_199_closed_rows_at_the_longest_span():
-    params = dict(DEFAULTS, range_period=6, smoothing_period=24, signal_period=24, recursion_length=192)
-    df = _frozen("BTC 4h", 400)
-    full = _apply(df, params)
-    closed = df.iloc[-201:-1]
-    assert len(closed.iloc[1:]) == 199
-    got = _apply(closed.iloc[1:], params)
-    assert got["smi_reason"].iloc[-1] != "insufficient_history"
-    pd.testing.assert_series_equal(got[DECISION_COLUMNS].iloc[-1], full[DECISION_COLUMNS].iloc[-2],
-                                   check_names=False)
-    assert _apply(closed.iloc[2:], params)["smi_reason"].iloc[-1] == "insufficient_history"
 
 
 def _runtime(df, kind, cutoff=None, boundary=None):

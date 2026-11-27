@@ -309,13 +309,25 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		Strategies:   make(map[string]feedStrategyRequirement),
 		KeyCadences:  make(map[marketFeedKey][]int),
 		SignalKeys:   make(map[marketFeedKey]bool),
+
+		FormingKeys:    make(map[marketFeedKey]bool),
+		ClosedKeys:     make(map[marketFeedKey]bool),
+		ClosedOnlyKeys: make(map[marketFeedKey]bool),
 	}
+	var skipped []string
 	coins := make(map[string]bool)
 	accounting := make(map[string]bool)
 	cadenceSets := make(map[marketFeedKey]map[int]bool)
 	for _, c := range consumers {
 		if !c.Loaded {
+			skipped = append(skipped, c.Path)
 			continue
+		}
+		for key := range c.Req.FormingKeys {
+			union.FormingKeys[key] = true
+		}
+		for key := range c.Req.ClosedKeys {
+			union.ClosedKeys[key] = true
 		}
 		for key, lookback := range c.Req.Keys {
 			union.addKey(key, lookback)
@@ -338,10 +350,7 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 			coins[coin] = true
 		}
 		for coin, need := range c.Req.Funding {
-			f := union.Funding[coin]
-			f.Scalar = f.Scalar || need.Scalar
-			f.Records = f.Records || need.Records
-			union.Funding[coin] = f
+			union.Funding[coin] = union.Funding[coin].merge(need)
 		}
 		for key, window := range c.Req.Observations {
 			union.addObservation(key, window)
@@ -377,6 +386,15 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		sort.Ints(cads)
 		union.KeyCadences[key] = cads
 	}
+	for key := range union.Keys {
+		if union.ClosedKeys[key] && !union.FormingKeys[key] && feedReuseAlignedTimeframe(key.Timeframe) {
+			union.ClosedOnlyKeys[key] = true
+		}
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		union.ReuseBlocked = fmt.Sprintf("consumer config %s was not loaded, so its readers are unknown", strings.Join(skipped, ", "))
+	}
 	union.finalize()
 	return union
 }
@@ -405,8 +423,8 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		total += feedEstimateKeyBytes + (union.Keys[key]+hlFeedHistoryMargin)*feedEstimateBarBytes
 	}
 	total += len(union.MidCoins) * feedEstimateCoinBytes
-	for range union.Funding {
-		total += 7 * 24 * 64
+	for _, need := range union.Funding {
+		total += feedEstimateCoinBytes + int(max(need.rangeHours(), 7*24)+1)*feedEstimateAccountingRecordBytes
 	}
 	for key, window := range union.Observations {
 		if key.Kind == feedObservationVolumeProfile {
@@ -463,6 +481,35 @@ func formatFeedConsumerLines(prefix string, consumers []feedConsumer) []string {
 	return out
 }
 
+type feedKeyCoverage struct {
+	Key      string `json:"key"`
+	Cadences []int  `json:"cadences"`
+	Reach    string `json:"reach"`
+	Reuse    string `json:"reuse"`
+}
+
+const feedKeyReachNote = "consumer-wide: a consumer's late evaluation can select any of its cadences"
+
+func feedKeyCoverageStatus(union feedRequirements, source string) []feedKeyCoverage {
+	out := make([]feedKeyCoverage, 0, len(union.Order))
+	for _, key := range union.Order {
+		reuse := union.keyReuseLabel(key)
+		if source != feedSourceREST {
+			reuse = "none(source " + source + " reads candles from the venue socket)"
+		}
+		out = append(out, feedKeyCoverage{Key: key.PayloadID(), Cadences: append([]int{}, union.KeyCadences[key]...), Reach: feedKeyReachNote, Reuse: reuse})
+	}
+	return out
+}
+
+func feedKeyCoverageLines(union feedRequirements, source string) []string {
+	var out []string
+	for _, c := range feedKeyCoverageStatus(union, source) {
+		out = append(out, fmt.Sprintf("coverage key=%s cadences=%s reach=%q reuse=%q", c.Key, formatCadences(c.Cadences), c.Reach, c.Reuse))
+	}
+	return out
+}
+
 func formatCadences(cadences []int) string {
 	if len(cadences) == 0 {
 		return "none"
@@ -481,6 +528,7 @@ type feedRuntime struct {
 	owner      *marketFeedOwner
 	sealer     *feedSealer
 	ledger     *feedRequestLedger
+	authority  *feedWeightAuthority
 	instance   string
 	startedAt  time.Time
 	ctx        context.Context
@@ -493,13 +541,19 @@ type feedRuntime struct {
 
 func formatFeedBudgetConfig(source string, b *feedBudgetConfig) string {
 	if b == nil {
-		return fmt.Sprintf("request budget: none configured (source %s counts requests without a limit)", source)
+		return fmt.Sprintf("request budget: none configured (source %s counts requests without a limit); %s", source, formatFeedWeightPolicy(nil))
 	}
 	mode := "enforced"
 	if source != feedSourceREST {
 		mode = "logged only"
 	}
-	return fmt.Sprintf("request budget: per_minute=%d startup=%d (%s, source %s)", b.PerMinute, b.Startup, mode, source)
+	return fmt.Sprintf("request budget: per_minute=%d startup=%d requests (%s, source %s); %s", b.PerMinute, b.Startup, mode, source, formatFeedWeightPolicy(b.weightPolicy()))
+}
+
+func printFeedDemandWarnings(prefix string, union feedRequirements, cfg *FeedRoleConfig) {
+	for _, w := range feedDemandWarnings(union, cfg.Source, cfg.RequestBudget) {
+		fmt.Printf("%s WARN feed demand: %s (the feed starts; refused or late inputs seal not ready)\n", prefix, w)
+	}
 }
 
 func newFeedInstanceID(now time.Time) string {
@@ -610,8 +664,24 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ledger := newFeedRequestLedger(cfg.Feed.RequestBudget, cfg.Feed.Source == feedSourceREST, nil)
+	ledger.logf = feedLogf
 	ctx := withFeedLedger(baseCtx, ledger)
 	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
+	fmt.Printf("[feed] %s\n", hlWeightTableLine())
+	printFeedDemandWarnings("[feed]", union, cfg.Feed)
+	var authority *feedWeightAuthority
+	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
+		authority = newFeedWeightAuthority(feedAuthorityRoleFeed, configPath, feedLogf)
+		authority.attach(ledger)
+		fmt.Printf("[feed] %s\n", feedAuthorityStartupLine(authority))
+		if code := startFeedAuthority(authority, policy, notifier, "[feed]"); code != 0 {
+			cleanupNotifier()
+			os.Exit(code)
+		}
+		go authority.runHeartbeat(baseCtx)
+	} else {
+		fmt.Printf("[feed] shared weight: coverage=%q (no weight policy; this owner's reads are outside the shared host record)\n", feedSharedCoverageNoPolicy)
+	}
 
 	owner := newMarketFeedOwner(nil, feedLogf)
 	globalMarketFeedStatus.setOwner(owner)
@@ -628,6 +698,10 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 			notifier.SendOwnerDM(msg)
 		}
 	}
+	alertSender := newFeedAlertSender(sealer.alertHook, feedLogf)
+	defer alertSender.drain(feedAlertSenderDrainBound)
+	sealer.rateLimitSend = alertSender.enqueue
+	sealer.keyAlertSend = alertSender.enqueue
 	sealer.setGeneration(feedRequirements{}, cadences, startedAt)
 
 	rt := &feedRuntime{
@@ -637,6 +711,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 		owner:      owner,
 		sealer:     sealer,
 		ledger:     ledger,
+		authority:  authority,
 		instance:   instance,
 		startedAt:  startedAt,
 		ctx:        ctx,
@@ -735,6 +810,12 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 			srv.close()
 			cancel()
 			statusLn.Close()
+			rt.mu.Lock()
+			stopAuthority := rt.authority
+			rt.mu.Unlock()
+			if stopAuthority != nil {
+				stopAuthority.stop()
+			}
 			fmt.Println("[feed] shutdown complete")
 			return 0
 		case <-hupCh:
@@ -814,9 +895,12 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
 	}
-	rt.ledger.setLimits(next.Feed.RequestBudget)
-	fmt.Printf("[reload] %s\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
-	rt.ledger.openStartup()
+	if err := rt.applyBudget(next); err != nil {
+		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: shared weight registration refused the new budget: %v\n", err)
+		return
+	}
+	printFeedDemandWarnings("[reload]", union, next.Feed)
+	fmt.Printf("[reload] %s; startup allowances, charged history, reservations and host pauses are kept\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
 	select {
 	case <-rt.owner.ApplyGeneration(rt.ctx, union):
 	case <-rt.ctx.Done():
@@ -829,6 +913,35 @@ func (rt *feedRuntime) reload() {
 	rt.mu.Unlock()
 	fmt.Printf("[reload] feed generation %d published (%d keys, %d mid coins, cadences %s); it applies to deadlines sealed from now on\n",
 		rt.owner.Generation(), len(union.Order), len(union.MidCoins), formatCadences(cadences))
+}
+
+func (rt *feedRuntime) applyBudget(next *Config) error {
+	apply := func() { rt.ledger.setLimits(next.Feed.RequestBudget) }
+	nextPolicy := next.Feed.RequestBudget.weightPolicy()
+	rt.mu.Lock()
+	a := rt.authority
+	prevPolicy := rt.cfg.Feed.RequestBudget.weightPolicy()
+	rt.mu.Unlock()
+	if a != nil {
+		return a.redeclare(rt.ctx, nextPolicy, apply)
+	}
+	if nextPolicy == nil || prevPolicy != nil {
+		apply()
+		return nil
+	}
+	a = newFeedWeightAuthority(feedAuthorityRoleFeed, rt.configPath, feedLogf)
+	a.ledger = rt.ledger
+	if err := a.register(rt.ctx, nextPolicy); err != nil {
+		return err
+	}
+	a.attach(rt.ledger)
+	apply()
+	rt.mu.Lock()
+	rt.authority = a
+	rt.mu.Unlock()
+	fmt.Printf("[reload] %s\n", feedAuthorityStartupLine(a))
+	go a.runHeartbeat(rt.ctx)
+	return nil
 }
 
 func (rt *feedRuntime) statusMux() *http.ServeMux {
@@ -850,6 +963,12 @@ func (rt *feedRuntime) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"role":     configRoleFeed,
 		"instance": rt.instance,
 		"source":   rt.sealer.source,
+	}
+	rt.mu.Lock()
+	token := rt.cfg.StatusToken
+	rt.mu.Unlock()
+	if statusBearerAuthorized(r, token) {
+		resp["config_path"] = resolvedConfigPath(rt.configPath)
 	}
 	if draining {
 		resp["status"] = "draining"
@@ -925,15 +1044,18 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"market_feed":    health,
 		"sealer":         rt.sealer.describe(),
 		"consumers":      consumers,
+		"key_coverage":   feedKeyCoverageStatus(rt.sealer.coverageSnapshot(), rt.sealer.source),
 		"request_budget": rt.ledger.status(),
 		"egress":         processEgress.status(),
+
+		"funding_loading": rt.owner.FundingLoading(),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(resp)
 }
 
-func runFeedProbe(configPath string) int {
+func runFeedProbe(configPath, identity string) int {
 	cfg, err := loadFeedRoleConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "probe: failed to load feed config %s: %v\n", configPath, err)
@@ -969,8 +1091,24 @@ func runFeedProbe(configPath string) int {
 		return ExitProbeFailure
 	}
 	fmt.Printf("probe: %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
+	fmt.Printf("probe: %s\n", hlWeightTableLine())
+	fmt.Printf("probe: %s\n", estimateFeedUnionWeight(union))
+	for _, line := range estimateFeedDemandLines(union, cfg.Feed.Source) {
+		fmt.Printf("probe: %s\n", line)
+	}
+	printFeedDemandWarnings("probe:", union, cfg.Feed)
+	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
+		if !printFeedAuthorityForecast(feedAuthorityRoleFeed, identity, policy) {
+			return ExitProbeFailure
+		}
+	} else {
+		fmt.Printf("probe: shared weight: coverage=%q\n", feedSharedCoverageNoPolicy)
+	}
 	for _, key := range union.Order {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
+	}
+	for _, line := range feedKeyCoverageLines(union, cfg.Feed.Source) {
+		fmt.Printf("probe: %s\n", line)
 	}
 	for _, key := range union.observationKeys() {
 		fmt.Printf("probe: observation %s window_ms=%d source=%s\n", key.PayloadID(), union.Observations[key], feedObservationSourceFor(key.Kind))

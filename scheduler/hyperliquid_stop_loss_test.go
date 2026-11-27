@@ -19,7 +19,7 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		sc   StrategyConfig
 		want float64
 	}{
-		{"non-HL returns 0", StrategyConfig{Platform: "topstep", Type: "perps", StopLossPct: pf(1.5)}, 0},
+		{"non-HL returns 0", StrategyConfig{Platform: "robinhood", Type: "perps", StopLossPct: pf(1.5)}, 0},
 		{"non-perps returns 0", StrategyConfig{Platform: "hyperliquid", Type: "spot", StopLossPct: pf(1.5)}, 0},
 		{"unset and no drawdown", hlPerps(StrategyConfig{Leverage: 5}), 0},
 		{"explicit pct", hlPerps(StrategyConfig{StopLossPct: pf(1.5), Leverage: 5}), 1.5},
@@ -158,7 +158,7 @@ func TestPaperStopLoss(t *testing.T) {
 			old := runHyperliquidUpdateStopLossFunc
 			defer func() { runHyperliquidUpdateStopLossFunc = old }()
 			placed := 0.0
-			runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				placed = triggerPx
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 1, StopLossTriggerPx: triggerPx}, "", nil
 			}

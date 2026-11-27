@@ -166,22 +166,22 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("deribit_leg_at_0805_before_any_refresh_since_the_cutoff", func(t *testing.T) {
-		deribitCutoff := time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC)
+	t.Run("ibkr_leg_at_1502_before_any_refresh_since_the_cutoff", func(t *testing.T) {
+		ibkrCutoff := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
 		for _, known := range []bool{true, false} {
-			sc := ocSC("deribit-el-cb", "deribit", "BTC")
+			sc := ocSC("ibkr-el-cb", "ibkr", "BTC")
 			env := ocEnv(t, sc)
 			s := env.strat(sc.ID)
 			s.Cash = 100000
 			leg := &OptionPosition{ID: "BTC-put-sell-60000-2026-06-26", TradePositionID: "pos-btc", Underlying: "BTC", OptionType: "put",
 				Strike: 60000, Expiry: "2026-06-26", Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -1200,
-				MarkUpdatedAt: deribitCutoff.Add(-10 * time.Minute), MarkSource: "deribit_mark"}
+				MarkUpdatedAt: ibkrCutoff.Add(-10 * time.Minute), MarkSource: ibkrMarkSource}
 			if known {
-				leg.ExpiryCutoffAt = deribitCutoff
-				leg.SettlementReadyAt = deribitCutoff.Add(time.Hour)
+				leg.ExpiryCutoffAt = ibkrCutoff
+				leg.SettlementReadyAt = ibkrCutoff.Add(5 * time.Minute)
 			}
 			s.OptionPositions[leg.ID] = leg
-			elBindClock(t, deribitCutoff.Add(5*time.Minute))
+			elBindClock(t, ibkrCutoff.Add(2*time.Minute))
 			elFireDrawdown(t, sc, s)
 			if s.OptionPositions[leg.ID] == nil || s.Cash != 100000 || len(s.ClosedOptionPositions) != 0 || leg.MarkError != "" {
 				t.Fatalf("known cutoff=%v: circuit breaker closed the leg: legs=%d cash=%v", known, len(s.OptionPositions), s.Cash)
@@ -231,21 +231,21 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 			t.Fatalf("mixed book: closed=%v legs=%v message=%q", out.Closed, sortedOptionLegKeys(s.OptionPositions), out.Message)
 		}
 
-		deribitCutoff := time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC)
-		dsc := ocSC("deribit-el-ks", "deribit", "BTC")
+		ibkrCutoff := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+		dsc := ocSC("ibkr-el-ks", "ibkr", "BTC")
 		env = ocEnv(t, dsc)
 		s = env.strat(dsc.ID)
 		s.Cash = 100000
 		legID := "BTC-put-sell-60000-2026-06-26"
 		s.OptionPositions[legID] = &OptionPosition{ID: legID, TradePositionID: "pos-btc", Underlying: "BTC", OptionType: "put",
 			Strike: 60000, Expiry: "2026-06-26", Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -1200,
-			MarkUpdatedAt: deribitCutoff.Add(-10 * time.Minute), MarkSource: "deribit_mark"}
+			MarkUpdatedAt: ibkrCutoff.Add(-10 * time.Minute), MarkSource: ibkrMarkSource}
 		unbindTradingClock("expired-leg-test-" + t.Name())
-		elBindClock(t, deribitCutoff.Add(5*time.Minute))
+		elBindClock(t, ibkrCutoff.Add(2*time.Minute))
 		out = fire(env, dsc, false)
 		if !out.AutoReset || len(out.Closed) != 0 || s.OptionPositions[legID] == nil ||
-			!strings.Contains(out.Message, keptLine+"deribit-el-ks "+legID+".") || !strings.Contains(out.Message, paperKillSwitchAutoResetLine) {
-			t.Fatalf("deribit auto-reset: reset=%v closed=%v message=%q", out.AutoReset, out.Closed, out.Message)
+			!strings.Contains(out.Message, keptLine+"ibkr-el-ks "+legID+".") || !strings.Contains(out.Message, paperKillSwitchAutoResetLine) {
+			t.Fatalf("ibkr auto-reset: reset=%v closed=%v message=%q", out.AutoReset, out.Closed, out.Message)
 		}
 	})
 
@@ -281,5 +281,175 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 		if !ocNear(s.Cash, want) || rows != 1 || !ocNear(pnl, (755.72-700)*100*2-1000) || len(s.OptionPositions) != 0 {
 			t.Fatalf("after save: cash=%v closed=%d pnl=%v legs=%d", s.Cash, rows, pnl, len(s.OptionPositions))
 		}
+	})
+}
+
+type ksrRun struct {
+	t     *testing.T
+	env   *entryTestEnv
+	sc    StrategyConfig
+	part  RiskPartition
+	clock time.Time
+}
+
+func ksrStart(t *testing.T, id string, at time.Time) *ksrRun {
+	t.Helper()
+	sc := lcSC(id, "")
+	env := ocEnv(t, sc)
+	env.cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
+	r := &ksrRun{t: t, env: env, sc: sc, part: partitionFor(sc), clock: at}
+	owner := "kept-leg-reset-test-" + t.Name()
+	if err := bindTradingClock(owner, func() time.Time { return r.clock }); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unbindTradingClock(owner) })
+	s := env.strat(sc.ID)
+	s.Cash = 7300
+	s.OptionPositions["SPY-put-sell-800-2026-10-30"] = &OptionPosition{ID: "SPY-put-sell-800-2026-10-30", TradePositionID: "pos-800",
+		Underlying: "SPY", OptionType: "put", Strike: 800, Expiry: "2026-10-30", Action: "sell", Quantity: 1, ContractMultiplier: 100,
+		EntryPremiumUSD: 300, CurrentValueUSD: -300, ExpiryCutoffAt: time.Date(2026, 10, 30, 20, 0, 0, 0, time.UTC),
+		OpenedAt: time.Date(2026, 10, 1, 15, 0, 0, 0, time.UTC)}
+	env.state.partitionRisk(r.part).PeakValue = 10000
+	env.saveAll()
+	return r
+}
+
+func (r *ksrRun) save(p RiskPartition) error { return r.env.store.SavePartition(r.env.state, p) }
+
+func (r *ksrRun) cycle(hasOwner bool) (*scopeCycleRisk, paperKillSwitchOutcome) {
+	r.t.Helper()
+	r.clock = r.clock.Add(10 * time.Minute)
+	env := r.env
+	inputsFrom := tradingNow().UTC()
+	sr := measureScopeCycleRisk(r.part, partitionRiskConfig(env.cfg, r.part), env.cfg.Strategies, env.state, nil, nil, nil, true, false, tradingNow().UTC())
+	prs := env.state.partitionRisk(r.part)
+	measureScopeRebaselineValuation(sr, prs, env.cfg.Strategies, env.state, nil, cyclePriceSources{}, nil, nil, env.cfg.IntervalSeconds, inputsFrom, tradingNow().UTC())
+	applyScopeCycleRiskCommitted(sr, prs, r.save)
+	if sr.RebaselineSaveErr != nil {
+		r.t.Fatalf("rebaseline save: %v", sr.RebaselineSaveErr)
+	}
+	var out paperKillSwitchOutcome
+	if sr.KillSwitchFired {
+		out = applyPaperKillSwitchCycle(env.state, env.cfg, nil, sr, hasOwner)
+		if err := commitPaperKillSwitchAutoReset(env.state, r.part, &out, r.save); err != nil {
+			r.t.Fatalf("auto-reset commit: %v", err)
+		}
+	}
+	return sr, out
+}
+
+func (r *ksrRun) quietCycles(label string, n int, hasOwner bool, refresh func()) {
+	r.t.Helper()
+	prs := r.env.state.partitionRisk(r.part)
+	for i := 1; i <= n; i++ {
+		if refresh != nil {
+			refresh()
+		}
+		sr, out := r.cycle(hasOwner)
+		if sr.KillSwitchFired || prs.KillSwitchActive || out.Message != "" || out.CloseApplied || out.AutoReset {
+			r.t.Fatalf("%s cycle %d: fired=%v latched=%v message=%q reason=%q gap=%q", label, i, sr.KillSwitchFired, prs.KillSwitchActive, out.Message, sr.Reason, sr.ValuationGap)
+		}
+		if i == 1 && (!sr.Rebaselined || sr.RebaselineOldPeak != 10000 || sr.RebaselineNewPeak != 7000) {
+			r.t.Fatalf("%s cycle 1: rebaselined=%v old=%.2f new=%.2f gap=%q; want 10000 -> 7000", label, sr.Rebaselined, sr.RebaselineOldPeak, sr.RebaselineNewPeak, sr.ValuationGap)
+		}
+		if i > 1 && sr.Rebaselined {
+			r.t.Fatalf("%s cycle %d rebaselined again", label, i)
+		}
+		if len(captureKillSwitchLatchInstances(r.env.state, []RiskPartition{r.part})) != 0 {
+			r.t.Fatalf("%s cycle %d left a latch for a new owner prompt", label, i)
+		}
+	}
+}
+
+func TestKillSwitchResetWithLegKeptForSettlementIntegration(t *testing.T) {
+	const key = "SPY-put-sell-800-2026-10-30"
+	cutoff := time.Date(2026, 10, 30, 20, 0, 0, 0, time.UTC)
+	pending := lcPricer{reply: lcRobinhoodSchedule(cutoff)}
+
+	firstLatch := func(t *testing.T, r *ksrRun, hasOwner bool) {
+		t.Helper()
+		sr, out := r.cycle(hasOwner)
+		prs := r.env.state.partitionRisk(r.part)
+		if !sr.KillSwitchFired || !out.CloseApplied || len(out.Closed) != 0 || strings.Join(out.Kept, ",") != r.sc.ID+" "+key || out.Message == "" {
+			t.Fatalf("first latch: fired=%v closeApplied=%v closed=%v kept=%v message=%q", sr.KillSwitchFired, out.CloseApplied, out.Closed, out.Kept, out.Message)
+		}
+		if out.AutoReset == hasOwner || prs.KillSwitchActive != hasOwner || r.env.strat(r.sc.ID).OptionPositions[key] == nil {
+			t.Fatalf("first latch: autoReset=%v latched=%v owner=%v", out.AutoReset, prs.KillSwitchActive, hasOwner)
+		}
+	}
+	reloaded := func(t *testing.T, r *ksrRun, peak float64, triggered, autoResets, rebaselines int) {
+		t.Helper()
+		r.env.saveAll()
+		r.env = r.env.restart()
+		useEntryTradeRecorder(t, r.env.store)
+		prs := r.env.state.partitionRisk(r.part)
+		if prs.PeakValue != peak || countEvents(prs, "triggered") != triggered || countEvents(prs, "auto_reset") != autoResets || countEvents(prs, "reset_rebaseline") != rebaselines {
+			t.Fatalf("stored risk row: peak=%.2f triggered=%d auto_reset=%d reset_rebaseline=%d; want %.2f, %d, %d, %d", prs.PeakValue,
+				countEvents(prs, "triggered"), countEvents(prs, "auto_reset"), countEvents(prs, "reset_rebaseline"), peak, triggered, autoResets, rebaselines)
+		}
+	}
+
+	t.Run("no_owner_before_the_read_boundary_three_cycles_stay_quiet", func(t *testing.T) {
+		r := ksrStart(t, "rh-ksr-wait", cutoff)
+		firstLatch(t, r, false)
+		notifier, _ := lcNotifier(r.env.cfg)
+		throttle := newOptionSettlementAlertThrottle()
+		cycles := 0
+		r.quietCycles("before the read boundary", 3, false, func() {
+			cycles++
+			if cycles == 1 {
+				return
+			}
+			res := lcRefresh(r.env, r.sc, pending, notifier, throttle, r.clock)
+			if leg := r.env.strat(r.sc.ID).OptionPositions[key]; res.Waiting != 1 || leg == nil || !strings.HasPrefix(leg.MarkError, optionSettlementPendingPrefix) {
+				t.Fatalf("the leg must wait for its read boundary: %+v", res)
+			}
+		})
+		if !r.clock.Before(cutoff.Add(time.Hour)) {
+			t.Fatalf("the cycles must end before the read boundary; clock %s", r.clock)
+		}
+		reloaded(t, r, 7000, 1, 1, 1)
+	})
+
+	t.Run("no_owner_failed_settlements_stay_quiet_and_a_new_drop_latches", func(t *testing.T) {
+		r := ksrStart(t, "rh-ksr-fail", cutoff.Add(2*time.Hour))
+		notifier, _ := lcNotifier(r.env.cfg)
+		throttle := newOptionSettlementAlertThrottle()
+		refresh := func() {
+			res := lcRefresh(r.env, r.sc, pending, notifier, throttle, r.clock)
+			if leg := r.env.strat(r.sc.ID).OptionPositions[key]; len(res.Failures) != 1 || res.Waiting != 0 || leg == nil || !strings.HasPrefix(leg.MarkError, optionSettlementPendingPrefix) {
+				t.Fatalf("the settlement must fail past the read boundary: %+v", res)
+			}
+		}
+		refresh()
+		firstLatch(t, r, false)
+		r.quietCycles("failed settlements", 3, false, refresh)
+		reloaded(t, r, 7000, 1, 1, 1)
+
+		r.env.strat(r.sc.ID).Cash = 5000
+		refresh()
+		sr, out := r.cycle(false)
+		if !sr.KillSwitchFired || !out.CloseApplied || out.Message == "" || !strings.Contains(sr.Reason, "32.9%") {
+			t.Fatalf("a drop to 4700 from the post-reset peak 7000 must latch: fired=%v reason=%q", sr.KillSwitchFired, sr.Reason)
+		}
+		reloaded(t, r, 7000, 2, 2, 1)
+	})
+
+	t.Run("owner_reset_with_a_kept_leg_does_not_latch_again", func(t *testing.T) {
+		r := ksrStart(t, "rh-ksr-owner", cutoff)
+		firstLatch(t, r, true)
+		inst := captureKillSwitchLatchInstances(r.env.state, []RiskPartition{r.part})
+		code := newKillSwitchResetCode()
+		if res := applyKillSwitchResetReply(r.env.state, killSwitchResetRequest{Code: code, Prompted: inst, Reply: "reset " + code}, r.save); res.Err != nil || res.Target != r.part {
+			t.Fatalf("owner reset: %+v", res)
+		}
+		notifier, _ := lcNotifier(r.env.cfg)
+		throttle := newOptionSettlementAlertThrottle()
+		r.quietCycles("owner reset", 3, true, func() { lcRefresh(r.env, r.sc, pending, notifier, throttle, r.clock) })
+		prs := r.env.state.partitionRisk(r.part)
+		if countEvents(prs, "reset") != 1 || countEvents(prs, "auto_reset") != 0 {
+			t.Fatalf("owner path events: reset=%d auto_reset=%d", countEvents(prs, "reset"), countEvents(prs, "auto_reset"))
+		}
+		reloaded(t, r, 7000, 1, 0, 1)
 	})
 }

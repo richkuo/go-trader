@@ -29,15 +29,20 @@ SCHEMA_V3 = "offline_candle_manifest/v3"
 SCHEMA_V4 = "offline_candle_manifest/v4"
 SCHEMA_V5 = "offline_candle_manifest/v5"
 SCHEMA_V6 = "offline_candle_manifest/v6"
-SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6)
+SCHEMA_V7 = "offline_candle_manifest/v7"
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7)
 DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
 DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
 DATASET_KEYS_V3 = DATASET_KEYS_V2 + ("trade_flow",)
 DATASET_KEYS_V4 = DATASET_KEYS_V3 + ("macro_calendar", "macro_quotes")
 DATASET_KEYS_V5 = DATASET_KEYS_V4 + ("volume_profile",)
 DATASET_KEYS_V6 = DATASET_KEYS_V5 + ("perp_premium",)
+DATASET_KEYS_V7 = DATASET_KEYS_V6 + ("htf_candles",)
 DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3,
-                SCHEMA_V4: DATASET_KEYS_V4, SCHEMA_V5: DATASET_KEYS_V5, SCHEMA_V6: DATASET_KEYS_V6}
+                SCHEMA_V4: DATASET_KEYS_V4, SCHEMA_V5: DATASET_KEYS_V5, SCHEMA_V6: DATASET_KEYS_V6,
+                SCHEMA_V7: DATASET_KEYS_V7}
+HTF_CANDLE_INTERVAL = "1h"
+HTF_CANDLE_HISTORY_MS = 26 * 3_600_000
 FUNDING_ENTRY_INPUT_STRATEGIES = frozenset({"funding_skew"})
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
@@ -259,7 +264,9 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             elif "volume_profile" in unknown:
                 hint = f"; volume_profile needs schema {SCHEMA_V5!r} or {SCHEMA_V6!r}"
             elif "perp_premium" in unknown:
-                hint = f"; perp_premium needs schema {SCHEMA_V6!r}"
+                hint = f"; perp_premium needs schema {SCHEMA_V6!r} or {SCHEMA_V7!r}"
+            elif "htf_candles" in unknown:
+                hint = f"; htf_candles needs schema {SCHEMA_V7!r}"
             raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
@@ -297,14 +304,16 @@ def load_manifest(path: str, verify: bool = True) -> dict:
                                if ds.get("volume_profile") else None),
             "perp_premium": (_file_ref(base_dir, ds["perp_premium"], f"{key}.perp_premium", verify)
                              if ds.get("perp_premium") else None),
+            "htf_candles": (_file_ref(base_dir, ds["htf_candles"], f"{key}.htf_candles", verify)
+                            if ds.get("htf_candles") else None),
         }
         if entry["macro_quotes"] is not None and entry["macro_calendar"] is None:
             raise ManifestError(f"{key}: macro_quotes needs a macro_calendar in the same dataset")
         datasets.append(entry)
 
     funding_entry_input = raw.get("funding_entry_input", False)
-    if "funding_entry_input" in raw and schema != SCHEMA_V6:
-        raise ManifestError(f"funding_entry_input needs schema {SCHEMA_V6!r}")
+    if "funding_entry_input" in raw and schema not in (SCHEMA_V6, SCHEMA_V7):
+        raise ManifestError(f"funding_entry_input needs schema {SCHEMA_V6!r} or {SCHEMA_V7!r}")
     if not isinstance(funding_entry_input, bool):
         raise ManifestError(f"funding_entry_input must be true or false, got {funding_entry_input!r}")
     return {
@@ -598,6 +607,50 @@ def attach_perp_premium(manifest: dict, dataset: dict, window: dict):
     if series is None:
         return None, coverage_report(None, window["start_ms"], window["end_ms"])
     return payload_from_series(series, manifest["interval_ms"]), coverage_report(series, window["start_ms"], window["end_ms"])
+
+
+def load_htf_candles(dataset: dict) -> Optional[pd.DataFrame]:
+    if dataset.get("htf_candles") is None:
+        return None
+    df = _read_csv_gz(dataset["htf_candles"]["abs_path"], CANDLE_COLUMNS)
+    ts = pd.to_numeric(df["timestamp"], errors="coerce")
+    if ts.isna().any():
+        raise ManifestError(f"{dataset['key']}: non-numeric htf_candles timestamp")
+    ts = ts.astype("int64")
+    step = INTERVAL_MS[HTF_CANDLE_INTERVAL]
+    if not bool((ts.diff().iloc[1:] > 0).all()) or bool((ts % step != 0).any()):
+        raise ManifestError(f"{dataset['key']}: htf_candles need strictly increasing {HTF_CANDLE_INTERVAL} opening times")
+    out = pd.DataFrame({c: pd.to_numeric(df[c], errors="coerce").astype(float)
+                        for c in ("open", "high", "low", "close", "volume")})
+    out.insert(0, "timestamp", ts.to_numpy())
+    return out
+
+
+def htf_candles_coverage(frame: Optional[pd.DataFrame], start_ms: int, end_ms: int) -> dict:
+    step = INTERVAL_MS[HTF_CANDLE_INTERVAL]
+    expected = list(range((start_ms // step) * step, end_ms, step))
+    if frame is None:
+        return {"interval": HTF_CANDLE_INTERVAL, "expected_bars": len(expected), "present_bars": 0,
+                "missing_bars": len(expected), "complete": False}
+    have = set(int(t) for t in frame["timestamp"])
+    present = sum(1 for t in expected if t in have)
+    return {"interval": HTF_CANDLE_INTERVAL, "expected_bars": len(expected), "present_bars": present,
+            "missing_bars": len(expected) - present, "complete": present == len(expected)}
+
+
+def attach_htf_candles(manifest: dict, dataset: dict, window: dict, history_start_ms: Optional[int] = None):
+    frame = load_htf_candles(dataset)
+    start = (history_start_ms if history_start_ms is not None else window["start_ms"]) - HTF_CANDLE_HISTORY_MS
+    coverage = htf_candles_coverage(frame, start, window["end_ms"])
+    coverage["sha256"] = (dataset.get("htf_candles") or {}).get("sha256")
+    if frame is None:
+        return ({"available": False, "kind": "htf_candles", "interval_ms": INTERVAL_MS[HTF_CANDLE_INTERVAL],
+                 "reason": f"{dataset['key']} attaches no htf_candles series"}, coverage)
+    keep = frame[(frame["timestamp"] >= start) & (frame["timestamp"] < window["end_ms"])]
+    rows = [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
+            for r in keep.itertuples(index=False, name=None)]
+    return ({"available": True, "kind": "htf_candles", "interval_ms": INTERVAL_MS[HTF_CANDLE_INTERVAL],
+             "timestamp_kind": "open", "rows": rows, "sha256": coverage["sha256"]}, coverage)
 
 
 def attach_funding_entry_input(frame: pd.DataFrame, dataset: dict, window: dict):

@@ -9,13 +9,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STUB_DIR = os.path.join(ROOT, "shared_scripts", "testdata", "quote_precision")
 CHECK_STRATEGY = os.path.join(ROOT, "shared_scripts", "check_strategy.py")
 CHECK_ROBINHOOD = os.path.join(ROOT, "shared_scripts", "check_robinhood.py")
-CHECK_TOPSTEP = os.path.join(ROOT, "shared_scripts", "check_topstep.py")
 CHECK_PRICE = os.path.join(ROOT, "shared_scripts", "check_price.py")
 CHECK_OPTIONS = os.path.join(ROOT, "shared_scripts", "check_options.py")
 
 QUOTES = (0.1234, 0.006, 0.00001234)
-MARKET_OPEN = "2026-10-21T12:00:00-04:00"
-MARKET_CLOSED = "2026-10-24T12:00:00-04:00"
 CREDENTIALS = (
     "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX",
     "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET",
@@ -28,7 +25,7 @@ def _run(script, argv, env_extra, stdin=None, tmp_path=None):
     for key in CREDENTIALS:
         env.pop(key, None)
     for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
-                "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE"):
+                "QP_DAILY", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE"):
         env.pop(key, None)
     env["QP_STUB"] = "1"
     env["PYTHONPATH"] = STUB_DIR
@@ -52,8 +49,6 @@ CHECK_CASES = {
     "robinhood_adapter_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "quote", {}),
     "robinhood_candle_fallback_after_missing_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {}),
     "robinhood_candle_fallback_after_quote_error": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {"QP_QUOTE": "error"}),
-    "topstep_adapter_quote": (CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"], "quote", {"QP_NOW": MARKET_OPEN}),
-    "topstep_candle_fallback_after_missing_quote": (CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"], "close", {"QP_NOW": MARKET_OPEN}),
 }
 
 
@@ -78,18 +73,6 @@ def test_non_option_checks_emit_the_selected_quote_exactly(quote, tmp_path, subt
             assert out["signal"] == 1, out
             assert isinstance(out["price"], float)
             assert out["price"] == quote
-            if script == CHECK_TOPSTEP:
-                assert out["market_open"] is True
-
-
-def test_topstep_closed_market_keeps_its_refusal(tmp_path):
-    proc = _run(CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"],
-                {"QP_NOW": MARKET_CLOSED, "QP_CLOSE": 0.1234, "QP_QUOTE": 0.1234, "QP_SHAPE": "cross_up"}, tmp_path=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["market_open"] is False
-    assert out["signal"] == 0
-    assert out["price"] == 0
 
 
 def test_check_price_emits_the_exact_ticker_quote(tmp_path):
@@ -126,22 +109,29 @@ def test_check_price_without_symbols_emits_an_empty_map(tmp_path):
     assert _single_document(proc) == {}
 
 
+IBKR_CALENDAR = "--option-calendar-json=" + json.dumps({
+    "contract": "option_calendar_v1", "platform": "ibkr", "underlying": "BTC", "evaluated_at": "2026-11-04T12:00:00Z",
+    "cutoff_zone": "Europe/London", "cutoff_hour": 16, "cutoff_minute": 0})
+HELD_PROTECTIVE_PUT = json.dumps([{"option_type": "put", "action": "buy", "strike": 1, "expiry": "2026-12-18"}])
+
+
 def test_check_options_preserves_the_spot_price(tmp_path, subtests):
     for i, quote in enumerate(QUOTES):
         with subtests.test(quote=quote):
             home = tmp_path / f"quote-{i}"
             home.mkdir()
-            proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
-                        {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin="[]", tmp_path=home)
+            proc = _run(CHECK_OPTIONS, ["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR],
+                        {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin=HELD_PROTECTIVE_PUT, tmp_path=home)
             assert proc.returncode == 0, proc.stderr
             out = _single_document(proc)
             assert not out.get("error"), out
+            assert out["actions"] == [], out
             assert isinstance(out["spot_price"], float)
             assert out["spot_price"] == quote
 
 
 def test_check_options_without_a_spot_quote_keeps_its_error(tmp_path):
-    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
+    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR],
                 {"QP_CLOSE": 0.1234}, stdin="[]", tmp_path=tmp_path)
     out = _single_document(proc)
     assert out["spot_price"] == 0

@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,11 +38,11 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-close", Summary: "Close (or partially close) a manual position.", Usage: "go-trader manual-close [...]"},
 	{Name: "force-close", Summary: "Close (or partially close) a live Hyperliquid perps strategy position.", Usage: "go-trader force-close <strategy-id> [--qty N] [--dry-run]"},
 	{Name: "manual-cancel", Summary: "Cancel a resting manual limit order.", Usage: "go-trader manual-cancel [...]"},
-	{Name: "manual-clear-limit-row", Summary: "Discard the recovery record for an off-book limit order whose fill no automatic path can book, after the operator has flattened it by hand.", Usage: "go-trader manual-clear-limit-row <order-oid> --flattened [--dry-run]", Flags: []string{"--config", "--flattened", "--dry-run"}},
+	{Name: "manual-clear-limit-row", Summary: "Discard the recovery record for an off-book limit order whose fill or recorded watermark no automatic path can book or prove, after the operator has flattened by hand any size the book does not hold; the ledger stays as it is.", Usage: "go-trader manual-clear-limit-row <order-oid> --flattened [--dry-run]", Flags: []string{"--config", "--flattened", "--dry-run"}},
 	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
 	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
-	{Name: "probe", Summary: "Run startup probes against the configured check scripts (a role=feed config loads its consumer configs instead).", Usage: "go-trader probe [--config <path>]"},
+	{Name: "probe", Summary: "Run startup probes against the configured check scripts (a role=feed config loads its consumer configs instead).", Usage: "go-trader probe [--config <path>] [--deployment-config <persistent config path>]", Flags: []string{"--config", "--deployment-config"}},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
 	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
@@ -50,6 +55,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "robinhood-login", Summary: "Interactive Robinhood device approval (#1818): runs the real robin_stocks verification flow in a terminal as the service user and stores the session in <config folder>/robinhood-session (0700, files 0600) under the per-account session lock; scheduler logins never answer a verification prompt and stay refused until this succeeds.", Usage: "go-trader robinhood-login [--config <path>]", Flags: []string{"--config"}},
 	{Name: "notify-broker", Summary: "Egress proxy mode notification broker (#1841): attests to the egress controller as the notify role, then serves typed Discord, Telegram and GitHub operations on the deployment's broker socket through the controller's notification allowlist. Runs under its own account from the broker unit or the compose notify-broker service, never by hand.", Usage: "go-trader notify-broker --deployment <name>", Flags: []string{"--deployment"}},
 	{Name: "cpu-class", Summary: "Read-only CPU class of a config for the systemd CPU weight drop-in (#1987): prints exactly one line, `paper` (the config sets paper_only: true), `live` (any other scheduler config, including an empty roster) or `feed` (role=feed). Loads the config like probe with loader output on stderr, writes no file, opens no network connection; exit 1 on a read or load error, 2 on a usage error.", Usage: "go-trader cpu-class [--config <path>]", Flags: []string{"--config"}},
+	{Name: "feed-weight-release", Summary: "Release the held venue weight reserve of a stopped shared weight owner (#2061). Runs as the service account against the host's shared weight directory, takes the record lock, proves the owner's lifetime lock is free and unreplaced, and sets its held reserve to 0 while its unexpired charges, debt and bounds stay; refuses a live or unprovable owner; a repeat is a no-op. Logs one line after the release commits.", Usage: "go-trader feed-weight-release --owner <key>", Flags: []string{"--owner"}},
 	{Name: "egress-anchor", Summary: "Egress proxy mode Docker anchor (#1841): holds the network namespace that the egress controller enforces; --check exits 0 only when the controller reports this namespace enforced (compose health check).", Usage: "go-trader egress-anchor [--check]", Flags: []string{"--check"}},
 }
 
@@ -68,7 +74,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "GO_TRADER_ALLOW_MISSING_STATE", Purpose: "Set to 1 to allow startup with no existing state DB (CheckStatePresence bypass).", Secret: false},
 	{Name: "GO_TRADER_CASHFLOW_JOURNAL_ALARM", Purpose: "Set to 0/off/false/no to force the legacy trade-ledger drift basis for HL shared wallets instead of the #1100 exchange-sourced cash-flow journal (default on).", Secret: false},
 	{Name: "GO_TRADER_DIRECTIONAL_CERT_PATH", Purpose: "Override path to the regime directional-certification artifact (#1085); default backtest/research/regime_directional_certifications.json.", Secret: false},
-	{Name: "GO_TRADER_EGRESS_DEPLOYMENT", Purpose: "Egress deployment name set by the egress unit drop-in; read only to name go-trader-notify@<deployment>.service in a slash-command error when the notification broker runs an older build.", Secret: false},
+	{Name: "GO_TRADER_EGRESS_DEPLOYMENT", Purpose: "Egress deployment name set by the egress unit drop-in; read only to name go-trader-notify@<deployment>.service in the slash-command warning when the notification broker runs an older build.", Secret: false},
 	{Name: "GO_TRADER_GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (preferred over GITHUB_TOKEN).", Secret: true},
 	{Name: "GO_TRADER_MANUAL_SCHEDULER_URL", Purpose: "Command-line manual-open/manual-add only, under market_feed shared or websocket: the running scheduler's status origin (http on a loopback address or localhost with an explicit port) for regime admission; default http://localhost:<resolved status port>. Set it for a --status-port override, a fallback listener port or a container port mapping.", Secret: false},
 	{Name: "GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH", Purpose: "Set to 1 only by scripts/test_migrate_service_layout_fixture.sh scenario_latch. A paper kill switch with no DM owner stays latched, and the daemon logs that this variable suppressed the auto-reset.", Secret: false},
@@ -167,6 +173,17 @@ type agentInfo struct {
 	Strategies   []agentStrategyInfo `json:"strategies"`
 	Role         string              `json:"role"`
 	Feed         *agentFeedInfo      `json:"feed,omitempty"`
+
+	FeedRateLimit *agentFeedRateLimit `json:"feed_rate_limit,omitempty"`
+}
+
+type agentFeedRateLimit struct {
+	SourceURL string                    `json:"source_url"`
+	Status    string                    `json:"status"`
+	Reason    string                    `json:"reason,omitempty"`
+	PID       int                       `json:"pid,omitempty"`
+	Version   string                    `json:"version,omitempty"`
+	Ledgers   []feedRateLimitLedgerView `json:"ledgers,omitempty"`
 }
 
 type agentFeedInfo struct {
@@ -189,11 +206,16 @@ func runAgentInfo(args []string) int {
 	}
 
 	var info agentInfo
+	expectRole, statusPort := configRoleScheduler, 0
 	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		expectRole = configRoleFeed
 		feedCfg, err := loadFeedRoleConfig(*configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load feed config %s: %v\n", *configPath, err)
 			feedCfg = nil
+		}
+		if feedCfg != nil {
+			statusPort = feedCfg.StatusPort
 		}
 		info = buildFeedAgentInfo(feedCfg, Version, time.Now().UTC())
 	} else {
@@ -206,6 +228,9 @@ func runAgentInfo(args []string) int {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load config %s: %v\n", *configPath, err)
 			cfg = nil
+		}
+		if cfg != nil {
+			statusPort = resolveStatusPort(0, cfg.StatusPort)
 		}
 		info = buildAgentInfo(cfg, Version, time.Now().UTC())
 	}
@@ -220,6 +245,8 @@ func runAgentInfo(args []string) int {
 		return 0
 	}
 
+	info.FeedRateLimit = queryAgentFeedRateLimit(expectRole, *configPath, statusPort, os.Getenv("STATUS_AUTH_TOKEN"))
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(info); err != nil {
@@ -227,6 +254,100 @@ func runAgentInfo(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+const (
+	agentFeedRateLimitTimeout  = 2 * time.Second
+	agentFeedRateLimitMaxBytes = 1 << 20
+)
+
+func resolvedConfigPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
+type agentHealthReply struct {
+	PID           int                        `json:"pid"`
+	Version       string                     `json:"version"`
+	Role          string                     `json:"role"`
+	ConfigPath    string                     `json:"config_path"`
+	RequestBudget *feedBudgetStatus          `json:"request_budget"`
+	FeedRateLimit *[]feedRateLimitLedgerView `json:"feed_rate_limit"`
+}
+
+func queryAgentFeedRateLimit(expectRole, configPath string, port int, token string) *agentFeedRateLimit {
+	out := &agentFeedRateLimit{Status: "unavailable"}
+	if port <= 0 {
+		out.Reason = "no config: the status port is unknown"
+		return out
+	}
+	origin := "http://localhost:" + strconv.Itoa(port)
+	out.SourceURL = origin + "/health"
+	ep, err := parseManualRegimeEndpoint(origin)
+	if err != nil {
+		out.Reason = "loopback endpoint: " + err.Error()
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), agentFeedRateLimitTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, out.SourceURL, nil)
+	if err != nil {
+		out.Reason = "build request: " + err.Error()
+		return out
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := ep.client().Do(req)
+	if err != nil {
+		out.Reason = "connect error or timeout: " + err.Error()
+		return out
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, agentFeedRateLimitMaxBytes+1))
+	if err != nil || len(data) > agentFeedRateLimitMaxBytes {
+		out.Reason = fmt.Sprintf("unreadable reply (HTTP %d)", resp.StatusCode)
+		return out
+	}
+	var reply agentHealthReply
+	if err := json.Unmarshal(data, &reply); err != nil {
+		out.Reason = fmt.Sprintf("unreadable reply (HTTP %d): %v", resp.StatusCode, err)
+		return out
+	}
+	out.PID, out.Version = reply.PID, reply.Version
+	if reply.Role != expectRole {
+		out.Reason = fmt.Sprintf("role mismatch: the process on port %d reports role %q, this config is role %q", port, reply.Role, expectRole)
+		return out
+	}
+	if want := resolvedConfigPath(configPath); reply.ConfigPath != want {
+		if reply.ConfigPath == "" {
+			out.Reason = "the reply has no config path (older binary, or the status token is missing or wrong)"
+		} else {
+			out.Reason = fmt.Sprintf("config path mismatch: the process on port %d runs %s, this config is %s", port, reply.ConfigPath, want)
+		}
+		return out
+	}
+	switch {
+	case expectRole == configRoleFeed && reply.RequestBudget != nil && reply.RequestBudget.RateLimit != nil:
+		w := reply.RequestBudget.Weight
+		out.Ledgers = []feedRateLimitLedgerView{{Name: "feed", Enforced: reply.RequestBudget.Enforced, RateLimit: reply.RequestBudget.RateLimit, Weight: &w}}
+	case expectRole == configRoleScheduler && reply.FeedRateLimit != nil:
+		out.Ledgers = append([]feedRateLimitLedgerView{}, (*reply.FeedRateLimit)...)
+	default:
+		out.Reason = "the reply has no rate-limit field (older binary, or the status token is missing or wrong)"
+		return out
+	}
+	out.Status = "ok"
+	return out
 }
 
 func loadConfigSnapshot(path string) (*Config, error) {
@@ -270,8 +391,9 @@ func buildFeedAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 			Note:            "Seals one immutable market snapshot per scheduled deadline and serves it to shared-mode schedulers over a Unix socket; probe loads each consumer config read-only and skips check scripts.",
 		}
 		if cfg.Feed.Source == feedSourceREST {
-			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them."
+			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them. A rest feed requires a venue weight policy (weight_per_minute, weight_startup, weight_reserve) and reserves each read's bounded weight before it sends."
 		}
+		info.Feed.Note += " Every feed owner with a weight policy (and an embedded websocket owner with market_feed_weight_budget) shares one durable weight record per host in " + feedAuthorityHostDir + " (container: " + containerFeedWeightDir + "): combined allocations of active owners must fit the venue ceiling less the largest reserve held by any owner (a stopped owner keeps its reserve until it restarts with a new policy or go-trader feed-weight-release releases it), unresolved use survives restarts, a 429 pause applies to every participant, and a lost record holds participating reads for one window. probe forecasts the shared admission read-only; --deployment-config names the persistent owner when probing a staged copy."
 	}
 	return info
 }
@@ -546,7 +668,8 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 		} else {
 			fmt.Fprintf(&b, "- source: `%s`\n- socket: `%s`\n- status port: `%d`\n", info.Feed.Source, info.Feed.SocketPath, info.Feed.StatusPort)
 			if rb := info.Feed.RequestBudget; rb != nil {
-				fmt.Fprintf(&b, "- request budget: `%d` per minute, `%d` at startup\n", rb.PerMinute, rb.Startup)
+				fmt.Fprintf(&b, "- request budget: `%d` requests per minute, `%d` at startup\n", rb.PerMinute, rb.Startup)
+				fmt.Fprintf(&b, "- %s\n", formatFeedWeightPolicy(rb.weightPolicy()))
 			}
 			for _, c := range info.Feed.ConsumerConfigs {
 				fmt.Fprintf(&b, "- consumer config: `%s`\n", c)

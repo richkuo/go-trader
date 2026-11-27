@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/obs-harness.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
-GO_TRADER_OBS_HARNESS_OUT="$OUT" go -C "$ROOT/scheduler" test -run '^TestOpenInterestObservationPipeline$' -count=1 .
+GO_TRADER_OBS_HARNESS_OUT="$OUT" go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^TestOpenInterestObservationPipeline$' -count=1 .
 
 for f in harness.json payload_1.json payload_2.json recording/run.manifest.json; do
     if [[ ! -s "$OUT/$f" ]]; then

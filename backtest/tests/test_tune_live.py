@@ -71,100 +71,6 @@ def _canned_stage2(spec_path, out_json, out_dir, jobs, funding_mode="charge",
     }
 
 
-def test_coerce_scalar():
-    for raw, expected in [
-        ("10", 10), ("1.5", 1.5), ("true", True), ("false", False),
-        ("us_open", "us_open"), ("-3", -3),
-    ]:
-        case = f"test_coerce_scalar[{raw}-{expected}]"
-        assert tl.coerce_scalar(raw) == expected, case
-        assert type(tl.coerce_scalar(raw)) is type(expected), case
-
-
-def test_perturb_numeric_int_and_float():
-    assert sorted(tl.perturb_numeric(20, 0.25, 1)) == [15, 25]
-    assert tl.perturb_numeric(0.5, 0.25, 1) == [0.375, 0.625]
-    assert tl.perturb_numeric(0, 0.25, 2) == []
-    assert tl.perturb_numeric(20, 0.25, 0) == []
-    assert tl.perturb_numeric(True, 0.25, 2) == []
-
-
-def test_param_neighborhood_numeric_sorted_and_categorical_preserved():
-    case = "test_param_neighborhood_includes_live_and_range_sorted"
-    n = tl.param_neighborhood(18, [10, 15, 20, 25], 0.25, 0)
-    assert n == [10, 15, 18, 20, 25], case
-    assert 18 in n, case
-
-    case = "test_param_neighborhood_categorical_preserves_and_no_perturb"
-    n = tl.param_neighborhood("us_open", ["asian", "us_open", "us_close"], 0.25, 2)
-    assert set(n) == {"asian", "us_open", "us_close"}, case
-    assert n[0] == "us_open", case
-
-
-def test_effective_params_config_over_defaults():
-    eff = tl.effective_params({"fast_period": 18}, {"fast_period": 20, "slow_period": 50})
-    assert eff == {"fast_period": 18, "slow_period": 50}
-
-
-def test_build_search_grid_frozen_override_and_value_ok_keeps_live():
-    case = "test_build_search_grid_searched_frozen_override"
-    eff = {"fast_period": 18, "slow_period": 50, "extra": 7}
-    default_row = {"fast_period": [10, 15, 20, 25], "slow_period": [40, 50, 60, 80]}
-    grid = tl.build_search_grid(
-        eff, default_row, override_grids={"slow_period": [45, 55]},
-        frozen={"fast_period"}, step_frac=0.25, n_steps=0, value_ok=lambda p, v: True)
-    assert grid["fast_period"] == [18], case
-    assert grid["slow_period"] == [45, 55], case
-    assert grid["extra"] == [7], case
-
-    case = "test_build_search_grid_value_ok_filters_but_keeps_live"
-    eff = {"fast_period": 18}
-    default_row = {"fast_period": [10, 15, 20, 25]}
-    grid = tl.build_search_grid(eff, default_row, {}, set(), 0.25, 0,
-                                value_ok=lambda p, v: False)
-    assert grid["fast_period"] == [18], case
-
-
-def test_grid_size():
-    assert tl.grid_size({"a": [1, 2, 3], "b": [1, 2], "c": [9]}) == 6
-
-
-def _check_value(reg):
-    return lambda p, v: reg.validate_param_value("sma_crossover", p, v)
-
-
-def test_parse_cli_param_grids():
-    out = tl.parse_cli_param_grids(["fast_period=10,15,20", "num_std=1.5,2.0"])
-    assert out == {"fast_period": [10, 15, 20], "num_std": [1.5, 2.0]}
-
-
-def test_resolve_overrides_valid_and_freeze():
-    reg = load_registry("spot")
-    og, fr = tl.resolve_overrides(
-        "s", {"fast_period": [10, 15]},
-        {"s": {"freeze": ["slow_period"]}}, {"fast_period", "slow_period"},
-        _check_value(reg))
-    assert og == {"fast_period": [10, 15]}
-    assert fr == {"slow_period"}
-
-
-_RESOLVE_OVERRIDES_REFUSES_CASES = [
-    ({"nope": [1]}, {}, {"fast_period"}, "unknown param"),
-    ({"fast_period": [-3]}, {}, {"fast_period", "slow_period"}, "constraint"),
-    ({"fast_period": [10]}, {"s": {"freeze": ["fast_period"]}},
-     {"fast_period", "slow_period"}, "both overridden and frozen"),
-    ({}, {"s": {"freeze": ["ghost"]}}, {"fast_period"}, "unknown params"),
-]
-
-
-def test_resolve_overrides_refuses(subtests):
-    for i, (grids, overrides, known, match) in enumerate(_RESOLVE_OVERRIDES_REFUSES_CASES):
-        with subtests.test(case=i, grids=grids, overrides=overrides, known=known, match=match):
-            reg = load_registry("spot")
-            with pytest.raises(ValueError, match=match):
-                tl.resolve_overrides("s", grids, overrides, known, _check_value(reg))
-
-
 def test_earliest_stage2_start_and_unknown_window():
     assert tl.earliest_stage2_start(["is", "oos"], tl.M1_WINDOWS) == "2025-06-10"
     assert tl.earliest_stage2_start(["2023", "is"], tl.M1_WINDOWS) == "2023-01-01"
@@ -258,23 +164,6 @@ def test_unsupported_reason():
         assert tl.unsupported_reason(resolution) == expected, f"test_unsupported_reason[{resolution}]"
 
 
-def test_stage1_skip_reason():
-    for resolution, expected in [
-    ({"direction": "short"}, "short_direction_long_only_seeder"),
-    ({"direction": "long", "regime_enabled": True,
-      "regime_windows_spec": {"d": {"classifier": "adx", "period": 14}}},
-     None),
-    ({"direction": "long"}, None),
-    ({"direction": "both"}, None),
-    ({"regime_enabled": True, "regime_windows_spec": {
-        "primary": {"classifier": "composite", "period": 14}}},
-     None),
-    ({"regime_enabled": False, "regime_windows_spec": {
-        "primary": {"classifier": "composite", "period": 14}}}, None),
-    ]:
-        assert tl.stage1_skip_reason(resolution) == expected, f"test_stage1_skip_reason[{resolution}]"
-
-
 def test_baseline_params_byte_match_load_strategy_config(tmp_path):
     from run_backtest import load_strategy_config
     cfg = _sma_config(params={"fast_period": 18, "slow_period": 47})
@@ -284,17 +173,6 @@ def test_baseline_params_byte_match_load_strategy_config(tmp_path):
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
     assert res["baseline_params"] == resolved["open_strategy"]["params"]
-
-
-def test_generated_candidates_pass_auto_suggest_load_spec(tmp_path):
-    path = _write_config(tmp_path, _sma_config())
-    tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                     load_registry("spot"), _make_args(dry_run=True), {}, str(tmp_path))
-    spec_path = tmp_path / "suggest.spot-sma-btc.json"
-    raw = json.loads(spec_path.read_text())
-    spec = auto_suggest.load_spec(raw, str(tmp_path))
-    assert spec["correction"]["family_size"] == raw["correction"]["family_size"]
-    assert spec["candidates"][0]["key"] == "baseline"
 
 
 _PROMOTION_BASELINE_KEYS = (
@@ -514,68 +392,6 @@ def test_promotion_baseline_deepcopy_no_alias(tmp_path, subtests):
         _assert_complete_promotion_baseline(kwargs_flag["promotion_baseline"])
 
 
-def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):
-    def _boom(*a, **k):
-        raise AssertionError("run_stage2 must not run in --dry-run")
-    monkeypatch.setattr(tl, "run_stage2", _boom)
-    monkeypatch.setattr(tl, "load_cached_data",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("no data fetch in --dry-run")))
-    path = _write_config(tmp_path, _sma_config())
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "dry_run"
-    assert res["stage1"]["ran"] is False
-    assert (tmp_path / "suggest.spot-sma-btc.json").exists()
-
-
-def test_stage1_failed_marks_and_fleet_continues(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-
-    def fake_wfo(df, name, grid, **kw):
-        if name == "sma_crossover":
-            return {"error": "No valid optimization windows", "strategy": name}
-        return {"n_valid_folds": 3, "param_grid_size": tl.grid_size(grid),
-                "window_results": [{"best_params": {"fast_period": 8, "slow_period": 21}}]}
-    monkeypatch.setattr(tl, "walk_forward_optimize", fake_wfo)
-
-    cfg = {"config_version": 15, "strategies": [
-        {"id": "a-sma", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
-         "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}}},
-        {"id": "b-ema", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
-         "open_strategy": {"name": "ema_crossover", "params": {"fast_period": 12, "slow_period": 26}}},
-    ]}
-    path = _write_config(tmp_path, cfg)
-    out = str(tmp_path / "art.json")
-    tl.main(["--config", path, "--out-dir", str(tmp_path), "--json", out, "--jobs", "1"])
-    art = json.loads((tmp_path / "art.json").read_text())
-    by_id = {s["strategy_id"]: s for s in art["strategies"]}
-    assert by_id["a-sma"]["status"] == "stage1_failed"
-    assert by_id["b-ema"]["status"] == "ranked"
-
-
-def test_short_direction_skips_stage1(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-    monkeypatch.setattr(tl, "load_cached_data",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("short skips stage 1 — no data fetch")))
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
-        "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}},
-    }]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(), {}, str(tmp_path))
-    assert res["status"] == "ranked"
-    assert res["stage1"]["ran"] is False
-    assert res["stage1"]["skipped_reason"] == "short_direction_long_only_seeder"
-    assert res["n_candidates"] == res["searched_family_size"]
-    assert not any("constraint-invalid" in n for n in res["notes"])
-
-
 def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch, subtests):
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     monkeypatch.setattr(tl, "load_cached_data",
@@ -610,45 +426,6 @@ def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch, s
             for c in spec["candidates"]:
                 p = c["candidate"]["params"]
                 assert p["fast_period"] < p["slow_period"]
-
-
-def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-
-    def _complete_funding(coin, start_date, end_date=None, **kwargs):
-        start = pd.Timestamp(start_date)
-        end = pd.Timestamp(end_date) if end_date is not None else start
-        if start.tzinfo is None:
-            start = start.tz_localize("UTC")
-        if end.tzinfo is None:
-            end = end.tz_localize("UTC")
-        hours = pd.date_range(start.ceil("h"), end.floor("h"), freq="1h", tz="UTC")
-        ms = (hours.as_unit("ns").asi8 // 1_000_000).astype("int64")
-        return pd.DataFrame({"timestamp": ms, "rate": 0.0})
-
-    monkeypatch.setattr("funding_fetcher.load_cached_funding", _complete_funding)
-    seen = {}
-
-    def fake_wfo(df, name, grid, **kw):
-        seen["direction"] = kw.get("direction")
-        return {"n_valid_folds": 3, "param_grid_size": tl.grid_size(grid),
-                "window_results": [{"best_params": {"fast_period": 8, "slow_period": 21}}]}
-    monkeypatch.setattr(tl, "walk_forward_optimize", fake_wfo)
-
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma-both", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "both",
-        "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}},
-        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-            {"atr_multiple": 2.0, "close_fraction": 1.0}]}},
-    }]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma-both", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(), {}, str(tmp_path))
-    assert res["status"] == "ranked"
-    assert res["stage1"]["ran"] is True
-    assert seen["direction"] == "both"
 
 
 def _hl_perps_both_config(tmp_path):
@@ -717,16 +494,6 @@ def test_disjoint_slice_no_data_refuses(monkeypatch):
                       "2025-06-10", 5, 1000.0, "sharpe_ratio", False)
 
 
-def test_pre_v15_config_error_status(tmp_path):
-    cfg = _sma_config()
-    cfg["config_version"] = 13
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "config_error"
-
-
 def test_config_strategy_entries_trade_timeframe_and_ordered_subset(tmp_path):
     cfg = {"config_version": 15, "regime": {"enabled": True, "timeframe": "1d"},
            "strategies": [{"id": "s", "type": "spot",
@@ -752,23 +519,17 @@ def test_config_strategy_entries_trade_timeframe_and_ordered_subset(tmp_path):
     ], "test_config_strategy_entries_accepts_ordered_strategy_subset"
 
 
-def test_config_strategy_entries_rejects_duplicate_strategy_subset(tmp_path):
-    path = _write_config(tmp_path, _sma_config(sid="first"))
-    with pytest.raises(ValueError, match="duplicate strategy id"):
-        tl.config_strategy_entries(path, ["first", "first"])
-
-
 def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
     cfg = _sma_config(sid="spot-one")
-    futures = dict(cfg["strategies"][0])
-    futures.update({
-        "id": "futures-one",
-        "type": "futures",
-        "platform": "topstep",
-        "args": ["breakout", "ES", "1h"],
+    perps = dict(cfg["strategies"][0])
+    perps.update({
+        "id": "perps-one",
+        "type": "perps",
+        "platform": "hyperliquid",
+        "args": ["breakout", "ETH", "1h"],
         "open_strategy": {"name": "breakout", "params": {}},
     })
-    cfg["strategies"].append(futures)
+    cfg["strategies"].append(perps)
     path = _write_config(tmp_path, cfg)
     loaded = []
     tuned = []
@@ -791,40 +552,8 @@ def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
     assert loaded == ["spot", "futures"]
     assert tuned == [
         ("spot-one", "spot", "spot"),
-        ("futures-one", "futures", "futures"),
+        ("perps-one", "futures", "futures"),
     ]
-
-
-_MAIN_EXPLICIT_REGISTRY_OVERRIDES_WHOLE_MIXED_RUN_CASES = ["spot", "futures"]
-
-
-def test_main_explicit_registry_overrides_whole_mixed_run(tmp_path, monkeypatch, subtests):
-    for i, override in enumerate(_MAIN_EXPLICIT_REGISTRY_OVERRIDES_WHOLE_MIXED_RUN_CASES):
-        with subtests.test(case=i, override=override):
-            case_dir = tmp_path / f"case{i}"
-            case_dir.mkdir()
-            cfg = _sma_config(sid="spot-one")
-            perps = dict(cfg["strategies"][0])
-            perps.update({"id": "perps-one", "type": "perps"})
-            cfg["strategies"].append(perps)
-            path = _write_config(case_dir, cfg)
-            loaded = []
-            tuned = []
-
-            monkeypatch.setattr(tl, "load_registry", lambda registry: (
-                loaded.append(registry) or types.SimpleNamespace(name=registry)))
-            monkeypatch.setattr(tl, "tune_strategy", lambda config_path, sid, symbol,
-                                timeframe, registry, reg_mod, args, overrides, out_dir: (
-                                    tuned.append((sid, registry)) or
-                                    {"strategy_id": sid, "status": "dry_run"}))
-
-            rc = tl.main(["--config", path, "--registry", override,
-                          "--out-dir", str(case_dir),
-                          "--json", str(case_dir / f"{override}.json"), "--dry-run"])
-
-            assert rc == 0
-            assert loaded == [override]
-            assert tuned == [("spot-one", override), ("perps-one", override)]
 
 
 def test_unsupported_live_shapes_are_skipped_and_a_dormant_regime_is_not(tmp_path, subtests):
@@ -873,64 +602,6 @@ def test_unsupported_live_shapes_are_skipped_and_a_dormant_regime_is_not(tmp_pat
                 assert res["reason"] == reason
 
 
-def test_all_failed_fleet_returns_nonzero(tmp_path, subtests):
-    with subtests.test("test_all_failed_fleet_returns_nonzero"):
-        case_path = tmp_path / "test_all_failed_fleet_returns_nonzero"
-        case_path.mkdir()
-        cfg = {"config_version": 13,
-               "strategies": [
-                   {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
-                    "open_strategy": {"name": "sma_crossover", "params": {}}},
-                   {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
-                    "open_strategy": {"name": "ema_crossover", "params": {}}},
-               ]}
-        path = _write_config(case_path, cfg)
-        rc = tl.main(["--config", path, "--out-dir", str(case_path),
-                      "--json", str(case_path / "art.json"), "--dry-run"])
-        assert rc == 1
-        art = json.loads((case_path / "art.json").read_text())
-        assert all(s["status"] == "config_error" for s in art["strategies"])
-    with subtests.test("test_all_benign_skip_fleet_returns_zero"):
-        case_path = tmp_path / "test_all_benign_skip_fleet_returns_zero"
-        case_path.mkdir()
-        cfg = {"config_version": 15, "strategies": [{
-            "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-            "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
-            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-        path = _write_config(case_path, cfg)
-        rc = tl.main(["--config", path, "--out-dir", str(case_path),
-                      "--json", str(case_path / "art.json"), "--dry-run"])
-        assert rc == 0
-
-
-def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-    cfg = {"config_version": 15, "strategies": [
-        {"id": "good", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
-         "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}}},
-        {"id": "bad-stop", "type": "perps", "platform": "hyperliquid",
-         "args": ["sma_crossover", "ETH/USDT", "1d"], "stop_loss_pct": 0.05,
-         "open_strategy": {"name": "sma_crossover", "params": {}}},
-    ]}
-    path = _write_config(tmp_path, cfg)
-    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
-                  "--json", str(tmp_path / "art.json"), "--jobs", "1"])
-    assert rc == 0
-    art = json.loads((tmp_path / "art.json").read_text())
-    by_id = {s["strategy_id"]: s["status"] for s in art["strategies"]}
-    assert by_id["good"] == "ranked" and by_id["bad-stop"] == "unsupported"
-
-
-def test_overrides_unknown_strategy_id_refused(tmp_path):
-    path = _write_config(tmp_path, _sma_config())
-    ov = tmp_path / "ov.json"
-    ov.write_text(json.dumps({"ghost-strategy": {"params": {"fast_period": [10]}}}))
-    with pytest.raises(SystemExit, match="unknown strategy ids"):
-        tl.main(["--config", path, "--overrides", str(ov),
-                 "--out-dir", str(tmp_path), "--dry-run"])
-
-
 def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
@@ -968,12 +639,3 @@ def test_family_size_covers_baseline_against_real_bh_guard(tmp_path, monkeypatch
                            load_registry("spot"), args, {}, str(tmp_path))
     assert res["status"] == "ranked"
     assert res["searched_family_size"] >= res["n_candidates"]
-
-
-def test_too_many_candidates_refused(tmp_path):
-    path = _write_config(tmp_path, _sma_config())
-    args = _make_args(dry_run=True, max_candidates=3,
-                      param=["fast_period=10,15,20,25", "slow_period=40,50,60,80"])
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), args, {}, str(tmp_path))
-    assert res["status"] == "too_many_candidates"

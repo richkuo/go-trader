@@ -118,6 +118,27 @@ func (e *mrpEnv) pendingLimits(cfgPath string) []PendingLimitOrder {
 	return rows
 }
 
+func (e *mrpEnv) dropLimitRows(cfgPath, strategyID string) {
+	e.t.Helper()
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	store, err := openToolStateStore(cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer store.Close()
+	for _, row := range e.pendingLimits(cfgPath) {
+		if row.StrategyID != strategyID {
+			continue
+		}
+		if err := store.DeletePendingLimitOrder(row.ID); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
 func (e *mrpEnv) seedPositions(cfgPath string, positions map[string]*Position) *AppState {
 	e.t.Helper()
 	cfg, err := LoadConfig(cfgPath)
@@ -177,31 +198,123 @@ const (
 	mrpGenerationMargin = 10 * time.Second
 )
 
-func mrpGenerationLeft(r mrpRoute) time.Duration {
-	step := int64(r.env.IntervalSeconds) * 1000
-	if step <= 0 {
-		return 0
+type mrpEval struct {
+	line     string
+	key      time.Time
+	cadence  int
+	complete bool
+	cycles   int
+}
+
+func mrpLastEval(log, strategyID string) (mrpEval, bool) {
+	out := mrpEval{cycles: mrpCycles(log)}
+	lines := strings.Split(log, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.Contains(line, " complete (") {
+			out.complete = true
+			continue
+		}
+		at := strings.Index(line, "[feed] eval=")
+		if at < 0 {
+			continue
+		}
+		id, tail, ok := strings.Cut(line[at+len("[feed] eval="):], " cadence=")
+		if !ok {
+			continue
+		}
+		cadenceText, twins, ok := strings.Cut(tail, "s twins=")
+		if !ok {
+			continue
+		}
+		member := false
+		for _, name := range strings.Split(twins, ", ") {
+			if strings.TrimSpace(name) == strategyID {
+				member = true
+			}
+		}
+		if !member {
+			continue
+		}
+		_, unixText, ok := strings.Cut(id, "/")
+		if !ok {
+			continue
+		}
+		unix, err := strconv.ParseInt(unixText, 10, 64)
+		if err != nil {
+			continue
+		}
+		cadence, err := strconv.Atoi(cadenceText)
+		if err != nil {
+			continue
+		}
+		out.line, out.key, out.cadence = line, time.Unix(unix, 0).UTC(), cadence
+		return out, true
 	}
-	now := time.Now()
-	next := time.UnixMilli((now.UnixMilli()/step + 1) * step)
-	if end := r.env.BundleAt.Add(time.Duration(r.env.IntervalSeconds) * time.Second); end.Before(next) {
-		next = end
+	return out, false
+}
+
+func mrpTimeline(log string) string {
+	var keep []string
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "[feed] eval=") || strings.Contains(line, "[feed-audit]") || strings.Contains(line, " complete (") {
+			keep = append(keep, strings.TrimSpace(line))
+		}
 	}
-	return next.Sub(now)
+	if len(keep) > 12 {
+		keep = keep[len(keep)-12:]
+	}
+	return "daemon timeline (last eval, feed-audit and complete lines):\n" + strings.Join(keep, "\n")
+}
+
+func mrpGenerationWindow(first, second mrpEval, firstOK, secondOK bool, r mrpRoute, now time.Time) (time.Duration, time.Time, string) {
+	if !firstOK || !secondOK {
+		return 0, time.Time{}, "no [feed] eval= line in the daemon log names the strategy"
+	}
+	slot := evaluationDeadline(now, second.cadence)
+	if first.line != second.line || first.cycles != second.cycles {
+		return 0, slot, fmt.Sprintf("a cycle moved during the route read: %q with %d complete -> %q with %d complete", first.line, first.cycles, second.line, second.cycles)
+	}
+	if !second.complete {
+		return 0, slot, fmt.Sprintf("the cycle for eval key %d is in progress", second.key.Unix())
+	}
+	if !second.key.Equal(slot) {
+		return 0, slot, fmt.Sprintf("eval key %d is not the current slot %d", second.key.Unix(), slot.Unix())
+	}
+	if r.status != http.StatusOK || r.env.Result != manualRegimeResultBundle || r.env.BundleAt == nil {
+		return 0, slot, fmt.Sprintf("route status %d result %q", r.status, r.env.Result)
+	}
+	end := second.key.Add(time.Duration(second.cadence) * time.Second)
+	if bundleEnd := r.env.BundleAt.Add(time.Duration(r.env.IntervalSeconds) * time.Second); bundleEnd.Before(end) {
+		end = bundleEnd
+	}
+	left := end.Sub(now)
+	if left < mrpGenerationMargin {
+		return left, slot, fmt.Sprintf("%s left before the next key, below the %s margin", left.Round(time.Millisecond), mrpGenerationMargin)
+	}
+	return left, slot, ""
 }
 
 func (e *mrpEnv) settledGeneration(d *mrpDaemon, port int, strategyID string) mrpRoute {
 	e.t.Helper()
 	var got mrpRoute
+	reason := ""
+	var key, slot time.Time
 	for attempt := 0; attempt < 5; attempt++ {
-		got = e.route(port, strategyID, "paper")
-		if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
-			e.t.Logf("evidence window: generation %d with %s left after %d fresh cycles; %s", got.env.Generation, mrpGenerationLeft(got).Round(time.Millisecond), attempt, mrpLastCycle(d.output()))
+		first, firstOK := mrpLastEval(d.output(), strategyID)
+		got = e.route(port, strategyID, "live")
+		second, secondOK := mrpLastEval(d.output(), strategyID)
+		var left time.Duration
+		left, slot, reason = mrpGenerationWindow(first, second, firstOK, secondOK, got, time.Now())
+		key = second.key
+		if reason == "" {
+			e.t.Logf("evidence window: generation %d, eval key %d, current slot %d, %s left after %d fresh cycles; %s", got.env.Generation, key.Unix(), slot.Unix(), left.Round(time.Millisecond), attempt, mrpLastCycle(d.output()))
 			return got
 		}
+		e.t.Logf("evidence window refused for %s: %s; waiting for a fresh cycle", strategyID, reason)
 		d.waitFreshCycle()
 	}
-	e.t.Fatalf("no paper generation for %s kept %s before the next cycle after 5 fresh cycles: status %d result %q; %s", strategyID, mrpGenerationMargin, got.status, got.env.Result, mrpLastCycle(d.output()))
+	e.t.Fatalf("no paper generation for %s kept %s before the next cycle after 5 fresh cycles: %s (eval key %d, current slot %d); %s", strategyID, mrpGenerationMargin, reason, key.Unix(), slot.Unix(), mrpTimeline(d.output()))
 	return got
 }
 
@@ -482,20 +595,20 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	}
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5")
 	if r.code != 0 {
-		t.Fatalf("ready market open:\n%s", r)
+		t.Fatalf("ready market open:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
 	r = e.command(cfgA, []string{good}, "manual-add", "mr-add", "--size", "0.01")
 	if r.code != 0 {
-		t.Fatalf("ready add:\n%s", r)
+		t.Fatalf("ready add:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
 	limitPx := math.Round(mrpMark()*0.9*100) / 100
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
 	if r.code != 0 {
-		t.Fatalf("ready limit open:\n%s", r)
+		t.Fatalf("ready limit open:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
-	after := e.route(port+1, "mr-ready", "paper")
+	after := e.route(port+1, "mr-ready", "live")
 	if after.env.Generation != before.env.Generation || !after.env.BundleAt.Equal(*before.env.BundleAt) {
-		t.Fatalf("a cycle ran during the evidence window: %d -> %d", before.env.Generation, after.env.Generation)
+		t.Fatalf("a cycle ran during the evidence window: %d -> %d\n%s", before.env.Generation, after.env.Generation, mrpTimeline(daemon.output()))
 	}
 	cfgLoaded, _ := e.readStore(cfgA)
 	evidence := entryRegimeSnapshots(before.payload, cfgLoaded.Regime)
@@ -521,17 +634,30 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	}
 	t.Logf("ready: open, add and limit admitted across the process boundary; queued open and pending limit carry the route's snapshots; venue %v; private candle fetches %d", kinds, kinds["fetch_atr"])
 
+	longWindow, ok := before.payload.Windows["long"]
+	if !ok || longWindow.Ready || longWindow.Bars < 40 || longWindow.Need != 101 {
+		t.Fatalf("settled generation long window: %+v present %v", longWindow, ok)
+	}
+	warming := fmt.Sprintf("warming (%d/101)", longWindow.Bars)
 	base = e.venueKinds()
-	for _, args := range [][]string{
+	warmingArgs := [][]string{
 		{"manual-open", "mr-warming", "--size", "0.01", "--atr", "0.5"},
 		{"manual-add", "mr-warm-add", "--size", "0.01"},
 		{"manual-open", "mr-warming", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5"},
-	} {
-		r = e.command(cfgA, []string{good}, args...)
-		e.expectRefused(r, strings.Join(args, " "), "warming (40/101)")
+	}
+	warmingRuns := make([]mrpRun, 0, len(warmingArgs))
+	for _, args := range warmingArgs {
+		warmingRuns = append(warmingRuns, e.command(cfgA, []string{good}, args...))
+	}
+	afterWarming := e.route(port+1, "mr-ready", "live")
+	if afterWarming.env.Generation != before.env.Generation || afterWarming.env.BundleAt == nil || !afterWarming.env.BundleAt.Equal(*before.env.BundleAt) {
+		t.Fatalf("a cycle ran during the warming evidence window: %d -> %d\n%s", before.env.Generation, afterWarming.env.Generation, mrpTimeline(daemon.output()))
+	}
+	for i, args := range warmingArgs {
+		e.expectRefused(warmingRuns[i], strings.Join(args, " "), warming)
 	}
 	e.expectNoVenue(base, "warming holds")
-	t.Logf("warming: required long window holds open, add and limit with warming (40/101); the unrelated warming window did not hold the short-window strategies")
+	t.Logf("warming: required long window holds open, add and limit with %s from the settled generation; the unrelated warming window did not hold the short-window strategies", warming)
 
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--margin", "10")
 	e.expectRefused(r, "omitted atr")
@@ -564,13 +690,14 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	}
 	t.Logf("ATR: an adverse confirmed fill queues the arithmetic recovery ATR and no private candle fetch ran")
 
+	e.settledGeneration(daemon, port+1, "mr-ready")
 	proxy := newMRPProxy(t, port+1, e.ownerSecret)
 	via := mrpURL(proxy.port)
 	base = e.venueKinds()
 	proxy.setProof(func(_, _ string, _ int, _ []byte, upstream string) string { return upstream })
 	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	if r.code != 0 || strings.Contains(r.stderr, "fallback") {
-		t.Fatalf("an unchanged signed reply through a forwarder must admit:\n%s", r)
+		t.Fatalf("an unchanged signed reply through a forwarder must admit:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
 	foreignSecret, _ := newManualRegimeRandomHex()
 	proxy.setProof(func(_, challenge string, status int, body []byte, _ string) string {
@@ -579,7 +706,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "foreign proof", "no valid owner proof")
 	secretA := e.ownerSecret()
-	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, nil)
+	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "live", secretA, nil)
 	squatter := newMRPSquatter(t, signedBody)
 	r = e.command(cfgA, []string{mrpURL(squatter.port)}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "squatter replaying a real bundle", "no valid owner proof")
@@ -594,10 +721,10 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 			}
 		}
 	}
-	if status, header, _, _ := e.rawRoute(port+1, "mr-ready", "paper", foreignSecret, nil); status != http.StatusUnauthorized || header.Get(manualRegimeProofHeader) != "" {
+	if status, header, _, _ := e.rawRoute(port+1, "mr-ready", "live", foreignSecret, nil); status != http.StatusUnauthorized || header.Get(manualRegimeProofHeader) != "" {
 		t.Fatalf("a request without the owner secret must get an unsigned 401: %d", status)
 	}
-	if status, _, _, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, map[string]string{"Authorization": "Bearer " + e.token, manualRegimeAuthHeader: ""}); status != http.StatusUnauthorized {
+	if status, _, _, _ := e.rawRoute(port+1, "mr-ready", "live", secretA, map[string]string{"Authorization": "Bearer " + e.token, manualRegimeAuthHeader: ""}); status != http.StatusUnauthorized {
 		t.Fatalf("the status token alone must not authenticate the manual regime route: %d", status)
 	}
 	e.expectNoVenue(base, "authentication")
@@ -646,13 +773,13 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	daemon.cmd.Process.Signal(syscall.SIGHUP)
 	daemon.waitLog("reload", 30*time.Second, func(s string) bool { return strings.Contains(s, "[reload]") })
 	time.Sleep(time.Second)
-	if got := e.route(port+1, "mr-ready", "paper"); got.status != http.StatusConflict || got.env.Result != manualRegimeResultMismatch {
+	if got := e.route(port+1, "mr-ready", "live"); got.status != http.StatusConflict || got.env.Result != manualRegimeResultMismatch {
 		t.Fatalf("a reload inside the generation must refuse the earlier contract: %d %+v\n%s", got.status, got.env, daemon.output())
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "reload inside the generation", "HTTP 409")
 	daemon.waitFreshCycle()
-	if got := e.route(port+1, "mr-ready", "paper"); got.status != http.StatusOK {
+	if got := e.route(port+1, "mr-ready", "live"); got.status != http.StatusOK {
 		t.Fatalf("next generation after reload: %+v", got.env)
 	}
 	e.expectNoVenue(base, "reload")
@@ -690,9 +817,10 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	if err != nil || !reflect.DeepEqual(again.Strategies["mr-add"].Positions["BTC"].RegimeSnapshots, addEvidence) {
 		t.Fatalf("restart changed add entry evidence: %v", err)
 	}
+	e.settledGeneration(restarted, port+1, "mr-ready")
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	if r.code != 0 || strings.Contains(r.stderr, "fallback") {
-		t.Fatalf("restarted scheduler admission:\n%s", r)
+		t.Fatalf("restarted scheduler admission:\n%s\n%s", r, mrpTimeline(restarted.output()))
 	}
 	restarted.cmd.Process.Kill()
 	<-restarted.exited
@@ -704,7 +832,20 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 		t.Fatalf("crash-left marker must not authorize a result:\n%s", r)
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
+	if !strings.Contains(r.stderr, "that no running scheduler has settled") {
+		t.Fatalf("a standalone limit open must refuse while the live limit queue holds the mr-limit row:\n%s", r)
+	}
+	e.dropLimitRows(reloaded, "mr-limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the live limit queue must be empty before the crash limit case: %+v", rows)
+	}
+	crashVenue := e.venueKinds()
+	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
 	e.expectRefused(r, "crash limit", "unavailable")
+	e.expectNoVenue(crashVenue, "crash limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the refused crash limit open left a row: %+v", rows)
+	}
 	wrong.stop()
 	t.Logf("restart: add adoption kept original entry evidence through adoption and restart; graceful stop removed the marker; a crash-left marker authorized nothing")
 }
@@ -755,10 +896,10 @@ func regimeReadinessProcessSharedChecks(t *testing.T, e *mrpEnv, cfg string, por
 	limitPx := math.Round(mrpMark()*0.9*100) / 100
 	r = e.command(cfg, []string{url}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
 	if r.code != 0 {
-		t.Fatalf("shared ready limit:\n%s", r)
+		t.Fatalf("shared ready limit:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
-	if after := e.route(port, "mr-ready", "paper"); after.env.Generation != before.env.Generation {
-		t.Fatal("a cycle ran during the shared evidence window")
+	if after := e.route(port, "mr-ready", "live"); after.env.Generation != before.env.Generation {
+		t.Fatalf("a cycle ran during the shared evidence window\n%s", mrpTimeline(daemon.output()))
 	}
 	loaded, _ := e.readStore(cfg)
 	evidence := entryRegimeSnapshots(before.payload, loaded.Regime)

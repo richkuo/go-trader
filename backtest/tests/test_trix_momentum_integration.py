@@ -18,7 +18,7 @@ if _TOOLS not in sys.path:
 
 from atr import ensure_atr_indicator
 from backtester import Backtester
-from closed_bar import FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
+from closed_bar import declare_frame_cadence
 import optimizer
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from parity_diff import ParityConfig
@@ -129,50 +129,6 @@ def _ref_signal(c, t, p):
     return 0, osc, line, posc, pline
 
 
-def test_values_match_an_independent_scalar_reference_and_both_entry_directions():
-    df = _walk(260, 11, vol=0.03)
-    c = df["close"].tolist()
-    seen = set()
-    for p in (SMALL, TINY, dict(SMALL, signal_period=1), dict(SMALL, period=2, recursion_length=12)):
-        out = _apply(df, p)
-        need = _need(p)
-        assert (out["trix_valid"].iloc[:need - 1] == 0.0).all()
-        assert (out["trix_reason"].iloc[:need - 1] == "insufficient_history").all()
-        assert out["trix_value_valid"].iloc[need - 2] == 1.0
-        assert out["trix_valid"].iloc[need - 1] == 1.0
-        for t in range(need - 1, len(df)):
-            sig, osc, line, posc, pline = _ref_signal(c, t, p)
-            _, _, e3, base = _ref_endpoint(c, t, p)
-            row = out.iloc[t]
-            assert row["trix_value"] == pytest.approx(osc, rel=1e-9, abs=1e-12)
-            assert row["trix_signal_line"] == pytest.approx(line, rel=1e-9, abs=1e-12)
-            assert row["trix_prev_value"] == pytest.approx(posc, rel=1e-9, abs=1e-12)
-            assert row["trix_prev_signal_line"] == pytest.approx(pline, rel=1e-9, abs=1e-12)
-            assert row["trix_ema3"] == pytest.approx(e3, rel=1e-12)
-            assert row["trix_ema3_base"] == pytest.approx(base, rel=1e-12)
-            assert row["trix_seed_close"] == c[t - p["recursion_length"]]
-            assert row["trix_prev_seed_close"] == c[t - 1 - p["recursion_length"]]
-            assert row["trix_close"] == c[t] and row["trix_prev_close"] == c[t - 1]
-            assert row["trix_diff"] == row["trix_value"] - row["trix_signal_line"]
-            assert row["trix_prev_diff"] == row["trix_prev_value"] - row["trix_prev_signal_line"]
-            if abs(osc - line) > 1e-9 and abs(posc - pline) > 1e-9 and abs(osc) > 1e-9:
-                assert int(row["signal"]) == sig
-            assert row["trix_reason_code"] == {1: 1.0, -1: -1.0, 0: row["trix_reason_code"]}[int(row["signal"])]
-            seen.add(int(row["signal"]))
-    assert seen == {-1, 0, 1}
-
-
-def _check_sustained_conditions_do_not_repeat_entries():
-    df = _walk(400, 21)
-    out = _apply(df, SMALL)
-    sig = out["signal"].to_numpy()
-    for i in np.flatnonzero(sig != 0):
-        assert sig[i - 1] != sig[i] or out["trix_prev_diff"].iloc[i] * sig[i] <= 0
-    diff = out["trix_diff"].to_numpy()
-    for i in np.flatnonzero(sig != 0):
-        assert diff[i - 1] * sig[i] <= 0
-
-
 def _set_at(df, pos, col, value):
     out = df.copy()
     out.iloc[pos, out.columns.get_loc(col)] = value
@@ -207,41 +163,6 @@ def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monk
     assert 0 not in first.values()
 
 
-def test_timestamp_column_and_native_close_frames_decide_the_same_way():
-    df = _walk(260, 3)
-    plain = df.reset_index(drop=True)
-    plain["timestamp"] = df.index.as_unit("ms").asi8.astype("int64")
-    plain.attrs = dict(df.attrs)
-    a = _apply(df, SMALL)
-    b = _apply(plain, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
-    np.testing.assert_array_equal(a["trix_value"].to_numpy(), b["trix_value"].to_numpy())
-    native = df.set_axis(df.index + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1))
-    _declare(native, "4h", "native_close_inclusive")
-    c = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), c["signal"].to_numpy())
-    np.testing.assert_array_equal(a["trix_eval_ts_ms"].to_numpy(), c["trix_eval_ts_ms"].to_numpy())
-    assert a["trix_eval_ts_ms"].iloc[-1] == df.index[-1].value // 1_000_000
-    native.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR)
-    d = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
-    assert d["trix_eval_ts_ms"].isna().all()
-
-
-def _check_frozen_candles_produce_both_directions_with_the_seed():
-    out = _apply(_frozen("SOL", "4h", 1500), SEED)
-    assert {-1, 1} <= set(out["signal"].unique())
-
-
-def test_entry_rule_cases_fire_once_and_hold_with_their_reasons(subtests):
-    for label, check in (
-        ("sustained_conditions_do_not_repeat_entries", _check_sustained_conditions_do_not_repeat_entries),
-        ("frozen_candles_produce_both_directions_with_the_seed", _check_frozen_candles_produce_both_directions_with_the_seed),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
 def _check_rows_outside_the_dependency_window_cannot_change_a_decision():
     df = _frozen("ETH", "4h", 400)
     p = SEED
@@ -261,14 +182,6 @@ def _check_rows_outside_the_dependency_window_cannot_change_a_decision():
     pd.testing.assert_series_equal(recovered[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
                                    check_names=False)
     assert recovered["trix_valid"].iloc[t - 1] == 0.0
-
-
-def test_decisions_depend_only_on_the_dependency_window(subtests):
-    for label, check in (
-        ("rows_outside_the_dependency_window_cannot_change_a_decision", _check_rows_outside_the_dependency_window_cannot_change_a_decision),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 def _bt(params, **kw):

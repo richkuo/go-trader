@@ -64,6 +64,8 @@ type Position struct {
 	AccountKey                      string                    `json:"account_key,omitempty"`
 	VenueAccountID                  string                    `json:"venue_account_id,omitempty"`
 	AccountBindingSource            string                    `json:"account_binding_source,omitempty"`
+	PaperSimProof                   string                    `json:"-"`
+	PaperWarningReceipts            []paperWarningReceipt     `json:"-"`
 }
 
 func (p *Position) isHedgeLeg() bool {
@@ -799,6 +801,7 @@ func formatSpotLiveCashReconcileReminder(ids []string, cashByID map[string]float
 		b.WriteString(fmt.Sprintf("- %s cash=$%.4f\n", id, cash))
 	}
 	b.WriteString("Further live spot buys are held; closes still run. Clear with /go-trader-clear-cash-reconcile after confirming books match the venue — cash ≥ $0.01 alone does not clear.")
+	b.WriteString(slashCommandOffNote())
 	return b.String()
 }
 

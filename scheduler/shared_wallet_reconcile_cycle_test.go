@@ -318,7 +318,7 @@ func TestSharedWalletDriftTracker(t *testing.T) {
 		},
 		{
 			name: "clearing unknown wallet reports no recovery",
-			key:  "okx/none", clear: true, wantRecovered: false,
+			key:  "hyperliquid/0xnone", clear: true, wantRecovered: false,
 		},
 		{
 			name:  "one-cycle transient stays silent and never recovers",
@@ -359,7 +359,7 @@ func TestSharedWalletDriftTracker(t *testing.T) {
 		},
 		{
 			name: "no orphan coins still confirms",
-			key:  "okx/acct",
+			key:  "hyperliquid/0xacct",
 			steps: []driftTrackerStep{
 				{at: 0, drift: 5.00, notify: no},
 				{at: time.Minute, drift: 5.00, notify: yes, count: 2},

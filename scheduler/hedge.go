@@ -306,13 +306,14 @@ func defaultHedgeExecutor() hedgeExecutor {
 				marginMode = hedgeMarginMode(sc)
 				leverage = hedgeLeverage(sc)
 			}
-			res, stderr, err := runHyperliquidExecuteFn(sc.Script, coin, side, qty, 0, 0, 0, marginMode, leverage, hlCloseModeNone, hlExecuteSnapshot{})
+			res, stderr, err := runHyperliquidExecuteFn(hlHedgeWriteAuth(sc, coin, hlWriteExecute), sc.Script, coin, side, qty, 0, 0, 0, marginMode, leverage, hlCloseModeNone, hlExecuteSnapshot{})
 			if stderr != "" {
 				fmt.Printf("[hedge] %s execute stderr: %s\n", coin, stderr)
 			}
 			return res, err
 		},
 		Reduce: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			req.Auth = hlHedgeWriteAuth(sc, req.Symbol, hlWriteClose)
 			res, stderr, err := RunHyperliquidSizedClose(hyperliquidLiveCloseScript, req)
 			if stderr != "" {
 				fmt.Printf("[hedge] %s close stderr: %s\n", req.Symbol, stderr)
@@ -320,6 +321,7 @@ func defaultHedgeExecutor() hedgeExecutor {
 			return res, err
 		},
 		UnwindPrimary: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			req.Auth = hlStrategyWriteAuth(sc, req.Symbol, hlWriteClose)
 			res, stderr, err := RunHyperliquidSizedClose(hyperliquidLiveCloseScript, req)
 			if stderr != "" {
 				fmt.Printf("[hedge] %s unwind stderr: %s\n", req.Symbol, stderr)

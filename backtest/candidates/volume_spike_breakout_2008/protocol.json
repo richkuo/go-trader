@@ -1,0 +1,147 @@
+{
+  "schema": "volume_spike_breakout_protocol/v1",
+  "issue": 2008,
+  "study": "volume_spike_breakout_2008",
+  "frozen": "Every value below was fixed before any candidate or comparator was scored on a held-out window. run_study.py refuses to score when this file's sha256 differs from PROTOCOL_SHA256.",
+  "manifest": "study_manifest.json",
+  "data": {
+    "source": "Hyperliquid mainnet 4h BTC, ETH and SOL perpetual candles and hourly funding, frozen by backtest/candidates/chaikin_money_flow_1649 (#1649) and copied byte for byte into data/; no new data was acquired",
+    "source_manifest": "backtest/candidates/chaikin_money_flow_1649/study_manifest.json",
+    "prior_use": "Twenty-one earlier studies pin the same BTC 4h candle file (sha256 89f84288d462b830ceba8108ea9d69db4d3dac417c730dc9cdd13271c10fd0f8) and score the same held-out span [2025-09-01, 2026-09-01): aroon_trend_1643, awesome_oscillator_1660, bitcoin_lead_lag_1640 (4h), calendar_conditioned_entry_1653, camarilla_pivot_reversal_1669, chaikin_money_flow_1649, commodity_channel_trend_1656, connors_rsi_reversion_1645, elder_force_pullback_1668, elder_ray_pullback_1648, fisher_reversal_1646, klinger_divergence_1662, mass_index_reversal_1670, money_flow_index_reversal_1658, on_balance_volume_divergence_1657, regression_channel_reversion_1644, relative_vigor_index_1666, schaff_trend_cycle_1651, stochastic_momentum_index_1663, vortex_trend_1647 and williams_r_reversal_1650. This study's test window is therefore chronological retrospective evidence; it is not claimed to be previously unseen data."
+  },
+  "windows": {
+    "selection": "train",
+    "held_out": "test",
+    "quarters": ["test_q1", "test_q2", "test_q3", "test_q4"],
+    "warmup": "the manifest's 300 bars before each window start feed indicators only and are never scored"
+  },
+  "execution": {
+    "registry": "futures",
+    "venue": "hyperliquid perps",
+    "close_strategies": [
+      {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict",
+    "intrabar_resolution": "ohlc_walk",
+    "funding_mode": "charge",
+    "capital": 1000.0,
+    "fills": "a bar-N signal fills at the bar N+1 open; no reversal and no scale-in while a position is open",
+    "costs": "manifest taker and maker fees, per-coin half spread plus slippage, lot rounding to szDecimals and the venue minimum order value through the manifest execution_spec",
+    "cost_multipliers": {"base": 1.0, "stress": 2.0},
+    "stress_note": "the stress run doubles spread and slippage; fees stay at the manifest values"
+  },
+  "candidate": {
+    "name": "volume_spike_breakout",
+    "seed": {"lookback": 20, "vol_period": 20, "vol_multiplier": 2.0, "min_body_frac": 0.0},
+    "grid": {
+      "lookback": [10, 20, 40, 80, 100],
+      "vol_period": [10, 20, 40, 80, 100],
+      "vol_multiplier": [1.0, 1.5, 2.0, 3.0],
+      "min_body_frac": [0.0, 0.25, 0.5]
+    }
+  },
+  "price_only_control": {
+    "definition": "study-local adapter over the same evaluator core with the relative-volume predicate removed before the current and previous qualified conditions are computed; data validity (including volume validity over vol_period), the body filter, platform behavior and execution rules stay the same; no production strategy or bypass parameter is registered",
+    "grid": {
+      "lookback": [10, 20, 40, 80, 100],
+      "vol_period": [10, 20, 40, 80, 100],
+      "vol_multiplier": [2.0],
+      "min_body_frac": [0.0, 0.25, 0.5]
+    }
+  },
+  "multiplier_one_arm": {
+    "definition": "the candidate grid restricted to vol_multiplier = 1.0 (it still requires relative volume strictly above 1; it is a sensitivity arm and not a volume-free control)",
+    "grid": {
+      "lookback": [10, 20, 40, 80, 100],
+      "vol_period": [10, 20, 40, 80, 100],
+      "vol_multiplier": [1.0],
+      "min_body_frac": [0.0, 0.25, 0.5]
+    }
+  },
+  "comparators": {
+    "session_breakout": {
+      "short_entries": true,
+      "mapping": "break of the prior trading session's high or low with volume confirmation; lookback counts sessions, not bars; volume_threshold is its native volume ratio",
+      "grid": {"session": ["asian", "us_open", "us_close"], "lookback": [1, 2, 3], "volume_threshold": [1.2, 1.5, 2.0], "atr_multiplier": [0.0, 0.5, 1.0]}
+    },
+    "volume_weighted": {
+      "short_entries": false,
+      "mapping": "price cross of an SMA of sma_period bars with volume above vol_multiplier times its SMA; sma_period is not a range lookback",
+      "grid": {"sma_period": [15, 20, 30], "vol_multiplier": [1.2, 1.5, 2.0]}
+    },
+    "breakout": {
+      "short_entries": false,
+      "mapping": "rolling lookback-bar range breakout gated by true-range expansion (atr_period, atr_multiplier); reads no volume",
+      "grid": {"lookback": [10, 20, 30], "atr_period": [10, 14, 20], "atr_multiplier": [1.0, 1.5, 2.0]}
+    },
+    "donchian_breakout": {
+      "short_entries": true,
+      "mapping": "Donchian channel break over entry_period bars; exit_period has no effect under the explicit close owner",
+      "grid": {"entry_period": [10, 20, 30], "exit_period": [5, 10, 15]}
+    },
+    "chaikin_money_flow_breakout": {
+      "short_entries": true,
+      "mapping": "rolling breakout_window-bar range breakout confirmed by candle-estimated money flow over flow_window bars",
+      "grid": {"flow_window": [10, 20, 40, 80], "breakout_window": [10, 20, 40, 80], "flow_threshold": [0.0, 0.05, 0.1, 0.2]}
+    }
+  },
+  "arms": {
+    "candidate_both": {"strategy": "volume_spike_breakout", "direction": "both", "grid": "candidate.grid"},
+    "candidate_long": {"strategy": "volume_spike_breakout", "direction": "long", "grid": "candidate.grid"},
+    "multiplier_one_both": {"strategy": "volume_spike_breakout", "direction": "both", "grid": "multiplier_one_arm.grid"},
+    "price_only_both": {"strategy": "price_only_control", "direction": "both", "grid": "price_only_control.grid"},
+    "price_only_long": {"strategy": "price_only_control", "direction": "long", "grid": "price_only_control.grid"},
+    "session_breakout_long": {"strategy": "session_breakout", "direction": "long"},
+    "volume_weighted_long": {"strategy": "volume_weighted", "direction": "long"},
+    "breakout_long": {"strategy": "breakout", "direction": "long"},
+    "donchian_breakout_long": {"strategy": "donchian_breakout", "direction": "long"},
+    "chaikin_money_flow_breakout_long": {"strategy": "chaikin_money_flow_breakout", "direction": "long"},
+    "session_breakout_both": {"strategy": "session_breakout", "direction": "both"},
+    "donchian_breakout_both": {"strategy": "donchian_breakout", "direction": "both"},
+    "chaikin_money_flow_breakout_both": {"strategy": "chaikin_money_flow_breakout", "direction": "both"}
+  },
+  "matched_contracts": {
+    "long_only": {
+      "candidate": "candidate_long",
+      "control": "price_only_long",
+      "comparators": ["session_breakout_long", "volume_weighted_long", "breakout_long", "donchian_breakout_long", "chaikin_money_flow_breakout_long"]
+    },
+    "bidirectional": {
+      "candidate": "candidate_both",
+      "control": "price_only_both",
+      "comparators": ["session_breakout_both", "donchian_breakout_both", "chaikin_money_flow_breakout_both"]
+    }
+  },
+  "incumbent_reference": "M1 incumbents run under each arm's matched close, stop and direction contract through eval_windows incumbent_contract; descriptive only, never a verdict input",
+  "selection": {
+    "window": "train",
+    "eligibility": "all three datasets scored, candle and funding coverage complete, no liquidated leg, and at least min_train_clusters independent position clusters",
+    "rule": "highest mean net Sharpe across datasets, then highest mean drawdown-adjusted return, then earliest grid order",
+    "min_train_clusters": 10
+  },
+  "independent_positions": "every position of an arm in one window is an interval [entry_date, exit_date]; intervals from all datasets are merged when they overlap or touch, and each merged interval counts once as an independent position cluster",
+  "parity_gates": [
+    "the candidate and price-only control signals equal an independent per-bar reference on every dataset frame (train and test, warm-up included) for the selected parameters",
+    "the selected candidate_both decisions match the 200-bar live check window on every dataset's held-out frame with the matched close and stop owner (parity_diff, futures registry, strict)"
+  ],
+  "verdict": {
+    "primary_arm": "candidate_both",
+    "min_test_clusters": 30,
+    "inconclusive_when": [
+      "candle or funding coverage is incomplete for any arm in a matched comparison",
+      "any arm in a matched comparison has no eligible train selection",
+      "candidate_both has fewer than min_test_clusters independent held-out clusters",
+      "any parity gate fails"
+    ],
+    "pass_requires_all": [
+      "candidate_both mean held-out net return > 0 at cost x1",
+      "candidate_both mean held-out net return > 0 at cost x2",
+      "in each matched contract, the candidate mean held-out net return is higher than the price-only control and every comparator",
+      "candidate_both worst quarterly max drawdown is no worse than the price_only_both and every bidirectional comparator worst quarterly max drawdown",
+      "the median held-out mean net return of the selected candidate_both parameters' one-step grid neighbors is > 0"
+    ],
+    "fail_when": "the evidence is adequate (no inconclusive condition) and any pass requirement is false",
+    "admission": "a pass, fail or inconclusive verdict changes no admission, default or live configuration; the strategy stays edge_status=no_edge"
+  }
+}

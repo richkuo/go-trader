@@ -144,7 +144,7 @@ func tunerHandlerCandles() []UICandle {
 	candles := make([]UICandle, 0, 600)
 	for i := 0; i < 600; i++ {
 		px := 5000.0 - 4.0*float64(i) + 40*math.Sin(float64(i)/6.0)
-		candles = append(candles, UICandle{Time: 1700000000 + int64(i)*3600, Open: px, High: px + 4, Low: px - 4, Close: px + 1, Volume: 1})
+		candles = append(candles, UICandle{Time: 1699999200 + int64(i)*3600, Open: px, High: px + 4, Low: px - 4, Close: px + 1, Volume: 1})
 	}
 	return candles
 }
@@ -173,17 +173,31 @@ func postTunerSimulate(t *testing.T, sc StrategyConfig, regime *RegimeConfig, ov
 
 func postTunerSimulateCandles(t *testing.T, sc StrategyConfig, regime *RegimeConfig, overrides string, candles []UICandle) (int, UISimulateResponse) {
 	t.Helper()
+	ss, _ := newTunerSimulateServer(t, sc, regime, candles)
+	return postTunerSimulateTo(t, ss, sc.ID, overrides)
+}
+
+func newTunerSimulateServer(t *testing.T, sc StrategyConfig, regime *RegimeConfig, candles []UICandle) (*StatusServer, func() int64) {
+	t.Helper()
 	var mu sync.RWMutex
 	ss := NewStatusServer(NewAppState(), &mu, "", []StrategyConfig{sc}, nil)
 	ss.regime = regime
-	ss.candleFetcher = func(req UICandleRequest) ([]UICandle, string, error) {
-		return candles, "test", nil
+	dir := t.TempDir()
+	writeTestCandleArchive(t, dir, testArchiveSpec{Series: []testArchiveSeries{{ID: hlTestIdentity(strategyDisplaySymbol(sc), strategyDisplayTimeframe(sc)), Bars: candles}}})
+	attachTestCandleArchive(t, ss, dir)
+	if ss.candles.archive.generation() == nil {
+		t.Fatalf("the tuner preview archive was refused: %+v", ss.candles.archive.status())
 	}
+	return ss, func() int64 { return ss.candles.status().SourceReads }
+}
+
+func postTunerSimulateTo(t *testing.T, ss *StatusServer, id, overrides string) (int, UISimulateResponse) {
+	t.Helper()
 	body := `{"limit":1000}`
 	if overrides != "" {
 		body = `{"limit":1000,"overrides":` + overrides + `}`
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/strategies/"+sc.ID+"/simulate", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/strategies/"+id+"/simulate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	ss.handleAPIStrategy(w, req)
@@ -278,5 +292,71 @@ func TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy(t *testing.T) {
 	long, short := entrySides(uncertified.LiveMarkers)
 	if short != 0 || long == 0 {
 		t.Fatalf("an uncertified policy must preview the base direction, got long %d short %d", long, short)
+	}
+}
+
+func loadedTunerSimulateParams(t *testing.T, ss *StatusServer) string {
+	t.Helper()
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
+	raw, err := json.Marshal(ss.strategies[0].OpenStrategy)
+	if err != nil {
+		t.Fatalf("marshal loaded open strategy: %v", err)
+	}
+	return string(raw)
+}
+
+func TestTunerPreviewHandlerOpenStrategyOverrides(t *testing.T) {
+	t.Chdir("..")
+	sc := tunerHandlerStrategy(nil)
+	candles := tunerHandlerCandles()
+
+	plain, _ := newTunerSimulateServer(t, sc, nil, candles)
+	code, baseline := postTunerSimulateTo(t, plain, sc.ID, "")
+	if code != http.StatusOK {
+		t.Fatalf("no-override preview status = %d, want 200", code)
+	}
+	if len(baseline.LiveMarkers) == 0 {
+		t.Fatal("no-override preview rendered no live markers")
+	}
+	baselineLive, _ := json.Marshal(baseline.LiveMarkers)
+
+	refused, refusedFetches := newTunerSimulateServer(t, sc, nil, candles)
+	loaded := loadedTunerSimulateParams(t, refused)
+	code, _ = postTunerSimulateTo(t, refused, sc.ID, `{"open_strategy":{"name":"ema_crossover","params":{"fast_period":3}}}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("different name preview status = %d, want 400", code)
+	}
+	if n := refusedFetches(); n != 0 {
+		t.Fatalf("different name preview read candles %d times, want 0", n)
+	}
+	if got := loadedTunerSimulateParams(t, refused); got != loaded {
+		t.Fatalf("refused preview changed the loaded open strategy: %s -> %s", loaded, got)
+	}
+
+	for _, overrides := range []string{
+		`{"open_strategy":{"name":"sma_crossover","params":{"fast_period":12,"slow_period":40}}}`,
+		`{"open_strategy.params.fast_period":12,"open_strategy.params.slow_period":40}`,
+	} {
+		ss, fetches := newTunerSimulateServer(t, sc, nil, candles)
+		loaded := loadedTunerSimulateParams(t, ss)
+		code, resp := postTunerSimulateTo(t, ss, sc.ID, overrides)
+		if code != http.StatusOK {
+			t.Fatalf("%s: preview status = %d, want 200", overrides, code)
+		}
+		if n := fetches(); n != 1 {
+			t.Fatalf("%s: candle source reads = %d, want 1", overrides, n)
+		}
+		live, _ := json.Marshal(resp.LiveMarkers)
+		if string(live) != string(baselineLive) {
+			t.Fatalf("%s: live markers differ from the no-override preview", overrides)
+		}
+		simulated, _ := json.Marshal(resp.SimulatedMarkers)
+		if string(simulated) == string(live) {
+			t.Fatalf("%s: simulated markers equal the live markers, so the override did not reach the simulated arm", overrides)
+		}
+		if got := loadedTunerSimulateParams(t, ss); got != loaded {
+			t.Fatalf("%s: accepted preview changed the loaded open strategy: %s -> %s", overrides, loaded, got)
+		}
 	}
 }

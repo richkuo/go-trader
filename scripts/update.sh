@@ -50,6 +50,9 @@ update_succeeded=0
 mutation_started=0
 snapshot_started=0
 snapshot_ready=0
+feed_cfg_live=""
+feed_cfg_staged=""
+feed_cfg_candidate=""
 recovery_root=""
 recovery_key=""
 recovery_dir=""
@@ -582,7 +585,13 @@ run_recovery_probe() {
         echo "[update] recovery: forced restore_probe failure" >&2
         return 1
     fi
-    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off)
+    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) recovery_id_args=()
+    local recovery_identity="" id_line
+    recovery_identity=$(update_config_identity_path scheduler/config.json 2>/dev/null) || recovery_identity=""
+    UPDATE_PROBE_DEPLOYMENT_CONFIG="$recovery_identity"
+    while IFS= read -r id_line; do
+        [[ -n "$id_line" ]] && recovery_id_args+=("$id_line")
+    done < <(update_probe_identity_args ./go-trader "$recovery_identity")
     if [[ -n "$egress_deployment" ]]; then
         local ep_owner="$probe_owner" line
         [[ -n "$ep_owner" ]] || ep_owner=$(update_unit_owner "$service_unit" 2>/dev/null || true)
@@ -598,7 +607,7 @@ run_recovery_probe() {
         update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json "${admission_args[@]}"
         return $?
     fi
-    env "${admission_env[@]}" ./go-trader probe
+    env "${admission_env[@]}" ./go-trader probe ${recovery_id_args[@]+"${recovery_id_args[@]}"}
 }
 
 verify_recovery_health() {
@@ -777,6 +786,7 @@ update_exit_coordinator() {
     local stage_recovery_service="skipped"
     local stage_rh_identity="skipped"
     local stage_rh_binding="skipped"
+    local stage_restore_config="skipped"
 
     if [[ "$restart_attempted" == "1" ]]; then
         if restart_uses_signal_pid; then
@@ -822,6 +832,7 @@ update_exit_coordinator() {
 
     if update_restore_snapshot_binaries "$repo_root" "$recovery_dir"; then
         stage_restore_binaries="ok"
+        update_feed_weight_rollback_notice "$repo_root/go-trader" || true
     else
         stage_restore_binaries="failed"
         echo "[update] recovery: failed to restore binaries from $recovery_dir" >&2
@@ -860,6 +871,19 @@ update_exit_coordinator() {
         fi
     fi
 
+    if [[ -n "$recovery_dir" && -f "$recovery_dir/feed_config.promoting" ]]; then
+        if update_should_fail_at restore_config; then
+            stage_restore_config="failed"
+            echo "[update] recovery: forced restore_config failure" >&2
+        elif update_feed_config_restore "$recovery_dir"; then
+            stage_restore_config="ok"
+            echo "[update] recovery: config=ok (the live feed config is the pre-update bytes again, before the recovery probe)" >&2
+        else
+            stage_restore_config="failed"
+            echo "[update] recovery: failed to restore the live feed config from $recovery_dir/feed_config.live" >&2
+        fi
+    fi
+
     local had_go_trader_snap=0
     if [[ -f "$recovery_dir/manifest.env" ]]; then
         had_go_trader_snap=$(
@@ -868,7 +892,7 @@ update_exit_coordinator() {
         )
     fi
 
-    if [[ "$stage_stop_service" == "failed" || "$stage_restore_files" != "ok" || "$stage_restore_venv" != "ok" || "$stage_restore_binaries" != "ok" || "$stage_restore_external" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
+    if [[ "$stage_stop_service" == "failed" || "$stage_restore_files" != "ok" || "$stage_restore_venv" != "ok" || "$stage_restore_binaries" != "ok" || "$stage_restore_external" == "failed" || "$stage_restore_ownership" == "failed" || "$stage_restore_config" == "failed" ]]; then
         stage_recovery_probe="blocked"
         stage_recovery_service="blocked"
         echo "[update] recovery: probe=blocked service=blocked (earlier recovery stage failed)" >&2
@@ -934,7 +958,7 @@ update_exit_coordinator() {
         fi
     fi
 
-    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe rh_identity=$stage_rh_identity rh_binding=$stage_rh_binding service=$stage_recovery_service"
+    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries config=$stage_restore_config external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe rh_identity=$stage_rh_identity rh_binding=$stage_rh_binding service=$stage_recovery_service"
     local any_failed=0
     case " $stages_summary " in
         *"=failed "*|*"=blocked "*) any_failed=1 ;;
@@ -1425,12 +1449,26 @@ fi
 
 pre_update_status_port="${UPDATE_CONFIG_STATUS_PORT:-8099}"
 
+feed_stage_out=$(update_feed_staged_candidate "$repo_root" "$restart") \
+    || fail "the staged feed config was refused (see above); nothing changed"
+if [[ -n "$feed_stage_out" ]]; then
+    feed_cfg_live="${feed_stage_out%%$'\n'*}"
+    feed_cfg_staged="${feed_stage_out#*$'\n'}"
+    echo "[update] config: $feed_cfg_staged is a staged feed config; the new binary is probed against a root-held copy of it, and that copy replaces $feed_cfg_live only after the binary swap"
+fi
+
 end_phase
 
 begin_phase snapshot
 snapshot_started=1
 update_take_snapshot "$repo_root" "$recovery_dir" "$unit_sync_source_path" "$unit_sync_installed_path" "$egress_deployment" "$cpu_dropin_path" \
     || fail "pre-update snapshot failed in $recovery_dir; nothing in $repo_root was modified"
+if [[ -n "$feed_cfg_staged" ]]; then
+    update_feed_config_snapshot "$recovery_dir" "$feed_cfg_live" "$feed_cfg_staged" \
+        || fail "could not copy $feed_cfg_live and $feed_cfg_staged into $recovery_dir; nothing changed"
+    feed_cfg_candidate="$recovery_dir/feed_config.candidate"
+    echo "[update] config: saved the live feed config and the candidate (sha256 $(update_file_fingerprint "$feed_cfg_candidate")) in $recovery_dir"
+fi
 snapshot_ready=1
 echo "[update] snapshot: saved pre-update state in $recovery_dir"
 update_pause_if_requested snapshot_done
@@ -1511,6 +1549,26 @@ end_phase
 begin_phase probe
 update_record_intent probe
 give_back_tree_owner "before the probe"
+probe_config_arg="scheduler/config.json"
+probe_config_name="scheduler/config.json"
+probe_root_config=()
+probe_identity=$(update_config_identity_path scheduler/config.json 2>/dev/null) || probe_identity=""
+probe_grant_config="scheduler/config.json"
+if [[ -n "$feed_cfg_candidate" ]]; then
+    probe_config_arg="stdin:$feed_cfg_candidate"
+    probe_config_name="the staged feed config"
+    probe_root_config=(--config "$feed_cfg_candidate")
+    probe_identity="$feed_cfg_live"
+    probe_grant_config="$feed_cfg_candidate"
+    echo "[update] probe: checks go-trader.new against the root-held copy of $feed_cfg_staged; $feed_cfg_live is unchanged until the promotion"
+fi
+UPDATE_PROBE_DEPLOYMENT_CONFIG="$probe_identity"
+while IFS= read -r line; do
+    [[ -n "$line" ]] && probe_root_config+=("$line")
+done < <(update_probe_identity_args ./go-trader.new "$probe_identity")
+if [[ -n "$probe_identity" ]] && update_feed_weight_binary_capability ./go-trader.new; then
+    echo "[update] probe: names the shared weight owner by $probe_identity (--deployment-config), so a private config copy is the same owner as the running service"
+fi
 probe_cert_args=()
 probe_cert_env=()
 probe_cert_resolved=$(update_unit_directional_cert_path "$service_unit") || fail "could not resolve GO_TRADER_DIRECTIONAL_CERT_PATH from $service_unit for the probe"
@@ -1528,14 +1586,14 @@ if [[ -n "$egress_deployment" ]]; then
         [[ -n "$line" ]] && egress_probe_args+=("$line")
     done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
     probe_ok=0
-    update_probe_as_owner "$repo_root" "$egress_probe_owner" "$repo_root/go-trader.new" scheduler/config.json "${egress_probe_args[@]}" ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
+    update_probe_as_owner "$repo_root" "$egress_probe_owner" "$repo_root/go-trader.new" "$probe_config_arg" "${egress_probe_args[@]}" ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
 elif [[ -n "$probe_owner" ]]; then
-    echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
+    echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of $probe_config_name, because that account can change the config and the scripts it names"
     probe_ok=0
-    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
+    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" "$probe_config_arg" ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
 else
     probe_ok=0
-    env -u GO_TRADER_PROBE_REGIME_SIDE_ADMISSION ${probe_cert_env[@]+"${probe_cert_env[@]}"} ./go-trader.new probe && probe_ok=1
+    env -u GO_TRADER_PROBE_REGIME_SIDE_ADMISSION ${probe_cert_env[@]+"${probe_cert_env[@]}"} ./go-trader.new probe ${probe_root_config[@]+"${probe_root_config[@]}"} && probe_ok=1
 fi
 update_pause_if_requested probe
 if update_should_fail_at probe; then
@@ -1543,8 +1601,22 @@ if update_should_fail_at probe; then
 fi
 if [[ "$probe_ok" != 1 ]]; then
     rm -f ./go-trader.new
+    if [[ -n "$feed_cfg_candidate" ]]; then
+        fail "go-trader.new probe rejected the staged feed config $feed_cfg_staged — refusing to swap; the binary and $feed_cfg_live are unchanged"
+    fi
+    if [[ "$(update_deployment_role "$repo_root")" == "feed" ]]; then
+        hint_live=$(update_feed_config_live_path "$repo_root" || printf 'scheduler/config.json')
+        echo "[update] probe: hint: when the new binary needs a changed feed config (for example a request_budget weight policy), stage the candidate at $hint_live.staged and rerun update.sh --restart; the update probes, promotes and recovers both together" >&2
+    fi
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
 fi
+grant_unit=""
+[[ "$restart" == "1" && "$restart_mode" == "systemd" ]] && grant_unit="$service_unit"
+if ! update_feed_weight_grant_check "$grant_unit" "$probe_grant_config"; then
+    rm -f ./go-trader.new
+    fail "the shared feed weight record needs a writable /var/lib/go-trader/shared for this participating config — refusing to swap; the binary and the running service are unchanged"
+fi
+update_feed_weight_rollout_notice ./go-trader ./go-trader.new "$probe_grant_config"
 end_phase
 
 if [[ -n "$tree_owner" ]]; then
@@ -1589,6 +1661,29 @@ if update_should_fail_at swap_after_new; then
     fail "forced failure immediately after binary swap"
 fi
 end_phase
+
+if [[ -n "$feed_cfg_candidate" ]]; then
+    begin_phase config
+    update_record_intent config_promote
+    : >"$recovery_dir/feed_config.promoting"
+    if update_should_fail_at config_promote_before; then
+        fail "forced failure before promoting the staged feed config"
+    fi
+    feed_cfg_live_now=$(update_feed_config_live_path "$repo_root") || feed_cfg_live_now=""
+    [[ "$feed_cfg_live_now" == "$feed_cfg_live" ]] \
+        || fail "the live feed config now resolves to ${feed_cfg_live_now:-nothing}, not the $feed_cfg_live recorded in the snapshot; refusing to promote"
+    feed_live_sha=$(sed -n 's/^feed_config_live_sha=//p' "$recovery_dir/feed_config.env")
+    feed_cand_sha=$(sed -n 's/^feed_config_candidate_sha=//p' "$recovery_dir/feed_config.env")
+    update_feed_config_install "$recovery_dir/feed_config.live" "$feed_cfg_live.prev" "$feed_cfg_live" "$feed_live_sha" \
+        || fail "could not keep the previous feed config as $feed_cfg_live.prev"
+    update_feed_config_install "$feed_cfg_candidate" "$feed_cfg_live" "$feed_cfg_live" "$feed_cand_sha" \
+        || fail "could not promote the staged feed config to $feed_cfg_live"
+    echo "[update] config: promoted the probed candidate to $feed_cfg_live (sha256 $feed_cand_sha); the previous bytes are in $feed_cfg_live.prev"
+    if update_should_fail_at config_promote_after; then
+        fail "forced failure after promoting the staged feed config"
+    fi
+    end_phase
+fi
 
 begin_phase agent-info
 agent_info_cfg=()
@@ -1809,6 +1904,15 @@ if [[ $verified -ne 1 ]]; then
     fail "/health verify failed — expected version=$ver and PID != ${prev_main_pid:-<none>} (last body: ${body:-<empty>})"
 fi
 end_phase
+
+if [[ -n "$feed_cfg_candidate" ]]; then
+    if [[ "$(update_file_fingerprint "$feed_cfg_staged")" == "$(update_file_fingerprint "$feed_cfg_candidate")" ]]; then
+        rm -f -- "$feed_cfg_staged"
+        echo "[update] config: removed $feed_cfg_staged after the health check passed"
+    else
+        echo "[update] config: WARNING: $feed_cfg_staged changed after it was copied; it is kept, and the promoted config is the probed copy" >&2
+    fi
+fi
 
 update_succeeded=1
 echo "[update] done: $ver running, previous=${prev_running_version:-<none>} retained as go-trader.prev"

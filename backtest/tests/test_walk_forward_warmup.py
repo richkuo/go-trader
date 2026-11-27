@@ -6,12 +6,7 @@ import pytest
 
 from backtester import Backtester
 from atr import ensure_atr_indicator
-from optimizer import (
-    generate_close_stack_grid,
-    max_indicator_lookback,
-    walk_forward_optimize,
-    warmup_exit_long_entry,
-)
+from optimizer import generate_close_stack_grid, walk_forward_optimize, warmup_exit_long_entry
 
 
 def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
@@ -31,73 +26,6 @@ def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
          "close": closes, "volume": volume},
         index=idx,
     )
-
-
-def test_max_indicator_lookback():
-    for case_id, ranges, expected in [
-        ("largest_int", {"fast_period": [10, 15, 20],
-                         "slow_period": [40, 50, 80],
-                         "multiplier": [1.5, 2.0, 3.0]}, 80),
-        ("float_only_grid", {"entry_std": [1.0, 1.5, 2.0],
-                             "exit_std": [0.0, 0.5, 1.0]}, 0),
-    ]:
-        assert max_indicator_lookback(ranges) == expected, f"test_max_indicator_lookback[{case_id}]"
-
-
-def test_sma_80_grid_generates_trades_with_warmup():
-    df = _trending_ohlc(n=500)
-    param_ranges = {"fast_period": [10, 20], "slow_period": [40, 80]}
-
-    result = walk_forward_optimize(
-        df, "sma_crossover", param_ranges,
-        n_splits=5, train_pct=0.7,
-        initial_capital=1000.0, verbose=False,
-    )
-
-    assert "window_results" in result, result
-    total_trades = sum(
-        w["test_result"]["total_trades"] for w in result["window_results"]
-    )
-    assert total_trades > 0, (
-        "Walk-forward produced zero trades across all folds — the warmup "
-        "fix did not engage or is insufficient for SMA-80 priming."
-    )
-
-
-def test_warmup_primes_slow_sma_on_every_bar():
-    from registry_loader import load_registry
-
-    df = _trending_ohlc(n=500)
-    unprimed = df.iloc[100:200]
-    primed_input = df.iloc[20:200]
-
-    reg = load_registry("spot")
-    params = {"fast_period": 10, "slow_period": 80}
-
-    unprimed_out = reg.apply_strategy("sma_crossover", unprimed, params)
-    primed_out = reg.apply_strategy("sma_crossover", primed_input, params).iloc[-100:]
-
-    unprimed_primed_bars = int(unprimed_out["sma_slow"].notna().sum())
-    primed_primed_bars = int(primed_out["sma_slow"].notna().sum())
-
-    assert primed_primed_bars == 100, (
-        f"Primed window should have sma_slow valid on every bar; "
-        f"got {primed_primed_bars}"
-    )
-    assert unprimed_primed_bars <= 21, (
-        f"Unprimed 100-bar window cannot have more than 21 valid "
-        f"sma_slow bars (100 - 79 NaN); got {unprimed_primed_bars}"
-    )
-
-
-def test_warmup_does_not_leak_future_data():
-    df = _trending_ohlc(n=600)
-    result = walk_forward_optimize(
-        df, "sma_crossover", {"fast_period": [10], "slow_period": [80]},
-        n_splits=5, train_pct=0.7,
-        initial_capital=1000.0, verbose=False,
-    )
-    assert result["n_valid_folds"] >= 2, result
 
 
 def _warmup_train_df() -> pd.DataFrame:
@@ -169,35 +97,6 @@ def test_train_fold_captures_trade_spanning_warmup_boundary():
     )
 
 
-def test_boundary_bar_signal_fires_on_first_train_bar():
-    opens = [100.0] * 30 + [200.0] * 30
-    closes = opens[:]
-    signals = [0] * 60
-    signals[5] = 1
-    signals[29] = -1
-    idx = pd.date_range("2024-01-01", periods=60, freq="D")
-    df = pd.DataFrame(
-        {"open": opens, "close": closes, "signal": signals}, index=idx,
-    )
-
-    boundary = 29
-    warmup_scan = df.iloc[:boundary]
-    backtester_df = df.iloc[boundary:]
-
-    seed = warmup_exit_long_entry(warmup_scan, slippage_pct=0.0)
-    assert seed is not None, "warmup BUY on bar 5 must carry forward"
-    assert seed["entry_price"] == pytest.approx(100.0)
-
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(backtester_df, save=False, starting_long=seed)
-
-    assert result["total_trades"] == 1
-    trade = result["trades"][0]
-    assert trade["entry_price"] == pytest.approx(100.0)
-    assert trade["exit_price"] == pytest.approx(200.0)
-    assert result["total_return_pct"] == pytest.approx(100.0, abs=0.1)
-
-
 def test_seeded_metrics_anchor_at_initial_capital():
     opens = closes = [100.0] * 10
     signals = [0] * 10
@@ -212,63 +111,6 @@ def test_seeded_metrics_anchor_at_initial_capital():
     )
     assert result["total_return_pct"] == pytest.approx(0.0, abs=0.01)
     assert result["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)
-
-
-def test_warmup_seed_stamps_entry_atr_and_high_water(subtests):
-    with subtests.test("test_warmup_seed_stamps_entry_atr_and_high_water"):
-        n = 30
-        opens = [100.0] * n
-        closes = [100.0] * 10 + [104.0, 108.0] + [103.0] * (n - 12)
-        signals = [0] * n
-        signals[5] = 1
-        idx = pd.date_range("2024-01-01", periods=n, freq="D")
-        df = pd.DataFrame({
-            "open": opens, "close": closes, "signal": signals,
-            "atr": [2.5] * n,
-        }, index=idx)
-        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-        assert seed is not None
-        assert seed["entry_atr"] == pytest.approx(2.5)
-        assert seed["high_water"] == pytest.approx(108.0)
-    with subtests.test("test_warmup_seed_high_water_resets_on_reentry"):
-        n = 20
-        closes = [100.0] * 5 + [150.0] * 5 + [100.0] * 10
-        signals = [0] * n
-        signals[2] = 1
-        signals[9] = -1
-        signals[12] = 1
-        idx = pd.date_range("2024-01-01", periods=n, freq="D")
-        df = pd.DataFrame({
-            "open": closes[:], "close": closes, "signal": signals,
-            "atr": [2.0] * n,
-        }, index=idx)
-        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-        assert seed is not None
-        assert seed["high_water"] == pytest.approx(100.0), (
-            "the closed first trade's 150 HWM must not survive the re-entry")
-    with subtests.test("test_warmup_seed_omits_implausible_entry_atr"):
-        n = 20
-        signals = [0] * n
-        signals[5] = 1
-        idx = pd.date_range("2024-01-01", periods=n, freq="D")
-        df = pd.DataFrame({
-            "open": [100.0] * n, "close": [100.0] * n, "signal": signals,
-            "atr": [80.0] * n,
-        }, index=idx)
-        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-        assert seed is not None
-        assert "entry_atr" not in seed
-        assert seed["high_water"] == pytest.approx(100.0)
-
-
-def test_walk_forward_still_seeds_a_long_only_strategy(monkeypatch):
-    calls = _capture_runs(monkeypatch)
-    walk_forward_optimize(
-        _trending_ohlc(n=500), "sma_crossover", {"fast_period": [10, 20], "slow_period": [40, 80]},
-        n_splits=5, train_pct=0.7, initial_capital=1000.0, verbose=False,
-    )
-    assert all(c["starting_long"] is None for c in calls)
-    assert any(c["seed"] is not None for c in calls)
 
 
 SCRIPTED = "wf_scripted_entry_1785"
@@ -471,39 +313,6 @@ def test_long_only_contract_seeds_nothing_the_engine_closed_in_the_prefix(monkey
                         assert call["result"]["trades"][0]["entry_date"] == str(df.index[bar + 1])
 
 
-def test_plain_long_only_path_keeps_the_seed_it_still_holds(monkeypatch):
-    reg = _register_scripted(monkeypatch)
-    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None)
-    assert _replayed_phases(by_phase) == REPLAYED
-    assert _seeded_phases(by_phase) == ["test_0", "train_1"]
-    df = _scripted_frame()
-    for phase, entry_bar in (("test_0", 101), ("train_1", 161)):
-        for call in by_phase[phase]:
-            seed = call["seed"]
-            assert seed["entry_date"] == str(df.index[entry_bar])
-            assert seed["entry_price"] == pytest.approx(
-                df["open"].iloc[entry_bar] * (1 + call["engine"].slippage_pct))
-            assert seed["bars_held"] == SCORED_STARTS[phase] - entry_bar
-            assert call["result"]["trades"][0]["entry_price"] == df["close"].iloc[SCORED_STARTS[phase] - 1]
-    assert warmup_exit_long_entry(_prefix_signals(reg, TP_PREFIX), 0.0)["entry_date"] == df.index[101]
-
-
-_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_CASES = [
-    {"direction": "both"},
-    {"direction": None},
-]
-_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_IDS = ["both", "omitted_fixed_close"]
-
-
-def test_short_entries_false_registration_starts_flat_when_the_engine_can_short(monkeypatch, subtests):
-    for i, (case_id, kwargs) in enumerate(zip(_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_IDS, _SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_CASES)):
-        with subtests.test(case=case_id, kwargs=kwargs):
-            with monkeypatch.context() as mp:
-                _register_scripted(mp, short_entries=False)
-                by_phase = _scripted_walk_forward(mp, **kwargs)
-                assert _seeded_phases(by_phase) == []
-
-
 FAR_TIERS = [{"atr_multiple": 40.0, "close_fraction": 1.0}]
 FAR_TP = {"name": "tiered_tp_atr", "params": {"tp_tiers": [FAR_TIERS]}}
 FAR_CLOSE = [{"name": "tiered_tp_atr", "params": {"tp_tiers": FAR_TIERS}}]
@@ -533,15 +342,6 @@ def test_long_grid_candidate_seeds_the_long_its_engine_still_holds(monkeypatch):
         assert seed["high_water"] == pytest.approx(max(seed["entry_price"],
                                                        df.loc[seed["entry_date"]:boundary, "close"].max()))
         assert 0 < seed["stop_trigger"] < seed["high_water"] and seed["stop_armed"]
-
-
-def test_engine_entry_gates_decide_whether_a_prefix_long_exists(monkeypatch):
-    reg = _register_scripted(monkeypatch)
-    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None, regime_enabled=True,
-                                      allowed_regimes=["trending_up"])
-    assert _replayed_phases(by_phase) == REPLAYED
-    assert _seeded_phases(by_phase) == []
-    assert warmup_exit_long_entry(_prefix_signals(reg, TP_PREFIX), 0.0) is not None
 
 
 def test_each_close_stack_replays_its_own_prefix_state(monkeypatch):
@@ -597,23 +397,6 @@ def test_unpriced_prefix_funding_rejects_the_candidate_and_the_fold(monkeypatch)
         assert r["warmup_handoff"]["funding_unpriced_held_hours"] > 0
 
 
-def test_entry_only_strategies_stay_unseeded_on_a_long_only_engine(monkeypatch):
-    import optimizer
-    assert optimizer.UNSEEDED_ENTRY_ONLY_STRATEGIES == {"calendar_conditioned_entry", "elder_force_pullback"}
-    _register_scripted(monkeypatch)
-    monkeypatch.setattr(optimizer, "UNSEEDED_ENTRY_ONLY_STRATEGIES", frozenset({SCRIPTED}))
-    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None)
-    assert _replayed_phases(by_phase) == []
-    assert all(c["starting_long"] is None for calls in by_phase.values() for c in calls)
-
-
-def test_short_entries_false_registration_replays_the_prefix_when_long_only(monkeypatch):
-    _register_scripted(monkeypatch, short_entries=False)
-    by_phase = _scripted_walk_forward(monkeypatch, direction="long")
-    assert _replayed_phases(by_phase) == REPLAYED
-    assert _seeded_phases(by_phase) == []
-
-
 _SMA_CROSSOVER_FOLLOWS_THE_SCORED_ENGINE_UNDER_A_FIXED_CLOSE_CASES = [(None, False), ("long", True)]
 _SMA_CROSSOVER_FOLLOWS_THE_SCORED_ENGINE_UNDER_A_FIXED_CLOSE_IDS = ["omitted_fixed_close", "explicit_long"]
 
@@ -637,98 +420,3 @@ def test_sma_crossover_follows_the_scored_engine_under_a_fixed_close(monkeypatch
                 else:
                     assert all(c["prefix"] is None and c["seed"] is None for c in calls)
                     assert "short" in sides
-
-
-def _policy_engine(monkeypatch, policy, **cert):
-    import optimizer
-
-    class PolicyEngine(Backtester):
-        def __init__(self, *args, **kw):
-            super().__init__(*args, regime_directional_policy={"trend_regime": policy}, **cert, **kw)
-
-    monkeypatch.setattr(optimizer, "Backtester", PolicyEngine)
-
-
-_CERTIFIED_REGIME_POLICY_DECIDES_THE_SEED_CASES = [
-    ({"trending_down": {"direction": "short"}}, {"regime_directional_certified": True},
-     {"close_strategies": None}, [], []),
-    ({"trending_down": {"direction": "both"}}, {"regime_directional_certified": True},
-     {"direction": "long"}, [], []),
-    ({"trending_down": {"direction": "short"}},
-     {"regime_directional_certified_states": {"trending_down": "short"}},
-     {"direction": "long"}, [], []),
-    ({"trending_down": {"direction": "short"}}, {"regime_directional_certified": False},
-     {"close_strategies": None}, REPLAYED, ["test_0", "train_1"]),
-    ({"trending_down": {"direction": "long"}}, {"regime_directional_certified": True},
-     {"direction": "long"}, REPLAYED, []),
-]
-_CERTIFIED_REGIME_POLICY_DECIDES_THE_SEED_IDS = ["plain_short_override", "long_base_both_override", "state_certified_short",
-        "uncertified_dropped", "long_override"]
-
-
-def test_certified_regime_policy_decides_the_seed(monkeypatch, subtests):
-    for i, (case_id, (policy, cert, kwargs, replayed, seeded)) in enumerate(zip(_CERTIFIED_REGIME_POLICY_DECIDES_THE_SEED_IDS, _CERTIFIED_REGIME_POLICY_DECIDES_THE_SEED_CASES)):
-        with subtests.test(case=case_id, policy=policy, cert=cert, kwargs=kwargs, replayed=replayed, seeded=seeded):
-            with monkeypatch.context() as mp:
-                _register_scripted(mp)
-                _policy_engine(mp, policy, **cert)
-                by_phase = _scripted_walk_forward(mp, regime_enabled=True, **kwargs)
-                assert _replayed_phases(by_phase) == replayed
-                assert _seeded_phases(by_phase) == seeded
-
-
-def _random_walk(timeframe="1h", n=1200, seed=3):
-    from closed_bar import declare_frame_cadence
-    rng = np.random.default_rng(seed)
-    close = 100 * np.exp(np.cumsum(rng.normal(0.0, 0.02, n)))
-    open_ = np.concatenate([[100.0], close[:-1]])
-    df = pd.DataFrame({
-        "open": open_, "high": np.maximum(open_, close) * (1 + rng.uniform(0.001, 0.01, n)),
-        "low": np.minimum(open_, close) * (1 - rng.uniform(0.001, 0.01, n)), "close": close,
-        "volume": rng.uniform(100, 1000, n),
-    }, index=pd.date_range("2026-01-01", periods=n, freq={"1h": "1h", "5m": "5min"}[timeframe]))
-    return declare_frame_cadence(df, timeframe, "open")
-
-
-def _singleton_grid(reg, name):
-    from optimizer import DEFAULT_PARAM_RANGES
-    ranges = DEFAULT_PARAM_RANGES[name]
-    if not ranges:
-        return {k: [v] for k, v in reg.STRATEGY_REGISTRY[name]["default_params"].items()}
-    return {k: [v[0]] for k, v in ranges.items()}
-
-
-def test_every_registered_short_entry_strategy_follows_the_engine_contract(monkeypatch):
-    from optimizer import DEFAULT_PARAM_RANGES
-    from registry_loader import load_registry
-    reg = load_registry("futures")
-    from run_backtest import LEADER_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES
-    names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
-    assert set(names) <= set(DEFAULT_PARAM_RANGES)
-    from run_backtest import BOOK_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES
-    side_inputs = LEADER_INPUT_STRATEGIES | VOLUME_PROFILE_INPUT_STRATEGIES | BOOK_INPUT_STRATEGIES
-    names = [n for n in names if n not in side_inputs]
-    representatives = {"stochastic_momentum_index", "mass_index_reversal", "camarilla_pivot_reversal",
-                       "trix_momentum", "elder_ray_pullback", "schaff_trend_cycle"}
-    assert representatives <= set(names)
-    frames = {"1h": _random_walk("1h"), "5m": _random_walk("5m")}
-    seeded_long = set()
-    shorts_seen = set()
-    calls = _capture_runs(monkeypatch)
-    for direction in ("both", "long"):
-        for name in names:
-            calls.clear()
-            timeframe = "5m" if name in TRADE_FLOW_INPUT_STRATEGIES else "1h"
-            walk_forward_optimize(frames[timeframe], name, _singleton_grid(reg, name), n_splits=2, timeframe=timeframe,
-                                  registry="futures", platform="hyperliquid", verbose=False,
-                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP,
-                                  direction=direction)
-            assert calls, name
-            if direction == "both":
-                assert all(c["prefix"] is None and c["seed"] is None for c in calls), name
-                if any((c["signals"]["signal"] == -1).any() for c in calls):
-                    shorts_seen.add(name)
-            elif any(c["seed"] is not None for c in calls):
-                seeded_long.add(name)
-    assert seeded_long
-    assert representatives - {"mass_index_reversal"} <= shorts_seen

@@ -7,16 +7,21 @@ import json
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from dataclasses import dataclass, field, asdict
 
 import ccxt
 import numpy as np
 
-_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+_SHARED_TOOLS = os.path.join(_REPO_ROOT, "shared_tools")
 if _SHARED_TOOLS not in sys.path:
     sys.path.append(_SHARED_TOOLS)
 
 import egress_policy
+from shared_tools.option_types import (
+    TRADING_DAYS_PER_YEAR, Greeks, OptionContract, OptionPosition, OptionSide, OptionType,
+)
 
 try:
     from scipy.stats import norm
@@ -27,17 +32,6 @@ except ImportError:
 
 
 RISK_FREE_RATE = 0.05
-TRADING_DAYS_PER_YEAR = 365
-
-
-class OptionType(str, Enum):
-    CALL = "call"
-    PUT = "put"
-
-
-class OptionSide(str, Enum):
-    BUY = "buy"
-    SELL = "sell"
 
 
 class OptionOrderStatus(str, Enum):
@@ -47,165 +41,6 @@ class OptionOrderStatus(str, Enum):
     FAILED = "failed"
     EXPIRED = "expired"
     EXERCISED = "exercised"
-
-
-@dataclass
-class Greeks:
-    delta: float = 0.0
-    gamma: float = 0.0
-    theta: float = 0.0
-    vega: float = 0.0
-    iv: float = 0.0
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
-class OptionContract:
-    symbol: str
-    underlying: str
-    strike: float
-    expiry: datetime
-    option_type: OptionType
-    bid: float = 0.0
-    ask: float = 0.0
-    last: float = 0.0
-    volume: float = 0.0
-    open_interest: float = 0.0
-    greeks: Greeks = field(default_factory=Greeks)
-    spot_price: float = 0.0
-
-    @property
-    def mid_price(self) -> float:
-        if self.bid > 0 and self.ask > 0:
-            return (self.bid + self.ask) / 2
-        return self.last or 0.0
-
-    @property
-    def dte(self) -> float:
-        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
-        delta = self.expiry - now
-        return max(delta.total_seconds() / 86400, 0.0)
-
-    @property
-    def time_to_expiry(self) -> float:
-        return self.dte / TRADING_DAYS_PER_YEAR
-
-    @property
-    def moneyness(self) -> str:
-        if self.spot_price <= 0:
-            return "unknown"
-        if self.option_type == OptionType.CALL:
-            if self.strike < self.spot_price * 0.98:
-                return "ITM"
-            elif self.strike > self.spot_price * 1.02:
-                return "OTM"
-            return "ATM"
-        else:
-            if self.strike > self.spot_price * 1.02:
-                return "ITM"
-            elif self.strike < self.spot_price * 0.98:
-                return "OTM"
-            return "ATM"
-
-    @property
-    def usd_price(self) -> float:
-        return self.mid_price * self.spot_price
-
-    def to_dict(self) -> dict:
-        return {
-            "symbol": self.symbol,
-            "underlying": self.underlying,
-            "strike": self.strike,
-            "expiry": self.expiry.isoformat(),
-            "option_type": self.option_type.value,
-            "bid": self.bid,
-            "ask": self.ask,
-            "last": self.last,
-            "mid_price": self.mid_price,
-            "usd_price": self.usd_price,
-            "volume": self.volume,
-            "open_interest": self.open_interest,
-            "dte": round(self.dte, 1),
-            "moneyness": self.moneyness,
-            "greeks": self.greeks.to_dict(),
-        }
-
-
-@dataclass
-class OptionPosition:
-    id: str
-    symbol: str
-    underlying: str
-    strike: float
-    expiry: datetime
-    option_type: OptionType
-    side: OptionSide
-    quantity: float
-    entry_price: float
-    entry_price_usd: float
-    entry_time: datetime
-    entry_spot: float
-    current_price: float = 0.0
-    current_spot: float = 0.0
-    greeks: Greeks = field(default_factory=Greeks)
-    leg_group: Optional[str] = None
-
-    @property
-    def usd_value(self) -> float:
-        return self.current_price * self.current_spot * self.quantity
-
-    @property
-    def entry_usd_value(self) -> float:
-        return self.entry_price_usd * self.quantity
-
-    @property
-    def pnl_usd(self) -> float:
-        current = self.current_price * self.current_spot * self.quantity
-        entry = self.entry_price * self.entry_spot * self.quantity
-        if self.side == OptionSide.BUY:
-            return current - entry
-        else:
-            return entry - current
-
-    @property
-    def pnl_pct(self) -> float:
-        entry = self.entry_price * self.entry_spot * self.quantity
-        if entry == 0:
-            return 0.0
-        return (self.pnl_usd / entry) * 100
-
-    @property
-    def dte(self) -> float:
-        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
-        delta = self.expiry - now
-        return max(delta.total_seconds() / 86400, 0.0)
-
-    @property
-    def is_expired(self) -> bool:
-        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
-        return now >= self.expiry
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "symbol": self.symbol,
-            "underlying": self.underlying,
-            "strike": self.strike,
-            "expiry": self.expiry.isoformat(),
-            "option_type": self.option_type.value,
-            "side": self.side.value,
-            "quantity": self.quantity,
-            "entry_price": self.entry_price,
-            "entry_price_usd": self.entry_price_usd,
-            "current_price": self.current_price,
-            "pnl_usd": round(self.pnl_usd, 2),
-            "pnl_pct": round(self.pnl_pct, 2),
-            "dte": round(self.dte, 1),
-            "greeks": self.greeks.to_dict(),
-            "leg_group": self.leg_group,
-        }
 
 
 def _norm_cdf(x: float) -> float:
@@ -871,7 +706,7 @@ class DeribitExchangeAdapter:
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         try:
-            from utils import find_closest_expiry
+            from platforms.deribit.utils import find_closest_expiry
             result = find_closest_expiry(underlying, target_dte)
             if result:
                 return result
@@ -884,7 +719,7 @@ class DeribitExchangeAdapter:
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
         try:
-            from utils import find_closest_strike
+            from platforms.deribit.utils import find_closest_strike
             result = find_closest_strike(underlying, expiry, option_type, target_strike)
             if result:
                 return result
@@ -897,7 +732,7 @@ class DeribitExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
-        from utils import get_live_quote
+        from platforms.deribit.utils import get_live_quote
         quote = get_live_quote(underlying, option_type, strike, expiry)
         mark = option_data.require_finite_positive(quote["mark_price"], "option quote unavailable: deribit mark is not positive")
         return mark, round(mark * spot, 2), quote["greeks"]

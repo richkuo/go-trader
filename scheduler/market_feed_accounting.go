@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -13,7 +14,7 @@ const (
 	feedAccountingRefresh   = 5 * time.Minute
 	feedAccountingRetry     = 60 * time.Second
 	feedAccountingCadence   = time.Hour
-	feedAccountingKeep      = 2
+	feedAccountingSlack     = 10 * time.Minute
 	feedAccountingOverlap   = 3 * time.Hour
 	feedAccountingMaxPasses = 4
 
@@ -26,6 +27,9 @@ type feedAccountingFunding struct {
 	ToMs      int64
 	FetchedAt time.Time
 	Err       string
+
+	rateLimited bool
+	weightHeld  bool
 }
 
 type feedSealAccountingFunding struct {
@@ -55,6 +59,7 @@ func (o *marketFeedOwner) applyAccountingCoinsLocked(coins []string) {
 	for c := range o.accountingFunding {
 		if !next[c] {
 			delete(o.accountingFunding, c)
+			delete(o.accountingDue, c)
 		}
 	}
 }
@@ -70,54 +75,63 @@ func (o *marketFeedOwner) accountingWork() []string {
 	return out
 }
 
-func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
-	coins := o.accountingWork()
-	if len(coins) == 0 {
-		return
+func (o *marketFeedOwner) accountingEntry(coin string) *feedAccountingFunding {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	cur := o.accountingFunding[coin]
+	if cur == nil {
+		return nil
 	}
-	ctx = withFeedKeep(withFeedReason(ctx, string(feedRestAccountingFunding)), feedAccountingKeep)
-	now := o.now()
+	cp := cur.clone()
+	return &cp
+}
+
+func (o *marketFeedOwner) refreshAccountingFunding(ctx context.Context, coin string, now time.Time) {
+	input := "accounting_funding:" + coin
+	ctx = withFeedInput(withFeedReason(ctx, string(feedRestAccountingFunding)), input)
 	windowStart := now.UTC().Add(-feedAccountingWindow).UnixMilli()
-	for _, coin := range coins {
-		o.feedMu.Lock()
-		var existing *feedAccountingFunding
-		if cur := o.accountingFunding[coin]; cur != nil {
-			cp := cur.clone()
-			existing = &cp
+	existing := o.accountingEntry(coin)
+	start := windowStart
+	if existing != nil && existing.ToMs > 0 {
+		if s := existing.ToMs - feedAccountingOverlap.Milliseconds(); s > start {
+			start = s
 		}
-		o.feedMu.Unlock()
-		if !accountingRefreshDue(existing, now) {
-			continue
+	}
+	cov, err := hlFundingRecordsCoverage(ctx, coin, start, now, feedAccountingMaxPasses)
+	var next feedAccountingFunding
+	if err == nil {
+		next, err = mergeAccountingCoverage(existing, cov, windowStart)
+	}
+	if err != nil {
+		next = feedAccountingFunding{}
+		if existing != nil {
+			next = *existing
 		}
-		start := windowStart
-		if existing != nil && existing.ToMs > 0 {
-			if s := existing.ToMs - feedAccountingOverlap.Milliseconds(); s > start {
-				start = s
-			}
-		}
-		cov, err := hlFundingRecordsCoverage(ctx, coin, start, now, feedAccountingMaxPasses)
-		var next feedAccountingFunding
-		if err == nil {
-			next, err = mergeAccountingCoverage(existing, cov, windowStart)
-		}
-		if err != nil {
-			if existing != nil {
-				next = *existing
-			} else {
-				next = feedAccountingFunding{}
-			}
-			next.Err = err.Error()
-			o.logf("[feed] accounting funding %s: %s", coin, next.Err)
+		weight := errors.Is(err, errFeedWeightRefused)
+		next.Err = err.Error()
+		next.rateLimited = next.rateLimited || feedRateLimitErr(err)
+		next.weightHeld = next.weightHeld || weight
+		o.logf("[feed] accounting funding %s: %s", coin, next.Err)
+		if !feedRateLimitErr(err) && !weight {
 			o.raiseAlert(feedKeyFor(coin, ""), "accounting_funding_failed", next.Err)
-		} else {
-			next.Err = ""
 		}
-		next.FetchedAt = now
-		o.feedMu.Lock()
-		if o.accountingCoins[coin] {
-			o.accountingFunding[coin] = &next
+	} else {
+		next.Err = ""
+		next.rateLimited = false
+		next.weightHeld = false
+	}
+	next.FetchedAt = now
+	o.feedMu.Lock()
+	required := o.accountingCoins[coin]
+	if required {
+		o.accountingFunding[coin] = &next
+		if err == nil {
+			delete(o.accountingDue, coin)
 		}
-		o.feedMu.Unlock()
+	}
+	o.feedMu.Unlock()
+	if required && err == nil {
+		feedLedgerFrom(ctx).weightInputValidated(input)
 	}
 }
 

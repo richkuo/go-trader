@@ -80,6 +80,40 @@ def sign_flip_permutation(values: Sequence[float],
     }
 
 
+def cluster_sign_flip_permutation(values: Sequence[float], clusters: Sequence,
+                                  n_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+                                  seed: int = DEFAULT_SEED) -> dict:
+    n = len(values)
+    if n != len(clusters):
+        raise ValueError(f"cluster_sign_flip_permutation: {n} values but {len(clusters)} cluster ids")
+    if n == 0:
+        return {"n": 0, "clusters": 0, "mean": None, "p_value": 1.0, "n_resamples": 0}
+    sums: dict = {}
+    order = []
+    for v, c in zip(values, clusters):
+        if c not in sums:
+            sums[c] = 0.0
+            order.append(c)
+        sums[c] += float(v)
+    totals = [sums[c] for c in order]
+    observed = statistics.fmean(values)
+    rng = Random(seed)
+    exceed = 0
+    for _ in range(n_resamples):
+        total = 0.0
+        for t in totals:
+            total += t if rng.random() < 0.5 else -t
+        if total / n >= observed:
+            exceed += 1
+    return {
+        "n": n,
+        "clusters": len(totals),
+        "mean": round(observed, 6),
+        "p_value": round((exceed + 1) / (n_resamples + 1), 6),
+        "n_resamples": n_resamples,
+    }
+
+
 def bootstrap_p_mean_le_zero(values: Sequence[float],
                              n_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
                              seed: int = DEFAULT_SEED) -> Optional[float]:

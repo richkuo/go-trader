@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strconv"
 	"time"
@@ -222,39 +219,29 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 	if err != nil {
 		return nil, fmt.Errorf("marshal candleSnapshot request: %w", err)
 	}
-	if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+	bound, err := hlCandleRowBound(interval, startMs, endMs)
+	if err != nil {
 		return nil, err
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, hlCandleFetchTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))
+	var out []hlCandleRaw
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "candleSnapshot", Body: body, Timeout: hlCandleFetchTimeout, RowBound: bound,
+		Decode: func(data []byte) (int, error) {
+			raws, derr := parseHyperliquidCandleRaws(data)
+			out = raws
+			return len(raws), derr
+		},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("build candleSnapshot request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := egressHTTPClient(hlCandleFetchTimeout)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("http %d from %s/info candleSnapshot: %w", resp.StatusCode, hlMainnetURL, errHLInfoRateLimited)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info candleSnapshot", resp.StatusCode, hlMainnetURL)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read candleSnapshot response: %w", err)
-	}
-	return parseHyperliquidCandleRaws(data)
+	return out, nil
 }
 
 type hlCandleHistory struct {
-	Raws  []hlCandleRaw
-	Short bool
+	Raws      []hlCandleRaw
+	Short     bool
+	Exhausted bool
 }
 
 func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int, now time.Time) (hlCandleHistory, error) {
@@ -267,11 +254,17 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	}
 	endMs := now.UTC().UnixMilli()
 	requested := int64(limit) + hlCandleGapMargin
+	maxSpan, err := hlCandleMaxSpanBars(interval)
+	if err != nil {
+		return hlCandleHistory{}, err
+	}
 	var result []hlCandleRaw
 	prevCount := -1
 	staleWidens := 0
+	exhausted := false
 	for pass := 0; pass < hlCandleMaxExtendPasses; pass++ {
-		startMs := endMs - intervalMs*requested
+		span := min(requested, maxSpan)
+		startMs := endMs - intervalMs*span
 		raws, err := fetchHyperliquidCandleSnapshotFn(ctx, coin, interval, startMs, endMs)
 		if err != nil {
 			return hlCandleHistory{}, err
@@ -280,11 +273,16 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 		if len(result) == 0 || len(result) >= limit || len(result) >= hlCandleMaxCandles {
 			break
 		}
+		if span == maxSpan && int64(len(result)) >= maxSpan {
+			exhausted = true
+			break
+		}
 		if len(result) > prevCount {
 			staleWidens = 0
 		} else {
 			staleWidens++
 			if staleWidens >= 2 {
+				exhausted = true
 				break
 			}
 		}
@@ -294,5 +292,5 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	if len(result) > limit {
 		result = result[len(result)-limit:]
 	}
-	return hlCandleHistory{Raws: result, Short: len(result) < limit}, nil
+	return hlCandleHistory{Raws: result, Short: len(result) < limit, Exhausted: exhausted && len(result) > 0 && len(result) < limit}, nil
 }

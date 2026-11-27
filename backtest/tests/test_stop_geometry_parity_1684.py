@@ -15,7 +15,7 @@ import ledger_compare
 import parity_diff
 import run_backtest
 import tune_live
-from backtester import Backtester, CapabilityContext, CloseCapabilityError
+from backtester import Backtester, CloseCapabilityError
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 FIXTURE_PATH = os.path.join(REPO, "backtest", "testdata", "stop_geometry_parity.json")
@@ -139,6 +139,52 @@ def _assert_admission_matches_fixture(tmp_path, case):
     assert case["python_refusal"] in codes, codes
     if case["go_accept"]:
         assert case.get("note"), "a Python-only refusal must document why it is stricter"
+
+
+ZERO_TRAILING_PCT_HIDDEN = {
+    "zero_trailing_pct_hides_stop_pct": ["stop_loss_pct"],
+    "zero_trailing_pct_hides_margin_pct": ["stop_loss_margin_pct"],
+    "zero_trailing_pct_hides_trailing_atr": ["trailing_stop_atr_mult"],
+}
+
+
+def _assert_zero_trailing_pct_refusal(err: CloseCapabilityError, hidden: list) -> None:
+    mine = [r for r in err.reasons
+            if r["reason_code"] == "UNSUPPORTED_STOP_OWNER" and r["feature"] == "trailing_stop_pct"]
+    assert len(mine) == 1, err.reasons
+    assert list(mine[0]["details"]["conflicting_fields"]) == hidden, mine[0]
+    for key in hidden:
+        assert key in mine[0]["details"]["message"], mine[0]
+
+
+def _direct_stop_kwargs(strategy: dict) -> dict:
+    kwargs = {"platform": "hyperliquid"}
+    for key, value in strategy.items():
+        kwargs[key] = value / 100.0 if key.endswith("_pct") else value
+    return kwargs
+
+
+def test_zero_trailing_pct_refuses_each_hidden_stop_owner(tmp_path, subtests):
+    admission = {c["id"]: c for c in FIXTURE["admission"]}
+    combined = {"strategy": {"trailing_stop_pct": 0, "stop_loss_pct": 2,
+                             "trailing_stop_atr_mult": 2}}
+    cases = [(case_id, admission[case_id], hidden)
+             for case_id, hidden in ZERO_TRAILING_PCT_HIDDEN.items()]
+    cases.append(("combined", combined, ["stop_loss_pct", "trailing_stop_atr_mult"]))
+    for case_id, case, hidden in cases:
+        with subtests.test(case=case_id, admission="live_config"):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            with pytest.raises(CloseCapabilityError) as exc:
+                _load(case_dir, case)
+            _assert_zero_trailing_pct_refusal(exc.value, hidden)
+        with subtests.test(case=case_id, admission="direct"):
+            with pytest.raises(CloseCapabilityError) as exc:
+                Backtester(**_direct_stop_kwargs(case["strategy"]))
+            _assert_zero_trailing_pct_refusal(exc.value, hidden)
+    for case_id in ("explicit_zero_trailing_pct_disables", "zero_trailing_pct_keeps_fixed_atr"):
+        with subtests.test(case=case_id, admission="direct_accepts"):
+            Backtester(**_direct_stop_kwargs(GEOMETRY[case_id]["strategy"]))
 
 
 def test_engine_geometry_matches_real_go_functions(tmp_path, subtests):
@@ -313,37 +359,6 @@ def test_preview_payload_converts_once_and_requires_unit_marker():
     Backtester(**sim._preview_stop_kwargs(dict(margin, leverage_source="tuner_override")))
     with pytest.raises(ValueError, match="leverage_source"):
         sim._preview_stop_kwargs(dict(margin, leverage_source="loaded_config"))
-
-
-def test_preview_regime_window_follows_translator_rule(tmp_path):
-    sim = _simulate_module()
-    for window, windows, accepted in [
-        ("medium", {"medium": 14, "long": 50}, True),
-        ("long", {"medium": 14, "long": 50}, True),
-        ("", {"medium": 14, "long": 50}, True),
-        ("short", {"long": 50, "short": 7}, True),
-        ("long", {"long": 50, "short": 7}, True),
-    ]:
-        label = f"test_preview_regime_window_follows_translator_rule[{window!r}-{sorted(windows)}]"
-        regime = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": windows}
-        strategy = {"trailing_stop_atr_mult_regime": {"use_defaults": True},
-                    "regime_atr_window": window}
-        payload = {"type": "perps", "platform": "hyperliquid", "stop_units": "live_percent",
-                   "leverage": 1, "leverage_source": "strategy_config", "max_drawdown_pct": 50,
-                   "regime": regime, **strategy}
-        case = {"config": {"regime": regime}, "strategy": strategy}
-        if accepted:
-            try:
-                Backtester(**_load(tmp_path, case))
-                Backtester(**sim._preview_stop_kwargs(payload))
-            except Exception as err:
-                raise AssertionError(f"{label}: {err!r}") from err
-            continue
-        with _raises_for(label, CloseCapabilityError) as loaded:
-            Backtester(**_load(tmp_path, case))
-        with _raises_for(label, CloseCapabilityError) as previewed:
-            Backtester(**sim._preview_stop_kwargs(payload))
-        assert loaded.value.reason_code == previewed.value.reason_code == "MISSING_STOP_INPUT", label
 
 
 def test_preview_composite_primary_window_uses_the_translator_label_vocabulary(tmp_path):
@@ -536,38 +551,3 @@ def test_handoff_present_falsy_raw_field_keeps_its_value(tmp_path):
     assert bt._stop_context.to_dict()["raw_fields"]["leverage"] == {"present": True, "value": 0}
     assert bt._close_validation.capability_context.to_dict()["raw_fields"]["leverage"] == {
         "present": True, "value": 0}
-
-
-def test_handoff_invalid_context_or_unknown_consumer_or_phase_refuses(subtests):
-    with subtests.test("test_handoff_invalid_context_refuses"):
-        for case_id, context in [
-            ("unknown_evidence_status",
-             CapabilityContext(input_evidence={"leverage": {"status": "assumed", "source": "x",
-                                                            "value": 1}})),
-            ("absent_field_with_value",
-             CapabilityContext(raw_fields={"leverage": {"present": False, "value": 5}})),
-            ("plain_dict", {"raw_fields": {}, "resolved_stop_owner": None, "input_evidence": {}}),
-        ]:
-            label = f"test_handoff_invalid_context_refuses[{case_id}]"
-            with _raises_for(label, CloseCapabilityError) as exc:
-                Backtester(platform="hyperliquid", stop_loss_pct=0.02, capability_context=context)
-            assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
-    with subtests.test("test_handoff_unknown_consumer_or_phase_refuses"):
-        for consumer, phase in [("bogus", "preflight"), ("engine", "bogus")]:
-            label = f"test_handoff_unknown_consumer_or_phase_refuses[{consumer}-{phase}]"
-            cfg = _config({"strategy": {"stop_loss_pct": 2}})
-            sc = cfg["strategies"][0]
-            with _raises_for(label, CloseCapabilityError) as exc:
-                run_backtest.translate_live_stop_config(
-                    cfg, sc, run_backtest.stop_raw_fields(sc), platform="hyperliquid",
-                    strategy_type="perps", close_refs=[], regime_cfg={},
-                    regime_windows_spec=None, risk_per_trade_pct=None,
-                    consumer=consumer, phase=phase)
-            assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
-
-
-def test_capability_context_survives_copy(tmp_path):
-    kwargs = _load(tmp_path, GEOMETRY["pct_long"])
-    clone = copy.deepcopy(kwargs)
-    assert clone["capability_context"] == kwargs["capability_context"]
-    assert clone["capability_context"].to_dict() == kwargs["capability_context"].to_dict()

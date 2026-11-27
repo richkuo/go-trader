@@ -29,6 +29,7 @@ EXIT_COMPOSE_REFUSED=21
 EXIT_PROOF_REFUSED=22
 EXIT_OVERRIDE_REFUSED=23
 EXIT_JOURNAL_STATE=24
+EXIT_SOURCE_PARSE=25
 
 usage() {
     cat <<'EOF'
@@ -121,7 +122,9 @@ never changes a source; --apply then composes from those files. Exit codes:
 2 usage, 3 lock contention, 4 restore failed, 5 source changed before apply,
 10-19 preflight refusals (18: a config migration is pending or the configs
 carry different versions; 19: a --new-target refusal), 20-24 inspection,
-compose, proof, override and journal refusals. The binaries run against
+compose, proof, override and journal refusals, 25 source parse (sort failed
+or did not return every --source argument exactly once; refused before any
+binary, service command, lock, journal or file write). The binaries run against
 copies of every config; the deployment files are never rewritten.
 EOF
 }
@@ -323,12 +326,39 @@ add_fold() {
     FOLD_MERGED+=("0")
 }
 
+count_spec() {
+    local needle="$1" n=0 s
+    shift
+    for s in "$@"; do
+        if [[ "$s" == "$needle" ]]; then
+            n=$((n + 1))
+        fi
+    done
+    printf '%s' "$n"
+}
+
 [[ -z "$PAPER" ]] || add_fold "" "$PAPER"
 if [[ ${#SOURCE_SPEC[@]} -gt 0 ]]; then
+    for spec in "${SOURCE_SPEC[@]}"; do
+        [[ "$spec" != *$'\n'* ]] || fail "$EXIT_USAGE" "--source takes <id>=<instance>, got a value with a line break"
+    done
+    printf '%s\n' "${SOURCE_SPEC[@]}" > "$WORK/source-spec.in"
+    sort_rc=0
+    LC_ALL=C sort -t '=' -k1,1 < "$WORK/source-spec.in" > "$WORK/source-spec.sorted" || sort_rc=$?
+    [[ "$sort_rc" == "0" ]] || \
+        fail "$EXIT_SOURCE_PARSE" "source parse: sort exited $sort_rc while ordering the --source arguments by id; nothing was folded, locked, stopped or written"
     declare -a SORTED_SPEC=()
-    while IFS= read -r spec; do
+    while IFS= read -r spec || [[ -n "$spec" ]]; do
         SORTED_SPEC+=("$spec")
-    done < <(printf '%s\n' "${SOURCE_SPEC[@]}" | LC_ALL=C sort -t= -k1,1)
+    done < "$WORK/source-spec.sorted"
+    [[ ${#SORTED_SPEC[@]} -eq ${#SOURCE_SPEC[@]} ]] || \
+        fail "$EXIT_SOURCE_PARSE" "source parse: sort returned ${#SORTED_SPEC[@]} row(s) for ${#SOURCE_SPEC[@]} --source argument(s); nothing was folded, locked, stopped or written"
+    for spec in "${SOURCE_SPEC[@]}"; do
+        want=$(count_spec "$spec" "${SOURCE_SPEC[@]}")
+        got=$(count_spec "$spec" "${SORTED_SPEC[@]}")
+        [[ "$got" == "$want" ]] || \
+            fail "$EXIT_SOURCE_PARSE" "source parse: sort returned --source '$spec' $got time(s), want $want; nothing was folded, locked, stopped or written"
+    done
     for spec in "${SORTED_SPEC[@]}"; do
         [[ "$spec" == *=* ]] || fail "$EXIT_USAGE" "--source takes <id>=<instance>, got '$spec'"
         src_id="${spec%%=*}"
@@ -341,6 +371,10 @@ if [[ ${#SOURCE_SPEC[@]} -gt 0 ]]; then
 fi
 
 FOLD_COUNT_TOTAL=${#FOLD_KEY[@]}
+want_folds=${#SOURCE_SPEC[@]}
+[[ -z "$PAPER" ]] || want_folds=$((want_folds + 1))
+[[ "$FOLD_COUNT_TOTAL" -eq "$want_folds" ]] || \
+    fail "$EXIT_SOURCE_PARSE" "source parse: $FOLD_COUNT_TOTAL folded deployment(s) for $want_folds requested; nothing was folded, locked, stopped or written"
 MERGE_KEY=$(IFS='+'; printf '%s' "${FOLD_KEY[*]}")
 JOURNAL="${BASE%/}/${LIVE}/merge-paper-${MERGE_KEY}.journal"
 RETAINED_CFG="${LIVE_CFG}.pre-merge-${MERGE_KEY}"
@@ -407,6 +441,8 @@ REFUSE_ON_DIFFERENCE = [
     "role",
     "notify_tp_sl_fills",
     "notify_ratchet_triggers",
+    "notify_paper_circuit_breakers",
+    "paper_circuit_breakers",
     "platforms",
     "risk_free_rate",
     "alert_throttle_interval",
@@ -478,6 +514,8 @@ def root_value(cfg, key):
         return (v or "").strip() or "rest"
     if key == "role":
         return (v or "").strip() or "scheduler"
+    if key == "paper_circuit_breakers":
+        return v is True
     return v
 
 def dump_root(cfg, key):

@@ -142,7 +142,7 @@ def test_batch_errors_fail_the_whole_document(tmp_path, subtests):
     now = datetime.now(timezone.utc)
     cases = {
         "bad_contract": (_request(now, [_leg("a", expiry)], contract="option_marks_v0"), "request contract is not option_marks_v1"),
-        "bad_platform": (_request(now, [_leg("a", expiry)], platform="deribit"), "request platform 'deribit' does not match --platform=robinhood"),
+        "bad_platform": (_request(now, [_leg("a", expiry)], platform="ibkr"), "request platform 'ibkr' does not match --platform=robinhood"),
         "duplicate_id": (_request(now, [_leg("a", expiry), _leg("a", expiry)]), "request leg id 'a' is missing or duplicated"),
         "non_finite_number": ('{"contract":"option_marks_v1","platform":"robinhood","refresh_at":"2026-01-01T00:00:00Z","legs":[{"strike":NaN}]}',
                               "invalid option marks request JSON"),

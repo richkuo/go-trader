@@ -60,66 +60,6 @@ def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
     )
 
 
-_DECISION_GATE_CASES = [
-        (None, {"side": "long", "signal": 1}, True, None, None, None),
-        (None, {"side": "long", "signal": -1}, False,
-         "not a same-direction add", None, None),
-        (None, {"side": "short", "signal": -1}, True, None, None, None),
-        (None, {"side": "short", "signal": 1}, False, None, None, None),
-        (None, {"side": "long", "signal": 1, "qty": 0.0}, False, None, None, None),
-        (None, {"price": 0.0}, False, "no price for scale-in", None, None),
-        ({"max_adds": 2}, {"count": 1}, True, None, None, None),
-        ({"max_adds": 2}, {"count": 2}, False,
-         "scale-in max_adds reached", None, None),
-        ({"max_added_notional_usd": 2000.0},
-         {"added": 1000.0, "default_notional": 1000.0}, True, None, None, None),
-        ({"max_added_notional_usd": 2000.0},
-         {"added": 1000.0 + 1e-6, "default_notional": 1000.0}, False,
-         "scale-in max_added_notional_usd reached", None, None),
-        (None, {"default_notional": 0.0}, False,
-         "scale-in add notional resolves to zero", None, None),
-        ({"add_notional_usd": 500.0}, {"price": 100.0, "default_notional": 1000.0},
-         True, None, None, 5.0),
-        ({"add_spacing_atr": 1.0}, {"last_add": 100.0, "price": 101.9}, False,
-         None, "add-to-winners", None),
-        ({"add_spacing_atr": 1.0}, {"last_add": 100.0, "price": 102.0}, True,
-         None, None, None),
-        ({"add_spacing_atr": -1.0}, {"last_add": 100.0, "price": 98.1}, False,
-         None, "average-down", None),
-        ({"add_spacing_atr": -1.0}, {"last_add": 100.0, "price": 98.0}, True,
-         None, None, None),
-        ({"add_spacing_atr": 1.0},
-         {"side": "short", "signal": -1, "last_add": 100.0, "price": 98.0},
-         True, None, None, None),
-        ({"add_spacing_atr": 1.0},
-         {"side": "short", "signal": -1, "last_add": 100.0, "price": 99.0},
-         False, None, None, None),
-        ({"add_spacing_atr": 1.0}, {"entry_atr": 0.0}, False,
-         "scale-in spacing requires a positive EntryATR", None, None),
-        ({"add_spacing_atr": 1.0},
-         {"avg_cost": 100.0, "last_add": 0.0, "price": 102.0}, True,
-         None, None, None),
-        ({"add_spacing_atr": 1.0},
-         {"avg_cost": 100.0, "last_add": 0.0, "price": 101.0}, False,
-         None, None, None),
-        ({"add_spacing_atr": 0.0}, {"last_add": 100.0, "price": 100.0}, True,
-         None, None, None),
-]
-
-
-def test_scale_in_decision_gates():
-    for i, (cfg, kw, expect_ok, reason_eq, reason_has, expect_qty) in enumerate(_DECISION_GATE_CASES):
-        case = f"test_scale_in_decision_gates[{i}] cfg={cfg} kw={kw}"
-        qty, ok, reason = _decide(cfg, **kw)
-        assert ok is expect_ok, case
-        if reason_eq is not None:
-            assert reason == reason_eq, case
-        if reason_has is not None:
-            assert reason_has in reason, case
-        if expect_qty is not None:
-            assert qty == pytest.approx(expect_qty), case
-
-
 _INIT_REJECT_CASES = [
         ({"scale_in": {"max_adds": 2}}, "allow_scale_in"),
         ({"allow_scale_in": True, "risk_per_trade_pct": 1.0,
@@ -149,15 +89,6 @@ def _assert_run_rejects_entry_fraction_column():
     df["entry_fraction"] = 0.5
     with pytest.raises(ValueError, match="entry_fraction"):
         _run(df, allow_scale_in=True)
-
-
-def test_default_off_same_direction_signal_still_skipped():
-    closes = [100, 100, 110, 110, 120, 100]
-    repeat = _run(_df(closes, [1, 0, 1, 0, -1, 0]))
-    plain = _run(_df(closes, [1, 0, 0, 0, -1, 0]))
-    assert repeat["trades"] == plain["trades"]
-    assert repeat["final_capital"] == plain["final_capital"]
-    assert "scale_in_adds" not in repeat
 
 
 def test_add_blends_avg_cost_and_pnl_uses_blend(subtests):

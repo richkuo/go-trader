@@ -1,0 +1,2008 @@
+{
+  "included": {
+    "proxy": [
+      "BNB 1h",
+      "BNB 30m",
+      "BTC 1h",
+      "BTC 30m",
+      "ETH 1h",
+      "ETH 30m",
+      "SOL 1h",
+      "SOL 30m"
+    ],
+    "venue": [
+      "BNB 1h",
+      "BNB 30m",
+      "BTC 1h",
+      "BTC 30m",
+      "ETH 1h",
+      "ETH 30m",
+      "HYPE 1h",
+      "HYPE 30m",
+      "SOL 1h",
+      "SOL 30m"
+    ]
+  },
+  "manifest_sha256": "549608c576bb88f48c08397dd1508383498577a68092859caf5699f0211ad9d9",
+  "network_blocked": true,
+  "protocol_sha256": "a68c58e20ac58392d59622152e9a3698fc06eef60dc3483daf307094c90bcdf2",
+  "rows": [
+    {
+      "coin": "BNB",
+      "dataset": "BNB 30m",
+      "group": "proxy",
+      "interval": "30m",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 8832,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 8832,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 16018
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "dataset": "BNB 1h",
+      "group": "proxy",
+      "interval": "1h",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 4416,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4416,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 8009
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "dataset": "BTC 30m",
+      "group": "proxy",
+      "interval": "30m",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 8832,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 8832,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 16018
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "dataset": "BTC 1h",
+      "group": "proxy",
+      "interval": "1h",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 4416,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4416,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 8009
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "dataset": "ETH 30m",
+      "group": "proxy",
+      "interval": "30m",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 8832,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 8832,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 16018
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "dataset": "ETH 1h",
+      "group": "proxy",
+      "interval": "1h",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 4416,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4416,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 8009
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "dataset": "HYPE 30m",
+      "group": "proxy",
+      "interval": "30m",
+      "reason": "is: warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00); stitched: warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00)",
+      "status": "excluded",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 8832,
+          "first_bar": null,
+          "first_unpriced_hour": "2023-07-01 00:00:00",
+          "last_bar": null,
+          "missing_bars": 8832,
+          "present_bars": 0,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2023-04-29 06:30:00); 4416 unpriced funding hours, first 2023-07-01 00:00:00; no candles in the window",
+          "start": "2023-07-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 4416,
+          "warmup": {
+            "first_missing": "2023-04-29 06:30:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_bar": null,
+          "first_unpriced_hour": "2024-01-01 00:00:00",
+          "last_bar": null,
+          "missing_bars": 17568,
+          "present_bars": 0,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2023-10-30 06:30:00); 8146 unpriced funding hours, first 2024-01-01 00:00:00; no candles in the window",
+          "start": "2024-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8146,
+          "warmup": {
+            "first_missing": "2023-10-30 06:30:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_bar": "2025-06-06 11:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:30:00",
+          "missing_bars": 7510,
+          "present_bars": 170,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2024-10-30 06:30:00)",
+          "start": "2025-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2024-10-30 06:30:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2025-04-08 06:30:00",
+            "missing": 2841,
+            "ok": false,
+            "rows_before_start": 170
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 10010
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (2841 missing, first 2025-04-08 06:30:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2025-04-08 06:30:00",
+            "missing": 2841,
+            "ok": false,
+            "rows_before_start": 170
+          }
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "dataset": "HYPE 1h",
+      "group": "proxy",
+      "interval": "1h",
+      "reason": "is: warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00); stitched: warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00)",
+      "status": "excluded",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 4416,
+          "first_bar": null,
+          "first_unpriced_hour": "2023-07-01 00:00:00",
+          "last_bar": null,
+          "missing_bars": 4416,
+          "present_bars": 0,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2023-02-25 13:00:00); 4416 unpriced funding hours, first 2023-07-01 00:00:00; no candles in the window",
+          "start": "2023-07-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 4416,
+          "warmup": {
+            "first_missing": "2023-02-25 13:00:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_bar": null,
+          "first_unpriced_hour": "2024-01-01 00:00:00",
+          "last_bar": null,
+          "missing_bars": 8784,
+          "present_bars": 0,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2023-08-28 13:00:00); 8146 unpriced funding hours, first 2024-01-01 00:00:00; no candles in the window",
+          "start": "2024-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8146,
+          "warmup": {
+            "first_missing": "2023-08-28 13:00:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_bar": "2025-06-06 11:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:00:00",
+          "missing_bars": 3755,
+          "present_bars": 85,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (3011 missing, first 2024-08-28 13:00:00)",
+          "start": "2025-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2024-08-28 13:00:00",
+            "missing": 3011,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2025-02-04 13:00:00",
+            "missing": 2926,
+            "ok": false,
+            "rows_before_start": 85
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 5005
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "warm-up prefix lacks 3011 consecutive bars (2926 missing, first 2025-02-04 13:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": "2025-02-04 13:00:00",
+            "missing": 2926,
+            "ok": false,
+            "rows_before_start": 85
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "dataset": "SOL 30m",
+      "group": "proxy",
+      "interval": "30m",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 8832,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 8832,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 16018
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:30:00",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:30:00",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "dataset": "SOL 1h",
+      "group": "proxy",
+      "interval": "1h",
+      "reason": "warm-up prefix and funding complete on is, oos, stitched",
+      "status": "included",
+      "windows": {
+        "2023H2": {
+          "end": "2024-01-01",
+          "expected_bars": 4416,
+          "first_bar": "2023-07-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2023-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4416,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2023-07-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 8009
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_bar": "2024-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2024-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_bar": "2025-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-06-09 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2025-12-31 23:00:00",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_bar": "2026-01-01 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "first_unpriced_hour": null,
+          "last_bar": "2026-11-09 23:00:00",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix and priced funding",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "bridge": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 18 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "BNB",
+      "dataset": "BNB 30m",
+      "group": "venue",
+      "interval": "30m",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0229661017
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "common": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 2271,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "BNB",
+      "dataset": "BNB 1h",
+      "group": "venue",
+      "interval": "1h",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "common": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 2280,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0229661017
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.040123555000000005
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 18 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "BTC",
+      "dataset": "BTC 30m",
+      "group": "venue",
+      "interval": "30m",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.023383940600000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "common": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 2271,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "BTC",
+      "dataset": "BTC 1h",
+      "group": "venue",
+      "interval": "1h",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "common": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 2280,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.023383940600000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0399892998
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 18 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "ETH",
+      "dataset": "ETH 30m",
+      "group": "venue",
+      "interval": "30m",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.022484317200000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "common": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 2271,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "ETH",
+      "dataset": "ETH 1h",
+      "group": "venue",
+      "interval": "1h",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "common": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 2280,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.022484317200000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.04061885180000001
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 18 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "HYPE",
+      "dataset": "HYPE 30m",
+      "group": "venue",
+      "interval": "30m",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.028528448900000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "common": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 2271,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "HYPE",
+      "dataset": "HYPE 1h",
+      "group": "venue",
+      "interval": "1h",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "common": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 2280,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.028528448900000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.055024123400000007
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 18 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "SOL",
+      "dataset": "SOL 30m",
+      "group": "venue",
+      "interval": "30m",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0196048063
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "bridge": {
+        "common": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 2271,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "reason": "warm-up complete; 9 missing proxy candles in the window are scored as they are",
+          "status": "included"
+        }
+      },
+      "coin": "SOL",
+      "dataset": "SOL 1h",
+      "group": "venue",
+      "interval": "1h",
+      "reason": "complete candles, warm-up and funding on every window",
+      "status": "included",
+      "windows": {
+        "common": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 2280,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 2280,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0196048063
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        },
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0263186086
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    }
+  ],
+  "study": "breakout_2014",
+  "warmup_bars": 3011
+}

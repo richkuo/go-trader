@@ -320,7 +320,7 @@ func formatRobinhoodHeldBookAlert(b robinhoodHeldBook, currentKey string) string
 		b.StrategyID, b.Quantity, b.Coin, b.PositionID, b.State, b.Reason,
 		robinhoodKeyFingerprint(b.AccountKey), robinhoodVenueFingerprint(b.VenueAccountID), robinhoodKeyFingerprint(currentKey),
 		commandPrefix, robinhoodAccountCommandName, b.StrategyID, robinhoodAccountActionBind,
-		commandPrefix, robinhoodAccountCommandName, b.StrategyID, robinhoodAccountActionRelease)
+		commandPrefix, robinhoodAccountCommandName, b.StrategyID, robinhoodAccountActionRelease) + slashCommandOffNote()
 }
 
 var robinhoodHeldBookAlerts sync.Map

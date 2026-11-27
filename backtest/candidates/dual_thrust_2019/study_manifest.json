@@ -1,0 +1,1155 @@
+{
+  "acquired_at_utc": "2026-11-14T17:43:06Z",
+  "files": {
+    "data/venue/AVAX_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 81145,
+      "coin": "AVAX",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "fea76d5b8b5cdc86e8ebeac18b0b130a1313d2885ace9bc0a8e2fd3178dc892f",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/AVAX_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 57321,
+      "coin": "AVAX",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "6162e90663bcb0965b795c055871ebb28223a2620377222226a327529281b58f",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/AVAX_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 77191,
+      "coin": "AVAX",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "9477bb407656f75f7788667acdc48b7e3f2a55efed702cd246c57942426770c0",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/BTC_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 85812,
+      "coin": "BTC",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "642a8f0137451f3588d1588c4fea9b31c37d2c3df94eac5e1bf736cf31774a8f",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/BTC_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 61914,
+      "coin": "BTC",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-08-12 00:00:00",
+            "2026-09-30 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "7764ca98d0a78f3dfd6622f2da9724a12611ead76d1af3ceca2fe6b0678680d1",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/BTC_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 76226,
+      "coin": "BTC",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "c35aca259a13fbfbfa959d3c7bf7a50e4fbb8c3de82169a7e53ee757e4e8c8fe",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/DOGE_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 81529,
+      "coin": "DOGE",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "b1bd267fed2fc8a7a65e54e0ae93622a5ce1969d18ce9bda7fd92106f60f7c44",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/DOGE_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 58061,
+      "coin": "DOGE",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "7444a57e0cbd078b244c77a1c955bb43ec6929f64ec300f4da2c51d9d6a59dc4",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/DOGE_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 77811,
+      "coin": "DOGE",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "86ea8ebc4ae46982511162bdd318435488471dcb0616985427df25bb354035ec",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ENA_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 82262,
+      "coin": "ENA",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "20da6559842a5661eb0070b530d6d7a760e516290683a93e9a52c705a4da9a08",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ENA_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 59060,
+      "coin": "ENA",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "4a604f2de5caeb9d791e7adfadc953cf3f4383353509c44c5ff38dca59c6dbe9",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ENA_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 75349,
+      "coin": "ENA",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "c00c4015a806f8067100517f4d4f7d84aaea6feb9e86b41fdececaad5c8f072b",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ETH_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 81837,
+      "coin": "ETH",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "e79efcfd376615ad8ea1be17950279993f1e136049ba0755d4a1b70a4c64f161",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ETH_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 60162,
+      "coin": "ETH",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-08-12 00:00:00",
+            "2026-09-30 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "3a99226a9afb7710b045d6d6c2ad8e9777c967b25302d482a15c46d250ba3910",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/ETH_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 76502,
+      "coin": "ETH",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "6d51304affd576affc9756eda65cefce801d01eb1e9a9624172e4bfae428b4e8",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/HYPE_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 86577,
+      "coin": "HYPE",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "470dfbc3226cbb8a8e003e9f3fb61da608f97f1b65ef2fff3ca8521022841aa3",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/HYPE_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 62018,
+      "coin": "HYPE",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "16f3181d31bfcb2c64a313065f14306e19e5cc3cfa7131d16ae19a65eac3bb11",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/HYPE_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 69058,
+      "coin": "HYPE",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "65f1de6a9770ab14b6daea30d082217abca7bb51e6655c5922041411c34e5968",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/NEAR_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 81686,
+      "coin": "NEAR",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "12c2149cdd33381f94ed27e7e88a513b99761d27b8371f65d6791335279315ec",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/NEAR_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 56885,
+      "coin": "NEAR",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "ca670730cc7dbcda09fcd150c0c8b8a3da9186423c197f00a06befb63bea4d5a",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/NEAR_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 66614,
+      "coin": "NEAR",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "0c0e8df6be23b772519d5f5bc7f5d1bc2d618da7a5296905b185c345c1237020",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/PUMP_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 76332,
+      "coin": "PUMP",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "20f9a0b922d004eba2f3387464ae20973e9b65debab308d9197e30dd105761b7",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/PUMP_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 54890,
+      "coin": "PUMP",
+      "first_row": "2025-07-10 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2874,
+      "sha256": "0a146c19cffddefbda41fcdc21e6f8ed474dc796c4f746dc3478471ae9d4de78",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/PUMP_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 66024,
+      "coin": "PUMP",
+      "first_row": "2025-07-10 04:00:00.033000",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11492,
+      "sha256": "8a51484a4e4f1bdfb50f4b9dee75b6b76ba69fa8771989e7af72a4e9e4a55a6a",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/SOL_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 81521,
+      "coin": "SOL",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "8f0053fbc46b3119835baab172369ac468eef1d4fd611f04153433eb8482407e",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/SOL_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 58368,
+      "coin": "SOL",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-08-12 00:00:00",
+            "2026-09-30 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "8ce4b105ec03c242ad5e4a19cdf63d5e9120c8b0fefbfefb2823a9c3276425fc",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/SOL_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 82600,
+      "coin": "SOL",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "forward_4h": {
+          "scored_range": [
+            "2026-10-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "ba288b82d48187ab4c1476606914ceba1fa1d5ed31935bcf31d8a892a88c12e0",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/UNI_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 80471,
+      "coin": "UNI",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "b78fe6e070d4b7aa2c00e1e6ec524bfd122ed212a04a7e711c30bc5aa13532b4",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/UNI_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 56913,
+      "coin": "UNI",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "de01853c604751c56fb6d827d848718c8e51202d1ec5d38f73fec6a4e9275a2a",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/UNI_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 67107,
+      "coin": "UNI",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "6af1a6535c79e333f1cac5effc94ee9cc5ca20e6b57e8137b5290286a01ff606",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/WLD_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 87206,
+      "coin": "WLD",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "f8bab79968768901cb8c9d3ea7086c37c5b9057676bff68d085ea05a288a8644",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/WLD_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 61277,
+      "coin": "WLD",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "f5136a6f8d6af0a80fa712bfee1fe9aed1eed86c18d0dfd12d63e86c6d89bdc8",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/WLD_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 74978,
+      "coin": "WLD",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "43d1d23efb944af9143362cbc0a88fa723488f5de55e047b1b39058c7a1bc92b",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/XRP_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 72679,
+      "coin": "XRP",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "c9b1441a5741cd19c89db2405502116e3daaadab0a2938bca2fbbfa96506b6c2",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/XRP_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 53831,
+      "coin": "XRP",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "3f0a5f39062d88373a4a02a5183eef9f6ebe3421d7a8e74fd83066bc686094f9",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/XRP_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 79669,
+      "coin": "XRP",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "580e2599b02f2f60bdbc94f2d83a6c4691c41cac49e5d4b97a653b6ca5f205f4",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/kPEPE_1h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2026-05-01",
+        "2026-11-01"
+      ],
+      "bytes": 73352,
+      "coin": "kPEPE",
+      "first_row": "2026-05-01 00:00:00",
+      "interval": "1h",
+      "kind": "candles",
+      "last_row": "2026-10-31 23:00:00",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2026-05-19 12:00:00",
+            "2026-05-31 23:00:00"
+          ]
+        }
+      },
+      "rows": 4416,
+      "sha256": "abafff33d94ea3ac5832407d9888d31e3f9ec479077f8edec2ac904dd6fcd39d",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/kPEPE_4h_candles.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 55022,
+      "coin": "kPEPE",
+      "first_row": "2025-07-01 00:00:00",
+      "interval": "4h",
+      "kind": "candles",
+      "last_row": "2026-10-31 20:00:00",
+      "populations": {
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ],
+          "warmup_range": [
+            "2025-07-13 00:00:00",
+            "2025-08-31 20:00:00"
+          ]
+        }
+      },
+      "rows": 2928,
+      "sha256": "6f9c6d612ccf24d8b68a9ac33d0c98d0020a3c8be8dc3515c38fecf71abb04a4",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/kPEPE_funding.csv.gz": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "acquired_range": [
+        "2025-07-01",
+        "2026-11-01"
+      ],
+      "bytes": 74136,
+      "coin": "kPEPE",
+      "first_row": "2025-07-01 00:00:00",
+      "kind": "funding",
+      "last_row": "2026-10-31 23:00:00.044000",
+      "populations": {
+        "descriptive_1h": {
+          "scored_range": [
+            "2026-06-01",
+            "2026-11-01"
+          ]
+        },
+        "primary_4h": {
+          "scored_range": [
+            "2025-09-01",
+            "2026-11-01"
+          ]
+        }
+      },
+      "rows": 11712,
+      "sha256": "f73517aa710aed17c20a2c78b796322ac28eb52cf735706e301308ed857378e8",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/meta_and_asset_ctxs.json": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "bytes": 97389,
+      "kind": "venue_reference",
+      "observed_at_utc": "2026-11-14T17:36:09Z",
+      "sha256": "b396a97dd66cc21d70cbd1556097364cdc8b5fd5eb37ac863f89824191d71da4",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/venue_l2_snapshot.json": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "bytes": 1631,
+      "kind": "venue_reference",
+      "observed_at_utc": "2026-11-14T17:43:06Z",
+      "sha256": "2cce484a880a1b98d400bd1beab8f6fa2ee275498ff0eda69d1f07a8e81c3055",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    },
+    "data/venue/venue_meta.json": {
+      "acquired_at_utc": "2026-11-14T17:43:06Z",
+      "bytes": 24847,
+      "kind": "venue_reference",
+      "observed_at_utc": "2026-11-14T17:43:06Z",
+      "sha256": "1a506b2411d3f8a76d8ae614929e5fe41e87363a341d245b45faa2046b8f1cc8",
+      "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)"
+    }
+  },
+  "manifests": {
+    "descriptive_1h": {
+      "path": "venue_descriptive_1h.json",
+      "sha256": "7c60d56496140693d7ceed31cf774dc9d3a35136ee76d912dcb514056fde3cb0"
+    },
+    "forward_4h": {
+      "path": "venue_forward_4h.json",
+      "sha256": "9b490226d327b72957b7a7582d5f2c4178d26d664d2684900c7904cc65a16c17"
+    },
+    "primary_4h": {
+      "path": "venue_primary_4h.json",
+      "sha256": "aa48485afd25257d7c081e156da00924eb61a3f4e6cfe53d668c24e952016120"
+    }
+  },
+  "observed_at_utc": "2026-11-14T17:36:09Z",
+  "screen": {
+    "path": "screen.json",
+    "sha256": "af3500c4d742ff1f6b2de72c97d0e5161f4db6f655f98b2432b49b7d7042a779"
+  },
+  "source_commit_at_acquisition": "092385f0cb34529829c15ae4037a09bb3fb00620+uncommitted-changes",
+  "study": "dual_thrust_2019"
+}

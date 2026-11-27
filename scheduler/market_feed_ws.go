@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -72,6 +73,7 @@ func feedJitter(d time.Duration) time.Duration {
 
 func (o *marketFeedOwner) Run(ctx context.Context) {
 	go o.runCorrection(ctx)
+	go o.runHistoryRecovery(ctx)
 	backoff := time.Duration(0)
 	for {
 		if ctx.Err() != nil {
@@ -397,9 +399,14 @@ func (o *marketFeedOwner) repairAfterConnect(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := o.fetchAndMerge(ctx, key, feedRestRepair); err != nil {
+		if err := o.fetchIncremental(ctx, key, feedRestRepair); err != nil {
+			if feedFetchTypedResult(err) {
+				continue
+			}
 			o.logf("[feed] %s: reconnect repair failed: %v", key, err)
-			o.raiseAlert(key, "repair_failed", err.Error())
+			if !feedRateLimitErr(err) && !errors.Is(err, errFeedWeightRefused) {
+				o.raiseAlert(key, "repair_failed", err.Error())
+			}
 			continue
 		}
 		o.MarkKeyRecovered(key)

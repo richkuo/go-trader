@@ -1,0 +1,296 @@
+{
+  "all_ok": true,
+  "cases": [
+    {
+      "expected": "lock committed once, before results, sources clean",
+      "kind": "git",
+      "name": "canonical lock order in branch history",
+      "observed": "{\"lock_commit\": \"f4d188bef7556a0e3aa7908b7b3ca941e22346ae\", \"head\": \"f4d188bef7556a0e3aa7908b7b3ca941e22346ae\"}",
+      "ok": true
+    },
+    {
+      "expected": "ranking order, stop rule and selection reproduce",
+      "kind": "frozen inputs",
+      "name": "screen replay from the frozen liquidity response and coverage records",
+      "observed": "{\"order_ok\": true, \"recheck\": {\"AVAX\": {\"complete\": true, \"fetched_hashes_match\": true}, \"DOGE\": {\"complete\": true, \"fetched_hashes_match\": true}, \"ENA\": {\"complete\": true, \"fetched_hashes_match\": true}, \"HYPE\": {\"complete\": true, \"fetched_hashes_match\": true}, \"NEAR\": {\"complete\": true, \"fetched_hashes_match\": true}, \"PUMP\": {\"complete\": true, \"fetched_hashes_match\": true}, \"UNI\": {\"complete\": true, \"fetched_hashes_match\": true}, \"WLD\": {\"complete\": true, \"fetched_hashes_match\": true}, \"XRP\": {\"complete\": true, \"fetched_hashes_match\": true}, \"kPEPE\": {\"complete\": true, \"fetched_hashes_match\":",
+      "ok": true
+    },
+    {
+      "expected": "refused (protocol.json differs from the lock)",
+      "kind": "refusal",
+      "name": "changed protocol hash",
+      "observed": "protocol.json differs from the lock",
+      "ok": true
+    },
+    {
+      "expected": "refused (differs from the lock)",
+      "kind": "refusal",
+      "name": "changed input inventory hash",
+      "observed": "study_manifest.json (input inventory) differs from the lock",
+      "ok": true
+    },
+    {
+      "expected": "refused (registered input data/venue/HYPE_funding.csv.gz)",
+      "kind": "refusal",
+      "name": "changed input file hash",
+      "observed": "registered input data/venue/HYPE_funding.csv.gz sha256 b653dc59c26e5dadbb74a8af9aeefac8441837ea8145bee68b9cc7b225d7ab8c != inventory 65f1de6a9770ab14b6daea30d082217abca7bb51e6655c5922041411c34e5968",
+      "ok": true
+    },
+    {
+      "expected": "refused (unregistered files under data/)",
+      "kind": "refusal",
+      "name": "unregistered input file",
+      "observed": "unregistered files under data/: data/venue/EXTRA_4h_candles.csv.gz",
+      "ok": true
+    },
+    {
+      "expected": "refused (protocol_lock.json is missing)",
+      "kind": "refusal",
+      "name": "missing lock",
+      "observed": "protocol_lock.json is missing; run `run_study.py lock` before scoring",
+      "ok": true
+    },
+    {
+      "expected": "refused (scoring sources differ from the lock)",
+      "kind": "refusal",
+      "name": "changed scoring source hash",
+      "observed": "scoring sources differ from the lock (check out the lock's source commit to reproduce): backtest/eval_windows.py",
+      "ok": true
+    },
+    {
+      "expected": "refused (differs from the inventory)",
+      "kind": "refusal",
+      "name": "changed manifest",
+      "observed": "primary_4h: manifest venue_primary_4h.json differs from the inventory",
+      "ok": true
+    },
+    {
+      "expected": "refused (results exist; the lock must precede every score)",
+      "kind": "refusal",
+      "name": "lock written after scores",
+      "observed": "results exist; the lock must precede every score",
+      "ok": true
+    },
+    {
+      "expected": "refused (refusing to reuse an existing research cache)",
+      "kind": "refusal",
+      "name": "existing research cache",
+      "observed": "refusing to reuse an existing research cache /private/tmp/claude-501/-Users-richardkuo-Work-go-trader/ad682292-f47e-4c7c-a006-3e8625d153af/scratchpad/dt2019_verify1/caches/reused.db; pass a new path",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (dataset roster differs)",
+      "kind": "real runner on a disposable copy",
+      "name": "missing registered dataset",
+      "observed": "inconclusive: evidence incomplete: dataset roster differs from the frozen roster (missing ['DOGE'], unexpected []); base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro: no ",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (dataset roster differs)",
+      "kind": "real runner on a disposable copy",
+      "name": "same-size roster with a wrong coin",
+      "observed": "inconclusive: evidence incomplete: dataset roster differs from the frozen roster (missing ['DOGE'], unexpected ['BTC']); base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (no funding series attached)",
+      "kind": "real runner on a disposable copy",
+      "name": "missing funding series",
+      "observed": "inconclusive: evidence incomplete: HYPE 4h funding: no funding series attached; base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro: no legs; base donchian_breakout: no leg",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (funding hours missing)",
+      "kind": "real runner on a disposable copy",
+      "name": "interior funding gap",
+      "observed": "inconclusive: evidence incomplete: HYPE 4h funding: 1 funding hours missing (first 2026-04-02 00:00:00); base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro: no legs; base ",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (invalid OHLCV bars)",
+      "kind": "real runner on a disposable copy",
+      "name": "malformed candle",
+      "observed": "inconclusive: evidence incomplete: HYPE 4h candles: 1 invalid OHLCV bars (first 2025-09-07 16:00:00); base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro: no legs; base don",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (warm-up bars missing)",
+      "kind": "real runner on a disposable copy",
+      "name": "warm-up gap",
+      "observed": "inconclusive: evidence incomplete: HYPE 4h candles: 1 warm-up bars missing (first 2025-08-23 16:00:00); base candidate: no legs; base breakout: no legs; base session_breakout: no legs; base momentum_pro: no legs; base chart_pattern: no legs; base squeeze_momentum: no legs; base mean_reversion_pro: no legs; base d",
+      "ok": true
+    },
+    {
+      "expected": "fail",
+      "kind": "saved evidence",
+      "name": "verdict recomputed from saved leg evidence",
+      "observed": "fail: false: beats_breakout_sharpe_base, m1_pass_base, net_positive_base, net_positive_stress",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (base momentum_pro AVAX 4h: leg missing)",
+      "kind": "saved evidence",
+      "name": "missing incumbent leg at base cost",
+      "observed": "inconclusive: evidence incomplete: base momentum_pro: datasets ['DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h'] != frozen ['AVAX 4h', 'DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h']; base momentum_pro AVAX 4h: leg miss",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (stress momentum_pro AVAX 4h: leg missing)",
+      "kind": "saved evidence",
+      "name": "missing incumbent leg at stress cost",
+      "observed": "inconclusive: evidence incomplete: stress momentum_pro: datasets ['DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h'] != frozen ['AVAX 4h', 'DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h']; stress momentum_pro AVAX 4h: leg ",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (TimeoutError)",
+      "kind": "saved evidence",
+      "name": "errored candidate leg",
+      "observed": "inconclusive: evidence incomplete: base candidate AVAX 4h: TimeoutError: fixture",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (non-finite ['sharpe'])",
+      "kind": "saved evidence",
+      "name": "non-finite candidate metric",
+      "observed": "inconclusive: evidence incomplete: stress candidate AVAX 4h: non-finite ['sharpe']",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (!= frozen)",
+      "kind": "saved evidence",
+      "name": "unexpected comparator dataset",
+      "observed": "inconclusive: evidence incomplete: base breakout: datasets ['AVAX 4h', 'DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'ZZZ 4h', 'kPEPE 4h'] != frozen ['AVAX 4h', 'DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h']",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (funding coverage incomplete)",
+      "kind": "saved evidence",
+      "name": "incumbent funding coverage incomplete",
+      "observed": "inconclusive: evidence incomplete: base sma_crossover AVAX 4h: funding coverage incomplete",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (entry audit)",
+      "kind": "saved evidence",
+      "name": "entry audit failure",
+      "observed": "inconclusive: evidence incomplete: candidate entry audit: 1 failures",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (chart_pattern: no legs)",
+      "kind": "saved evidence",
+      "name": "incumbent arm absent",
+      "observed": "inconclusive: evidence incomplete: base chart_pattern: no legs",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (< 30)",
+      "kind": "saved evidence",
+      "name": "valid sample below the floor (positions removed)",
+      "observed": "inconclusive: pooled candidate base-cost clusters 29 < 30",
+      "ok": true
+    },
+    {
+      "expected": "pass (every frozen check is true)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "all frozen checks true",
+      "observed": "pass: every frozen check is true",
+      "ok": true
+    },
+    {
+      "expected": "fail (net_positive_base)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "performance failure: net_positive_base",
+      "observed": "fail: false: net_positive_base",
+      "ok": true
+    },
+    {
+      "expected": "fail (net_positive_stress)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "performance failure: net_positive_stress",
+      "observed": "fail: false: net_positive_stress",
+      "ok": true
+    },
+    {
+      "expected": "fail (m1_pass_base)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "performance failure: m1_pass_base",
+      "observed": "fail: false: m1_pass_base",
+      "ok": true
+    },
+    {
+      "expected": "fail (beats_breakout_sharpe_base)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "performance failure: beats_breakout_sharpe_base",
+      "observed": "fail: false: beats_breakout_sharpe_base",
+      "ok": true
+    },
+    {
+      "expected": "fail (beats_session_breakout_sharpe_base)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "performance failure: beats_session_breakout_sharpe_base",
+      "observed": "fail: false: beats_session_breakout_sharpe_base",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (leg missing)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "all checks true but a stress incumbent leg missing",
+      "observed": "inconclusive: evidence incomplete: stress range_scalper: datasets ['DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h'] != frozen ['AVAX 4h', 'DOGE 4h', 'ENA 4h', 'HYPE 4h', 'NEAR 4h', 'PUMP 4h', 'UNI 4h', 'WLD 4h', 'XRP 4h', 'kPEPE 4h']; stress range_scalper AVAX 4h: le",
+      "ok": true
+    },
+    {
+      "expected": "inconclusive (funding hours missing)",
+      "kind": "isolated verdict fixture (not market evidence)",
+      "name": "all checks true but an input check failed",
+      "observed": "inconclusive: evidence incomplete: AVAX 4h funding: 1 funding hours missing (fixture)",
+      "ok": true
+    },
+    {
+      "expected": "-",
+      "kind": "note",
+      "name": "fixture provenance",
+      "observed": "saved evidence; 0 fixture positions added",
+      "ok": true
+    },
+    {
+      "expected": "per-coin 1+1+1=3, pooled 1 (overlap and touching spans merge)",
+      "kind": "synthetic spans",
+      "name": "span bridge: pooled clusters differ from summed per-coin clusters",
+      "observed": "per-coin [1, 1, 1] sum 3, pooled 1",
+      "ok": true
+    },
+    {
+      "expected": "pooled <= summed, recomputed independently",
+      "kind": "saved evidence",
+      "name": "scored primary: pooled vs summed per-coin clusters",
+      "observed": "pooled 73, summed 143",
+      "ok": true
+    },
+    {
+      "expected": "fail",
+      "kind": "saved evidence",
+      "name": "descriptive outputs replaced: primary verdict unchanged",
+      "observed": "fail",
+      "ok": true
+    },
+    {
+      "expected": "identical primary legs and verdict; forward evidence incomplete",
+      "kind": "real runner on a disposable copy",
+      "name": "forward population roster changed: primary evidence and verdict unchanged",
+      "observed": "primary identical True; verdict fail; forward evidence complete False",
+      "ok": true
+    },
+    {
+      "expected": "identical populations, legs, reductions and verdict (timing excluded)",
+      "kind": "real runner on the canonical study",
+      "name": "full reproduction with a separate fresh research cache",
+      "observed": "identical True; rerun verdict fail",
+      "ok": true
+    }
+  ],
+  "results_sha256": "1192865ec839c4c441b8e60b9c7fd20a03cea5ff5981670fdf4f02d9f6eff313",
+  "runtime_seconds": 110.2,
+  "source_commit": "f4d188bef7556a0e3aa7908b7b3ca941e22346ae",
+  "study": "dual_thrust_2019"
+}

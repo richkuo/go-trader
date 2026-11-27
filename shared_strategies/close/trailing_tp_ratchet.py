@@ -173,6 +173,8 @@ def resolve_tiers_for_regime(
         if not label:
             return [], ["noop:missing_position_regime"]
         block = raw.get(label)
+        if block is None and label in ("ranging_directional_up", "ranging_directional_down"):
+            block = raw.get("ranging_directional")
         if block is None:
             return [], [f"tp_tiers: missing regime key {label!r}"]
         tiers, terr = _parse_scalar_tiers(block)

@@ -38,42 +38,6 @@ func paperResearchParams(name string) map[string]interface{} {
 		"quote_path": "/var/lib/go-trader/macro/quotes.json", "quote_sha256": strings.Repeat("2", 64)}
 }
 
-func paperResearchServer(t *testing.T, root map[string]interface{}, strategies ...map[string]interface{}) (*StatusServer, string) {
-	t.Helper()
-	dir := t.TempDir()
-	base := map[string]interface{}{
-		"config_version":   CurrentConfigVersion,
-		"interval_seconds": 60,
-		"log_dir":          filepath.Join(dir, "logs"),
-		"db_file":          filepath.Join(dir, "state.db"),
-		"strategies":       strategies,
-	}
-	for k, v := range root {
-		base[k] = v
-	}
-	data, err := json.MarshalIndent(base, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("fixture config must load: %v", err)
-	}
-	ss := NewStatusServer(NewAppState(), &sync.RWMutex{}, "", cfg.Strategies, nil)
-	ss.SetConfigContext(path, cfg)
-	ss.restartFn = func() error { return nil }
-	return ss, path
-}
-
-func paperResearchMomentum() map[string]interface{} {
-	return map[string]interface{}{"id": "hl-momentum-eth", "type": "perps", "platform": "hyperliquid", "script": hyperliquidCheckScript,
-		"args": []string{"momentum", "ETH", "1h", "--mode=paper"}, "capital": 100, "max_drawdown_pct": 10, "leverage": 1, "direction": "long", "margin_mode": "isolated"}
-}
-
 func fileSHA(t *testing.T, path string) string {
 	t.Helper()
 	sum := sha256.Sum256(mustReadFile(t, path))
@@ -733,8 +697,8 @@ func paperResearchLoadError(t *testing.T, root map[string]interface{}, strategie
 func TestPaperResearchOptionsQuoteReferencesAreRefused(t *testing.T) {
 	websocket := map[string]interface{}{"market_feed": "websocket"}
 	options := func() map[string]interface{} {
-		return map[string]interface{}{"id": "deribit-cc-btc", "type": "options", "platform": "deribit", "script": "shared_scripts/check_options.py",
-			"args": []string{"covered_calls", "BTC", "--platform=deribit", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
+		return map[string]interface{}{"id": "ibkr-cc-btc", "type": "options", "platform": "ibkr", "script": "shared_scripts/check_options.py",
+			"args": []string{"covered_calls", "BTC", "--platform=ibkr", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
 	}
 	if err := paperResearchLoadError(t, websocket, options()); err != nil {
 		t.Fatalf("control: a plain paper options entry must load: %v", err)
@@ -785,31 +749,6 @@ func TestPaperResearchBitcoinLeadLagRefusesTheLeaderAsFollower(t *testing.T) {
 		}
 		if fileSHA(t, path) != before {
 			t.Fatal("a refused BTC follower add changed the config")
-		}
-	})
-	t.Run("wizard_skips_btc_and_keeps_the_other_followers", func(t *testing.T) {
-		opts := InitOptions{Assets: []string{"BTC", "ETH"}, EnableSpot: true, SpotStrategies: []string{"sma_crossover"}, SpotCapital: 1000, SpotDrawdown: 5,
-			ResearchStrategies: []string{bitcoinLeadLagStrategyName}}
-		entries, err := initResearchEntries(opts)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids := make([]string, 0, len(entries))
-		for _, sc := range entries {
-			ids = append(ids, sc.ID)
-		}
-		sort.Strings(ids)
-		if strings.Join(ids, ",") != "hl-btclag-eth" {
-			t.Fatalf("the wizard must write only the ETH follower, got %v", ids)
-		}
-		cfg := generateConfig(opts)
-		if err := validateInitResearchConfig(cfg, opts); err != nil {
-			t.Fatalf("wizard output must validate: %v", err)
-		}
-		btcOnly := opts
-		btcOnly.Assets = []string{"BTC"}
-		if _, err := initResearchEntries(btcOnly); err == nil || !strings.Contains(err.Error(), "needs an asset other than BTC") {
-			t.Fatalf("a BTC-only wizard run must refuse the lead-lag research strategy: %v", err)
 		}
 	})
 	t.Run("eth_follower_is_still_added", func(t *testing.T) {

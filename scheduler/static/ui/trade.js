@@ -10,6 +10,9 @@
     refresh: document.getElementById("review-refresh"),
     coverage: document.getElementById("review-coverage"),
     chart: document.getElementById("review-chart"),
+    chartFrame: document.getElementById("review-chart-frame"),
+    chartToolbar: document.getElementById("review-chart-toolbar"),
+    chartFailure: document.getElementById("review-chart-failure"),
     legend: document.getElementById("review-legend"),
     actual: document.getElementById("review-actual"),
     eligibility: document.getElementById("review-eligibility"),
@@ -32,9 +35,7 @@
   const state = {
     review: null,
     chart: null,
-    series: null,
-    priceLines: [],
-    previewLines: [],
+    chartAvailable: false,
     mode: "",
     candlesByTime: new Map(),
     saving: false,
@@ -111,41 +112,62 @@
       return;
     }
     if (!res.ok) {
-      showError("Candle fetch failed: " + (parsed.body.candle_error || res.statusText));
+      const avail = parsed.body.candle_availability;
+      const detail = avail ? avail.detail + " (" + avail.code + ")" : (parsed.body.candle_error || res.statusText);
+      showError("Candle source unavailable: " + detail + ". Fills still show; saving stays off.");
     }
     state.review = parsed.body;
     render();
   }
 
-  function chartOptions() {
-    const dark = isDark();
-    return {
-      layout: {
-        background: { type: "solid", color: dark ? "#1a211c" : "#ffffff" },
-        textColor: dark ? "#c5cec8" : "#334139",
-      },
-      grid: {
-        vertLines: { color: dark ? "#2b342f" : "#eef1eb" },
-        horzLines: { color: dark ? "#2b342f" : "#eef1eb" },
-      },
-      rightPriceScale: { borderColor: dark ? "#3a4540" : "#d8ddd2" },
-      timeScale: { borderColor: dark ? "#3a4540" : "#d8ddd2", timeVisible: true },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    };
+  function chartFailed(message) {
+    state.chartAvailable = false;
+    setText(els.chartFailure, "Chart unavailable: " + message + " Saving stays off until the chart draws. Reload to try again.");
+    els.chartFailure.hidden = false;
+    updateSaveState();
   }
 
-  function initChart() {
-    if (state.chart) return;
-    state.chart = LightweightCharts.createChart(els.chart, chartOptions());
-    state.series = state.chart.addCandlestickSeries({
-      upColor: "#0f8a5f", downColor: "#c23b3b", borderUpColor: "#0f8a5f", borderDownColor: "#c23b3b",
-      wickUpColor: "#0f8a5f", wickDownColor: "#c23b3b",
+  function chartPreferences() {
+    const lib = window.GoTraderStorage;
+    if (!lib || typeof lib.chartPreferences !== "function") return null;
+    try {
+      return lib.chartPreferences(function () { return window.localStorage; });
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function chartRecovered() {
+    els.chartFailure.hidden = true;
+    setText(els.chartFailure, "");
+  }
+
+  function ensureChart() {
+    if (state.chart) return state.chart;
+    if (!window.GoTraderChart || typeof window.GoTraderChart.create !== "function") {
+      chartFailed("The chart script did not load.");
+      return null;
+    }
+    const controller = window.GoTraderChart.create({
+      container: els.chart,
+      toolbar: els.chartToolbar,
+      fullscreenTarget: els.chartFrame,
+      preferences: chartPreferences(),
+      exportName: function () { return strategyID + "-" + positionID; },
+      minWidth: 300,
+      minHeight: 320,
+      isDark: isDark,
+      onClick: onChartClick,
+      onFailure: function (failure) {
+        chartFailed(failure.message);
+      },
     });
-    state.chart.subscribeClick(onChartClick);
-    new ResizeObserver(function () {
-      const rect = els.chart.getBoundingClientRect();
-      state.chart.resize(Math.max(300, rect.width), Math.max(320, rect.height));
-    }).observe(els.chart);
+    if (!controller.available()) {
+      controller.destroy();
+      return null;
+    }
+    state.chart = controller;
+    return controller;
   }
 
   function barSeconds() {
@@ -158,17 +180,9 @@
     return Math.floor(t / bar) * bar;
   }
 
-  function clearLines(list) {
-    while (list.length) {
-      state.series.removePriceLine(list.pop());
-    }
-  }
-
   function addLine(list, price, color, title, style) {
     if (!(price > 0)) return;
-    list.push(state.series.createPriceLine({
-      price: price, color: color, lineWidth: 2, lineStyle: style, axisLabelVisible: true, title: title,
-    }));
+    list.push({ price: price, color: color, title: title, style: style });
   }
 
   function fillMarkers() {
@@ -198,36 +212,60 @@
   }
 
   function drawMarkers() {
-    const all = fillMarkers().concat(previewMarkers());
-    all.sort(function (a, b) { return a.time - b.time; });
-    state.series.setMarkers(all);
+    return state.chart.setMarkers(fillMarkers().concat(previewMarkers()));
   }
 
   function drawPreviewLines() {
-    clearLines(state.previewLines);
-    addLine(state.previewLines, Number(els.entryPrice.value), "#0f8a5f", "Preferred entry", LightweightCharts.LineStyle.Dotted);
-    addLine(state.previewLines, Number(els.exitPrice.value), "#c23b3b", "Preferred exit", LightweightCharts.LineStyle.Dotted);
-    drawMarkers();
+    if (!state.chart || !state.chartAvailable) return false;
+    const lines = [];
+    addLine(lines, Number(els.entryPrice.value), "#0f8a5f", "Preferred entry", "dotted");
+    addLine(lines, Number(els.exitPrice.value), "#c23b3b", "Preferred exit", "dotted");
+    if (!state.chart.setPriceLines("preview", lines)) return false;
+    return drawMarkers();
+  }
+
+  function legendText(r) {
+    const legend = ["Solid lines: quantity-weighted average entry and exit over every fill of the position."];
+    if (r.metrics) {
+      legend.push("Dashed lines: maximum favorable and adverse excursion from the close diagnostics record, separate from the averages.");
+    }
+    return legend.join(" ");
   }
 
   function renderChart() {
-    initChart();
+    state.chartAvailable = false;
+    const chart = ensureChart();
+    if (!chart) return;
     const r = state.review;
+    const actual = r.actual || {};
     const candles = r.candles || [];
-    state.candlesByTime = new Map(candles.map(function (c) { return [c.time, c]; }));
-    state.series.setData(candles);
-    clearLines(state.priceLines);
-    addLine(state.priceLines, r.actual.avg_entry_price, "#2563eb", "Actual avg entry", LightweightCharts.LineStyle.Solid);
-    addLine(state.priceLines, r.actual.avg_exit_price, "#a45f08", "Actual avg exit", LightweightCharts.LineStyle.Solid);
-    const legend = ["Solid lines: quantity-weighted average entry and exit over every fill of the position."];
+    if (!chart.setData({ candles: candles, source: r.candle_source })) return;
+    const lines = [];
+    addLine(lines, actual.avg_entry_price, "#2563eb", "Actual avg entry", "solid");
+    addLine(lines, actual.avg_exit_price, "#a45f08", "Actual avg exit", "solid");
     if (r.metrics) {
-      addLine(state.priceLines, r.metrics.mfe_price, "#0f8a5f", "MFE (diagnostics)", LightweightCharts.LineStyle.Dashed);
-      addLine(state.priceLines, r.metrics.mae_price, "#c23b3b", "MAE (diagnostics)", LightweightCharts.LineStyle.Dashed);
-      legend.push("Dashed lines: maximum favorable and adverse excursion from the close diagnostics record, separate from the averages.");
+      addLine(lines, r.metrics.mfe_price, "#0f8a5f", "MFE (diagnostics)", "dashed");
+      addLine(lines, r.metrics.mae_price, "#c23b3b", "MAE (diagnostics)", "dashed");
     }
-    setText(els.legend, legend.join(" "));
-    drawPreviewLines();
-    if (candles.length) state.chart.timeScale().fitContent();
+    if (!chart.setPriceLines("actual", lines)) return;
+    state.chartAvailable = true;
+    if (!drawPreviewLines()) {
+      state.chartAvailable = false;
+      return;
+    }
+    if (candles.length && !chart.fitContent()) {
+      state.chartAvailable = false;
+      return;
+    }
+    chartRecovered();
+  }
+
+  function renderChartContained() {
+    try {
+      renderChart();
+    } catch (err) {
+      chartFailed(err && err.message ? err.message : String(err));
+    }
   }
 
   function coverageText(r) {
@@ -235,6 +273,7 @@
     const parts = ["Coverage: " + (cov.status || "none")];
     if (cov.expected) parts.push(cov.present + " of " + cov.expected + " bars");
     if (r.candle_source) parts.push("source " + r.candle_source);
+    if (r.candle_availability) parts.push("candle source unavailable (" + r.candle_availability.code + ")");
     if (r.window) {
       parts.push(r.timeframe + " bars from " + fmtTime(r.window.effective_from) + " to " + fmtTime(r.window.effective_to));
       if (r.window.future_padding_shortened) parts.push("future padding shortened to the latest completed bar");
@@ -383,12 +422,14 @@
 
   function updateSaveState() {
     const r = state.review;
-    const allowed = !!(r && r.save_available);
+    const serverAllows = !!(r && r.save_available);
+    const allowed = serverAllows && state.chartAvailable;
     [els.modeEntry, els.modeExit, els.entryTime, els.entryPrice, els.exitTime, els.exitPrice, els.note].forEach(function (el) {
       el.disabled = !allowed;
     });
     if (!allowed) {
       els.save.disabled = true;
+      if (serverAllows && !state.saving) setText(els.formMessage, "Saving is unavailable while the chart is unavailable.");
       return;
     }
     const msgs = validateForm();
@@ -417,18 +458,20 @@
     setText(els.eligibility, r.save_available ? "Saving is available. Each save adds a new frozen record; the newest is current." :
       "Saving is unavailable: " + (r.reason || "the server refused this position."));
     els.eligibility.classList.toggle("refused", !r.save_available);
-    renderChart();
+    state.candlesByTime = new Map((r.candles || []).map(function (c) { return [c.time, c]; }));
     renderActual();
     renderFills();
     renderAnnotations();
     fillTimeSelect(els.entryTime);
     fillTimeSelect(els.exitTime);
+    setText(els.legend, legendText(r));
+    renderChartContained();
     onFormChange();
   }
 
   async function save(event) {
     event.preventDefault();
-    if (state.saving || !(state.review && state.review.save_available)) return;
+    if (state.saving || !(state.review && state.review.save_available) || !state.chartAvailable) return;
     const msgs = validateForm();
     if (msgs.length) {
       setText(els.formMessage, msgs.join(" "));

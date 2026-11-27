@@ -1,0 +1,705 @@
+{
+  "execution_spec": null,
+  "native": [
+    {
+      "candle_first": "2026-07-29T04:00:00Z",
+      "candle_last": "2026-11-09T23:30:00Z",
+      "coin": "BTC",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "30m",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    },
+    {
+      "candle_first": "2026-04-16T00:00:00Z",
+      "candle_last": "2026-11-09T23:00:00Z",
+      "coin": "BTC",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "1h",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    },
+    {
+      "candle_first": "2026-07-29T04:00:00Z",
+      "candle_last": "2026-11-09T23:30:00Z",
+      "coin": "ETH",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "30m",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    },
+    {
+      "candle_first": "2026-04-16T00:00:00Z",
+      "candle_last": "2026-11-09T23:00:00Z",
+      "coin": "ETH",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "1h",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    },
+    {
+      "candle_first": "2026-07-29T04:30:00Z",
+      "candle_last": "2026-11-09T23:30:00Z",
+      "coin": "SOL",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "30m",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    },
+    {
+      "candle_first": "2026-04-16T01:00:00Z",
+      "candle_last": "2026-11-09T23:00:00Z",
+      "coin": "SOL",
+      "covers_judgment": false,
+      "funding_first": "2026-01-01T00:00:00Z",
+      "funding_last": "2026-11-09T23:00:00Z",
+      "timeframe": "1h",
+      "uncovered_windows": [
+        "judge_2023",
+        "judge_2025a",
+        "judge_is",
+        "judge_oos"
+      ]
+    }
+  ],
+  "native_covers_judgment": false,
+  "protocol_sha256": "a28e98acc455405dbbd33c4592e6f7c7c0a0a97d205e74a2c50b14172abbfc9e",
+  "windows": {
+    "continuous": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      }
+    ],
+    "judge_2023": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-07-27 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-07-17 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-05-15 16:00:00"
+      }
+    ],
+    "judge_2025a": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2024-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2024-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2024-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2024-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2024-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2024-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2024-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2024-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2024-10-09 16:00:00"
+      }
+    ],
+    "judge_is": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-05-30 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-05-20 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-03-18 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-05-30 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-05-20 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-03-18 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-05-30 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-05-20 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-03-18 16:00:00"
+      }
+    ],
+    "judge_oos": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2025-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2025-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2025-10-09 16:00:00"
+      }
+    ],
+    "train": [
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "BTC",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "ETH",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-10-09 16:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:30:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "30m",
+        "warmup_start": "2023-12-21 14:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T23:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "1h",
+        "warmup_start": "2023-12-11 04:00:00"
+      },
+      {
+        "candle_first": "2022-08-01T00:00:00Z",
+        "candle_last": "2026-11-09T20:00:00Z",
+        "candles_cover": true,
+        "coin": "SOL",
+        "funding_cover": true,
+        "funding_first": "2023-05-12T00:00:00Z",
+        "funding_last": "2026-11-09T23:00:00Z",
+        "timeframe": "4h",
+        "warmup_start": "2023-10-09 16:00:00"
+      }
+    ]
+  }
+}

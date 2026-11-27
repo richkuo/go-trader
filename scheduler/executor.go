@@ -328,18 +328,30 @@ func processEnvironment(overrides map[string]string) []string {
 }
 
 func runPythonReadOnly(script string, args []string) ([]byte, []byte, error) {
+	if err := venueReadOnlyLaunchRefusal(script, args); err != nil {
+		return nil, nil, err
+	}
 	return runPython(shutdownReadOnlyCtx, script, args, nil)
 }
 
 func runPythonReadOnlyWithStdin(script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	if err := venueReadOnlyLaunchRefusal(script, args); err != nil {
+		return nil, nil, err
+	}
 	return runPython(shutdownReadOnlyCtx, script, args, stdinData)
 }
 
 func runPythonReadOnlyPriority(prio pythonChildPriority, script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	if err := venueReadOnlyLaunchRefusal(script, args); err != nil {
+		return nil, nil, err
+	}
 	return runPython(withPythonChildPriority(shutdownReadOnlyCtx, prio), script, args, stdinData)
 }
 
 func runPythonSideEffect(script string, args []string) ([]byte, []byte, error) {
+	if err := venueSideEffectLaunchRefusal(script, args); err != nil {
+		return nil, nil, err
+	}
 	sideEffectWG.Add(1)
 	defer sideEffectWG.Done()
 	return runPython(shutdownSideEffectCtx, script, args, nil)
@@ -496,9 +508,15 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 	return args
 }
 
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+func RunHyperliquidExecute(auth hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	if err := auth.check(hlWriteExecute, symbol, 0); err != nil {
+		return nil, "", err
+	}
 	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeMode, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
@@ -506,7 +524,10 @@ func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float6
 
 var runHyperliquidExecuteFn = RunHyperliquidExecute
 
-func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+func RunHyperliquidUpdateStopLoss(auth hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+	if err := auth.check(hlWriteStop, symbol, 0); err != nil {
+		return nil, "", err
+	}
 	args := []string{
 		"--update-stop-loss",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -519,6 +540,9 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
 	}
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	res, stderrStr, parseErr := parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
 	if hlStopUpdateMovesChain(res) {
@@ -662,9 +686,15 @@ func buildHyperliquidSyncProtectionArgv(plan hlProtectionPlan, reconcileFillHint
 	return args
 }
 
-func RunHyperliquidSyncProtection(script string, plan hlProtectionPlan, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
+func RunHyperliquidSyncProtection(auth hlWriteAuth, script string, plan hlProtectionPlan, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	if err := auth.check(hlWriteProtection, plan.Symbol, 0); err != nil {
+		return nil, "", err
+	}
 	args := buildHyperliquidSyncProtectionArgv(plan, reconcileFillHintsJSON)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	stderrStr := string(stderr)
 	var result HyperliquidProtectionSyncResult
@@ -835,6 +865,8 @@ type HyperliquidCloseResult struct {
 	CancelStopLossSucceededOIDs []int64           `json:"cancel_stop_loss_succeeded_oids,omitempty"`
 	CancelStopLossFailedOIDs    []int64           `json:"cancel_stop_loss_failed_oids,omitempty"`
 	OrderOutcome                string            `json:"order_outcome,omitempty"`
+
+	CancelStopLossUnacknowledgedOIDs []int64 `json:"cancel_stop_loss_unacknowledged_oids,omitempty"`
 }
 
 type hlSizedCloseRequest struct {
@@ -845,6 +877,7 @@ type hlSizedCloseRequest struct {
 	CancelOIDs    []int64
 	CancelMinFill float64
 	ClientOrderID string
+	Auth          hlWriteAuth
 }
 
 var hlClientOrderIDPattern = regexp.MustCompile(`^0x[0-9a-f]{32}$`)
@@ -917,7 +950,13 @@ func RunHyperliquidSizedClose(script string, req hlSizedCloseRequest) (*Hyperliq
 	if msg := hlSizedCloseRequestError(req); msg != "" {
 		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: req.Symbol}, Platform: "hyperliquid", Error: msg, OrderOutcome: "not_sent"}, "", fmt.Errorf("%s", msg)
 	}
+	if err := req.Auth.check(hlWriteClose, req.Symbol, 0); err != nil {
+		return hlCloseNotSentResult(req.Symbol, err), "", err
+	}
 	stdout, stderr, runErr := runPythonSideEffect(script, buildHyperliquidSizedCloseArgs(req))
+	if isVenueWriteRefused(runErr) {
+		return hlCloseNotSentResult(req.Symbol, runErr), "", runErr
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(req.Symbol)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
@@ -975,17 +1014,27 @@ func classifyHLSizedClose(res *HyperliquidCloseResult, err error) hlSizedCloseOu
 	return hlSizedCloseOutcome{Detail: detail}
 }
 
-func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
-	return runHyperliquidClose(script, symbol, partialSz, cancelStopLossOIDs, false)
+func RunHyperliquidClose(auth hlWriteAuth, script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
+	return runHyperliquidClose(auth, script, symbol, partialSz, cancelStopLossOIDs, false)
 }
 
-func RunHyperliquidCloseCancelAfterFill(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
-	return runHyperliquidClose(script, symbol, partialSz, cancelStopLossOIDs, true)
+func RunHyperliquidCloseCancelAfterFill(auth hlWriteAuth, script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
+	return runHyperliquidClose(auth, script, symbol, partialSz, cancelStopLossOIDs, true)
 }
 
-func runHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64, cancelProtectionAfterClose bool) (*HyperliquidCloseResult, string, error) {
+func hlCloseNotSentResult(symbol string, err error) *HyperliquidCloseResult {
+	return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: symbol}, Platform: "hyperliquid", Error: err.Error(), OrderOutcome: "not_sent"}
+}
+
+func runHyperliquidClose(auth hlWriteAuth, script, symbol string, partialSz *float64, cancelStopLossOIDs []int64, cancelProtectionAfterClose bool) (*HyperliquidCloseResult, string, error) {
+	if err := auth.check(hlWriteClose, symbol, 0); err != nil {
+		return hlCloseNotSentResult(symbol, err), "", err
+	}
 	args := buildHyperliquidCloseArgs(symbol, partialSz, cancelStopLossOIDs, cancelProtectionAfterClose)
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(runErr) {
+		return hlCloseNotSentResult(symbol, runErr), "", runErr
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
@@ -1103,6 +1152,9 @@ func RunTopStepExecute(script, symbol, side string, contracts int) (*TopStepExec
 		"--mode=live",
 	}
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	stderrStr := string(stderr)
 	if err != nil {
 		var result TopStepExecuteResult
@@ -1143,6 +1195,9 @@ func RunTopStepClose(script, symbol string) (*TopStepCloseResult, string, error)
 		"--mode=live",
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	return parseTopStepCloseOutput(stdout, string(stderr), runErr)
 }
 
@@ -1535,6 +1590,9 @@ func robinhoodOrderBudgetMs() int64 {
 }
 
 func runPythonSideEffectWithTimeout(script string, args []string, timeout time.Duration) ([]byte, []byte, error) {
+	if err := venueSideEffectLaunchRefusal(script, args); err != nil {
+		return nil, nil, err
+	}
 	sideEffectWG.Add(1)
 	defer sideEffectWG.Done()
 	return runPythonWithTimeout(shutdownSideEffectCtx, script, args, nil, timeout)
@@ -1584,6 +1642,9 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 		args = append(args, "--expected-account-id="+sell.ExpectedAccountID)
 	}
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
 }
 
@@ -1631,6 +1692,9 @@ func robinhoodResolveArgs(req RobinhoodResolveRequest) []string {
 
 func RunRobinhoodResolveOrder(script string, req RobinhoodResolveRequest) (*RobinhoodExecuteResult, string, error) {
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, robinhoodResolveArgs(req), robinhoodOrderScriptTimeout)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
 }
 
@@ -1648,6 +1712,7 @@ type OKXResult struct {
 	Error           string                 `json:"error,omitempty"`
 	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
 	CloseReduceOnly bool                   `json:"-"`
+	PaperOpenQty    float64                `json:"-"`
 	OrderSubmitted  bool                   `json:"-"`
 }
 
@@ -1734,6 +1799,9 @@ func buildOKXExecuteArgs(symbol, side string, size float64, instType string, opt
 func RunOKXExecuteWithOptions(script, symbol, side string, size float64, instType string, opts okxExecuteOptions) (*OKXExecuteResult, string, error) {
 	args := buildOKXExecuteArgs(symbol, side, size, instType, opts)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	stderrStr := string(stderr)
 	if err != nil {
 		var result OKXExecuteResult
@@ -1779,6 +1847,9 @@ func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, st
 		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	return parseOKXCloseOutput(stdout, string(stderr), runErr)
 }
 
@@ -1849,6 +1920,113 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 	default:
 		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
 	}
+}
+
+const (
+	okxStrictPositionsContract   = "okx_swap_positions_strict_v1"
+	okxStrictPositionReadTimeout = 30 * time.Second
+	okxStrictPositionMaxStdout   = 4 << 20
+	okxStrictPositionMaxStderr   = 1 << 20
+)
+
+func RunOKXFetchPositionsStrict(ctx context.Context, script string) (okxStrictPositionSnapshot, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopShutdown := context.AfterFunc(shutdownReadOnlyCtx, cancel)
+	defer stopShutdown()
+	pythonSemaphore <- struct{}{}
+	stdout, stderr, runErr := spawnPythonProcessWithEnvLimited(runCtx, script, []string{"--strict"}, nil, okxStrictPositionReadTimeout, nil,
+		pythonOutputLimits{Stdout: okxStrictPositionMaxStdout, Stderr: okxStrictPositionMaxStderr})
+	<-pythonSemaphore
+	snap, err := parseOKXStrictPositionsOutput(stdout, runErr)
+	return snap, string(stderr), err
+}
+
+func parseOKXStrictPositionsOutput(stdout []byte, runErr error) (okxStrictPositionSnapshot, error) {
+	var env struct {
+		Contract  string          `json:"contract"`
+		Account   string          `json:"account"`
+		Positions json.RawMessage `json:"positions"`
+		Error     string          `json:"error"`
+	}
+	parseErr := json.Unmarshal(stdout, &env)
+	switch {
+	case parseErr == nil && env.Error != "":
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions read failed: %s", env.Error)
+	case runErr != nil:
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions subprocess failed: %v", runErr)
+	case parseErr != nil:
+		return okxStrictPositionSnapshot{}, fmt.Errorf("parse strict positions output: %v (stdout: %s)", parseErr, string(stdout))
+	}
+	if env.Contract != okxStrictPositionsContract {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has contract %q, want %q (an older script cannot prove flat)", env.Contract, okxStrictPositionsContract)
+	}
+	if strings.TrimSpace(env.Account) == "" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output names no account")
+	}
+	if len(env.Positions) == 0 || strings.TrimSpace(string(env.Positions)) == "null" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has no positions list")
+	}
+	var raws []json.RawMessage
+	if err := json.Unmarshal(env.Positions, &raws); err != nil {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output positions is not a list: %w", err)
+	}
+	snap := okxStrictPositionSnapshot{Account: env.Account, Rows: make([]okxStrictPositionRow, 0, len(raws))}
+	seen := map[string]bool{}
+	for i, raw := range raws {
+		var row struct {
+			InstID     *string `json:"inst_id"`
+			InstType   *string `json:"inst_type"`
+			PosSide    *string `json:"pos_side"`
+			MarginMode *string `json:"margin_mode"`
+			Pos        *string `json:"pos"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d is malformed: %w", i, err)
+		}
+		if row.InstID == nil || row.InstType == nil || row.PosSide == nil || row.MarginMode == nil || row.Pos == nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d is missing a required field", i)
+		}
+		if *row.InstType != "SWAP" {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d has instrument type %q, want SWAP", i, *row.InstType)
+		}
+		coin, _, ok := strings.Cut(*row.InstID, "-")
+		if !ok || coin == "" || !strings.HasSuffix(*row.InstID, "-SWAP") {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d has instrument %q, which is not a swap instrument", i, *row.InstID)
+		}
+		switch *row.PosSide {
+		case "long", "short", "net":
+		default:
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) has position side %q", i, *row.InstID, *row.PosSide)
+		}
+		switch *row.MarginMode {
+		case "cross", "isolated":
+		default:
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) has margin mode %q", i, *row.InstID, *row.MarginMode)
+		}
+		contracts, err := parseStrictVenueSize(*row.Pos)
+		if err != nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) pos: %w", i, *row.InstID, err)
+		}
+		switch *row.PosSide {
+		case "long":
+			contracts = math.Abs(contracts)
+		case "short":
+			contracts = -math.Abs(contracts)
+		}
+		key := *row.InstID + "|" + *row.PosSide + "|" + *row.MarginMode
+		if seen[key] {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has more than one %s %s %s row", *row.InstID, *row.PosSide, *row.MarginMode)
+		}
+		seen[key] = true
+		snap.Rows = append(snap.Rows, okxStrictPositionRow{
+			InstID: *row.InstID, Coin: coin, PosSide: *row.PosSide, MarginMode: *row.MarginMode, Contracts: contracts,
+		})
+	}
+	return snap, nil
 }
 
 type OKXBalanceResult struct {
@@ -1975,6 +2153,9 @@ func RunRobinhoodClose(script, symbol, refID string, quantity float64, expectedA
 	}
 	args = append(args, "--expected-account-id="+expectedAccountID)
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	result, stderrStr, err := parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
 	if result != nil {
 		result.RunErr = runErr

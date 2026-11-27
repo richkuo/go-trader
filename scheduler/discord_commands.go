@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -303,6 +302,10 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 				prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
 				prs.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
 		}
+		if !prs.KillSwitchActive && prs.PeakRebaselinePending {
+			sb.WriteString(fmt.Sprintf("Portfolio peak rebaseline WAITING [%s]: peak $%.2f is kept after the kill switch reset until the first eligible equity reading, which becomes the new peak\n",
+				label, prs.PeakValue))
+		}
 	}
 	if len(lines) == 0 {
 		if sb.Len() == 0 {
@@ -529,65 +532,24 @@ func slashCommands() []*discordgo.ApplicationCommand {
 	return cmds
 }
 
-func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
-	if d == nil || d.transport == nil {
-		return fmt.Errorf("discord session not initialized")
+func (d *DiscordNotifier) bindSlashCommandContext(ss *StatusServer, cfg *Config) {
+	if d == nil {
+		return
 	}
 	d.ss = ss
 	d.cfg = cfg
-	if d.broker != nil {
-		d.broker.setInteractionHandler(func(i *discordgo.InteractionCreate) { d.interactionCreate(d.transport, i) })
-	}
-	appID := d.selfUserID()
-	for start := time.Now(); appID == "" && d.broker != nil && time.Since(start) < slashIdentityWait; {
-		time.Sleep(time.Second)
-		appID = d.selfUserID()
-	}
-	if appID == "" {
-		if d.broker != nil {
-			go d.registerSlashCommandsWhenReady()
-			return errSlashCommandsDeferred
-		}
-		return fmt.Errorf("discord gateway not ready (no application identity)")
-	}
-	if d.broker == nil {
-		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
-	}
-	err := d.syncSlashCommands(appID)
-	d.startSlashCommandResync(appID, err)
-	return err
 }
 
-var errSlashCommandsDeferred = errors.New("the notification broker has no Discord identity yet; the command handler is installed and registration retries in the background")
-
-const slashRegisterMaxDelay = time.Minute
-
-var (
-	slashIdentityWait       = 30 * time.Second
-	slashRegisterFirstRetry = 5 * time.Second
-)
-
-func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
-	delay := slashRegisterFirstRetry
-	for {
-		select {
-		case <-shutdownReadOnlyCtx.Done():
-			return
-		case <-time.After(delay):
-		}
-		if appID := d.selfUserID(); appID != "" {
-			err := d.syncSlashCommands(appID)
-			if err == nil {
-				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
-			} else {
-				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (the slash command re-sync retries it)\n", err)
-			}
-			d.startSlashCommandResync(appID, err)
-			return
-		}
-		if delay < slashRegisterMaxDelay {
-			delay = min(delay*2, slashRegisterMaxDelay)
-		}
+func (d *DiscordNotifier) installSlashCommandHandler() {
+	if d == nil {
+		return
+	}
+	if d.broker != nil {
+		d.broker.setInteractionHandler(func(i *discordgo.InteractionCreate) { d.interactionCreate(d.transport, i) })
+		return
+	}
+	if d.session != nil {
+		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
 }
 

@@ -404,21 +404,9 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
             driver = _driver(case_dir, f"""
                 import subprocess
                 import requests
-                sys.path.insert(0, os.path.join(REPO, "platforms", "deribit"))
-                import utils as deribit_utils
-                attempt("deribit", lambda: deribit_utils.fetch_available_expiries("BTC"))
                 attempt("module_get", lambda: requests.get("https://api.coinbase.com/v2/time", timeout=20))
                 attempt("session_get", lambda: requests.Session().get("https://api.gemini.com/v1/symbols", timeout=20))
-                os.environ.update({{"TOPSTEP_API_KEY": "k", "TOPSTEP_API_SECRET": "s", "TOPSTEP_ACCOUNT_ID": "1"}})
-                sys.path.insert(0, os.path.join(REPO, "platforms", "topstep"))
-                del sys.modules["utils"]
                 import importlib.util
-                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-                topstep = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(topstep)
-                live = topstep.TopStepExchangeAdapter(mode="live")
-                RESULTS["topstep_session"] = session_state(live._session)
-                attempt("topstep", live.get_open_positions_raise)
                 os.environ["ANTHROPIC_API_KEY"] = "test-key"
                 spec = importlib.util.spec_from_file_location("llm_review_driver", os.path.join(REPO, "shared_scripts", "llm_review.py"))
                 review = importlib.util.module_from_spec(spec)
@@ -430,16 +418,13 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
             result = _run(driver, _contract_env(case_dir, raw))
             _assert_no_sentinel(result)
             results = _results(result)
-            assert results["deribit"] == {"ok": True, "value": []}
-            for label in ("module_get", "session_get", "topstep", "advisory"):
+            for label in ("module_get", "session_get", "advisory"):
                 assert results[label]["ok"] is False, results
-            assert results["topstep_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
             assert results["child"][0] == 0
-            for host in ("www.deribit.com", "api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
-                         "api.hyperliquid-testnet.xyz"):
+            for host in ("api.coinbase.com", "api.gemini.com", "api.anthropic.com", "api.hyperliquid-testnet.xyz"):
                 _assert_routed(proxy, kind, host)
             outcome = _outcome(result)
-            assert outcome["requests"] >= 5
+            assert outcome["requests"] >= 3
             assert outcome["proxy_failures"] == outcome["requests"]
 
 
@@ -525,11 +510,8 @@ def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
             case_dir.mkdir()
             proxy, raw = _start_proxy(servers, kind)
             driver = _driver(case_dir, """
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-                topstep = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(topstep)
-                RESULTS["price"] = topstep.TopStepExchangeAdapter(mode="paper")._get_yahoo_price("ES")
+                import yfinance as yf
+                attempt("history", lambda: yf.Ticker("ES=F").history(period="1d", interval="1h"))
                 from yfinance.config import YfConfig
                 RESULTS["yf_proxy"] = mark(YfConfig.network.proxy)
                 from curl_cffi import requests as curl_requests
@@ -538,7 +520,7 @@ def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
             result = _run(driver, _contract_env(case_dir, raw))
             _assert_no_sentinel(result)
             results = _results(result)
-            assert results["price"] == 0.0
+            assert results["history"]["ok"] is False
             assert results["yf_proxy"] == "policy-url"
             assert results["native_curl"]["ok"] is False
             yahoo = [e for e in proxy.recorder.snapshot() if e["kind"] == "connect" and e["target"].endswith("yahoo.com:443")]
@@ -741,12 +723,50 @@ def test_inactive_mode_sets_no_proxies(tmp_path):
         assert results["env"] == [None, None, None, None]
 
 
-ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "topstep", "yfinance", "requests", "deribit", "advisory"]
+ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "yfinance", "requests", "advisory"]
+CHECK_TRACE_PREFIX = "EGRESS_CHECK_TRACE "
+CHECK_WRAPPER = textwrap.dedent(f"""
+    import json
+    import sys
+    sys.path.insert(0, {str(REPO_ROOT / "shared_tools")!r})
+    import egress_bootstrap
+    constructed = []
+    original_ccxt_check = egress_bootstrap._CHECKS["ccxt"]
+
+    def ccxt_check_without_okx():
+        import ccxt
+        from ccxt.base import exchange as base_exchange
+        pinned_init = base_exchange.Exchange.__init__
+
+        def recording_init(self, *args, **kwargs):
+            pinned_init(self, *args, **kwargs)
+            constructed.append(self.id)
+
+        base_exchange.Exchange.__init__ = recording_init
+        ccxt.okx = ccxt.kraken
+        try:
+            original_ccxt_check()
+        finally:
+            base_exchange.Exchange.__init__ = pinned_init
+
+    egress_bootstrap._CHECKS["ccxt"] = ccxt_check_without_okx
+    sys.argv = [{str(BOOTSTRAP)!r}, *sys.argv[1:]]
+    rc = egress_bootstrap.main()
+    venue_modules = sorted(m for m in sys.modules if m.startswith("_egress_check_deribit") or m.startswith("platforms.deribit"))
+    sys.stderr.write({CHECK_TRACE_PREFIX!r} + json.dumps({{"ccxt": constructed, "venue_modules": venue_modules}}) + "\\n")
+    sys.exit(rc)
+""")
 
 
 def _check(env, *families):
-    return subprocess.run([PYTHON, str(BOOTSTRAP), "--check-policy", *families], cwd=str(REPO_ROOT), env=env,
+    return subprocess.run([PYTHON, "-c", CHECK_WRAPPER, "--check-policy", *families], cwd=str(REPO_ROOT), env=env,
                           capture_output=True, text=True, timeout=240)
+
+
+def _check_trace(result):
+    lines = [line for line in result.stderr.splitlines() if line.startswith(CHECK_TRACE_PREFIX)]
+    assert len(lines) == 1, result.stderr[-4000:]
+    return json.loads(lines[0][len(CHECK_TRACE_PREFIX):])
 
 
 def test_check_policy_passes_for_every_family(tmp_path, subtests):
@@ -759,6 +779,7 @@ def test_check_policy_passes_for_every_family(tmp_path, subtests):
             _assert_no_sentinel(result)
             assert result.returncode == 0, result.stdout + result.stderr[-4000:]
             assert result.stdout.strip().splitlines() == [json.dumps({"ok": True, "families": ALL_FAMILIES})]
+            assert _check_trace(result) == {"ccxt": ["binanceus", "kraken"], "venue_modules": []}
 
 
 def test_check_policy_failures(tmp_path):

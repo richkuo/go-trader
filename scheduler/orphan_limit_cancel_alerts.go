@@ -35,7 +35,7 @@ func orphanLimitCancelSeverity(state orphanLimitCancelState) int {
 		return 3
 	case orphanLimitStateResting:
 		return 2
-	case orphanLimitStateUnknown:
+	case orphanLimitStateUnknown, orphanLimitStateUnscripted:
 		return 1
 	default:
 		return 0
@@ -100,6 +100,8 @@ func orphanLimitCancelHeadline(state orphanLimitCancelState) string {
 		return "limit order is off-book but its queue row could not be cleared"
 	case orphanLimitStateResting:
 		return "resting limit order NOT cancelled"
+	case orphanLimitStateUnscripted:
+		return "limit order cannot be read or cancelled from this config"
 	default:
 		return "resting limit order not confirmed cancelled"
 	}
@@ -109,7 +111,17 @@ func orphanLimitCancelRetryNote(state orphanLimitCancelState) string {
 	if state == orphanLimitStateOffBookUnadoptedFill {
 		return "no automatic retry can change this — restore the strategy, or flatten on the exchange and clear the queue row with manual-clear-limit-row"
 	}
+	if state == orphanLimitStateUnscripted {
+		return "no automatic retry can change this in this config — cancel it on the exchange and clear the queue row with manual-clear-limit-row, or add a live Hyperliquid strategy with a script"
+	}
 	return "the reconciler will retry next cycle"
+}
+
+func orphanLimitCancelOutcomeRetryNote(outcome orphanLimitCancelOutcome) string {
+	if outcome.Proof.Unbookable != "" {
+		return "no automatic retry can change this — reconcile the book with the exchange by hand and clear the queue row with manual-clear-limit-row"
+	}
+	return orphanLimitCancelRetryNote(outcome.State)
 }
 
 func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphanLimitCancelOutcome) string {
@@ -127,20 +139,38 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler refuses to book a fill the account no longer holds, so the position stays untracked and this alert keeps repeating.")
 	case orphanLimitStateOffBookRowStuck:
 		fmt.Fprintf(&b, "⚠️ **Limit order queue row not cleared: %s**\n", killSwitchLimitOrderLabel(o))
-		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)
+		if limitProofWatermarkUnproven(o, outcome.Proof) {
+			fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so there is nothing left to cancel: %s.\n", outcome.Reason)
+		} else {
+			fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)
+		}
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, so the cancel-only lane owns the row\n", o.StrategyID, block)
-		b.WriteString("• This is a scheduler bookkeeping failure, and it is not exposure on the exchange\n")
-		b.WriteString("The reconciler retries every cycle and clears the row once the write succeeds.")
+		if outcome.Proof.Unbookable != "" {
+			fmt.Fprintf(&b, "• The scheduler keeps the row for review and never deletes it by itself: %s\n", outcome.Proof.Unbookable)
+			fmt.Fprintf(&b, "• Until the row is cleared, no limit fill on %s is booked\n", o.Symbol)
+			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof), "\n"))
+		} else {
+			b.WriteString("• This is a scheduler bookkeeping failure, and it is not exposure on the exchange\n")
+			b.WriteString("The reconciler retries every cycle and clears the row once the write succeeds.")
+		}
+	case orphanLimitStateUnscripted:
+		fmt.Fprintf(&b, "CRITICAL **Limit order needs an operator: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "%s %.6f %s @ $%.4f (oid=%d) is due for cancellation and the scheduler cannot read or cancel it: %s.\n",
+			o.Side, o.OrderSize, o.Symbol, o.LimitPrice, o.OrderOID, outcome.Reason)
+		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, and only a live Hyperliquid strategy's script can run the cancel-only lane\n", o.StrategyID, block)
+		b.WriteString("• The order MAY still be resting on Hyperliquid and can still fill, which opens real exposure that no book tracks\n")
+		fmt.Fprintf(&b, "Cancel oid=%d on the Hyperliquid UI and close any position it opened, then run `go-trader manual-clear-limit-row %d --flattened`. As an alternative, add a live Hyperliquid strategy with a script to this config so the scheduler reads and cancels the order.",
+			o.OrderOID, o.OrderOID)
 	case orphanLimitStateResting:
 		fmt.Fprintf(&b, "🚨 **Resting limit order NOT cancelled: %s**\n", killSwitchLimitOrderLabel(o))
-		fmt.Fprintf(&b, "%s %.6f %s @ $%.4f (oid=%d) was marked for cancellation and IS STILL RESTING on Hyperliquid: %s.\n",
+		fmt.Fprintf(&b, "%s %.6f %s @ $%.4f (oid=%d) is due for cancellation and IS STILL RESTING on Hyperliquid: %s.\n",
 			o.Side, o.OrderSize, o.Symbol, o.LimitPrice, o.OrderOID, outcome.Reason)
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, so only the cancel-only lane can clear it\n", o.StrategyID, block)
 		b.WriteString("• The order can still fill, putting exposure back on the exchange after an emergency stop\n")
 		fmt.Fprintf(&b, "Cancel oid=%d on the Hyperliquid UI, or restore the strategy to this config as a Hyperliquid-live type=manual strategy so the scheduler resolves it.", o.OrderOID)
 	default:
 		fmt.Fprintf(&b, "🚨 **Resting limit order NOT confirmed cancelled: %s**\n", killSwitchLimitOrderLabel(o))
-		fmt.Fprintf(&b, "%s %.6f %s @ $%.4f (oid=%d) was marked for cancellation and the scheduler could not read its on-chain state: %s.\n",
+		fmt.Fprintf(&b, "%s %.6f %s @ $%.4f (oid=%d) is due for cancellation and the scheduler could not read its on-chain state: %s.\n",
 			o.Side, o.OrderSize, o.Symbol, o.LimitPrice, o.OrderOID, outcome.Reason)
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, so only the cancel-only lane can clear it\n", o.StrategyID, block)
 		b.WriteString("• The order MAY still be resting on Hyperliquid and can still fill, putting exposure back on the exchange after an emergency stop\n")
@@ -149,14 +179,19 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 	return b.String()
 }
 
-func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block string, outcome orphanLimitCancelOutcome, now time.Time) string {
+func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block string, outcome orphanLimitCancelOutcome, now time.Time, markerNew bool) string {
 	fmt.Printf("[CRITICAL] limit: %s %s: %s (its strategy cannot adopt it because %s) — %s\n",
 		orphanLimitCancelHeadline(outcome.State), killSwitchLimitOrderLabel(o), outcome.Reason, block,
-		orphanLimitCancelRetryNote(outcome.State))
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), outcome.State, now) {
+		orphanLimitCancelOutcomeRetryNote(outcome))
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), outcome.State, now) && !markerNew {
 		return ""
 	}
 	msg := formatOrphanLimitCancelDM(o, block, outcome)
+	if markerNew && outcome.Proof.Unbookable != "" {
+		msg += "\n• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator"
+	} else if markerNew && outcome.State != orphanLimitStateUnscripted {
+		msg += "\n" + strings.TrimSuffix(limitOperatorMarkerNote(o, true), "\n")
+	}
 	if notifier != nil && notifier.HasBackends() {
 		notifier.SendOwnerDM(msg)
 	}

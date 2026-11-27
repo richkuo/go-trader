@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
     <title>go-trader dashboard</title>
     <script>
       (function () {
@@ -77,6 +78,20 @@
             </select>
           </div>
         </header>
+
+        <form id="auth-panel" class="auth-panel" hidden>
+          <label>
+            <span>Status token</span>
+            <input id="auth-token" type="password" autocomplete="current-password" placeholder="Status token">
+          </label>
+          <p id="auth-message" class="auth-message" role="status"></p>
+          <button type="submit">Save</button>
+        </form>
+
+        <div id="dashboard-message" class="dashboard-message" role="status" aria-live="polite" hidden>
+          <ul id="dashboard-message-list" class="dashboard-message-list"></ul>
+          <button id="dashboard-message-dismiss" type="button" class="tuner-button secondary">Dismiss</button>
+        </div>
 
         <section class="content">
           <div id="overview-panel" class="overview-panel" hidden>
@@ -196,10 +211,23 @@
           </div>
           <div id="detail-panel" class="detail-panel">
             <div class="chart-panel">
-              <div class="chart-wrap">
-                <div id="chart"></div>
-                <div id="empty-chart" class="empty-state">No candles yet</div>
+              <div class="chart-source-bar">
+                <label class="chart-source-field" for="chart-timeframe">
+                  <span>Timeframe</span>
+                  <select id="chart-timeframe" disabled></select>
+                </label>
+                <span id="chart-source" class="chart-source"></span>
+                <span id="chart-note" class="chart-note" role="status" hidden></span>
               </div>
+              <div id="chart-frame" class="chart-frame">
+                <div id="chart-toolbar" class="chart-toolbar" aria-label="Chart display" hidden></div>
+                <div class="chart-wrap">
+                  <div id="chart"></div>
+                  <div id="empty-chart" class="empty-state">No candles yet</div>
+                  <div id="chart-failure" class="chart-failure" role="alert" hidden></div>
+                </div>
+              </div>
+              <p class="chart-attribution">TradingView Lightweight Charts™ · Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a> · <a href="/dashboard/lightweight-charts.NOTICE.txt" target="_blank" rel="noopener noreferrer">Notice</a> · <a href="/dashboard/lightweight-charts.LICENSE.txt" target="_blank" rel="noopener noreferrer">License</a></p>
               <div id="trade-history" class="trade-history">
                 <h3>Trade history</h3>
                 <div class="trade-history-scroll">
@@ -226,13 +254,6 @@
                 <span id="status-dot" class="status-dot"></span>
                 <span id="status-label">Waiting</span>
               </div>
-              <form id="auth-panel" class="auth-panel" hidden>
-                <label>
-                  <span>Status token</span>
-                  <input id="auth-token" type="password" autocomplete="current-password" placeholder="Status token">
-                </label>
-                <button type="submit">Save</button>
-              </form>
               <dl id="status-grid" class="status-grid"></dl>
               <div class="positions">
                 <h3>Positions</h3>
@@ -396,6 +417,8 @@
       </form>
     </dialog>
     <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
+    <script src="/dashboard/chart.js"></script>
+    <script src="/dashboard/storage.js"></script>
     <script src="/dashboard/app.js"></script>
   </body>
 </html>

@@ -1,0 +1,121 @@
+{
+  "arms_sha256": {
+    "audit/f0.json": "7704e4fd6b0d5a6e1fcfe0026ff310c23d8fd9ddbf1f55951b8f9d1beed7323e",
+    "audit/f4.json": "7cfcf767c49ae06f746e3861b6f8637380a7fd59a7970a00cb268a505362efdb",
+    "audit/f5.json": "114f3bfa57355383b3ff5d80b2ba0b6cbe226b3bd6ac3dc45be4e0d4ae751df8",
+    "audit/f6.json": "30fc34245c582152f8108722b84ef7d45216a50c1e518c860c8537ba19af3da0",
+    "ratchet_both/f0.json": "3d272fbabedb9fc71313971a97b0ea727a30515e8f85744190b687a963d162ce",
+    "ratchet_both/f2.json": "4d68a2ad3706325941e7dd0040cdf95c62850b776fd20f24e29411e0f8cae219",
+    "ratchet_both/f3.json": "cf1f217b912a5c4d10d3bc12992ed6843385d5152cfe8ed1ef8916b43005e0d9",
+    "ratchet_both/f4.json": "69fa43a6c7747015b609f1a7cf1177796e72f4a45f4fa5702c18bce8b4aee9e0",
+    "ratchet_both/f5.json": "b71f01d8eb58b306b23b9b23943f4e6dacfd5398f60971e91625caa1e90aa699",
+    "ratchet_both/f6.json": "ae32bb6c94d92da42024a50c0d651ffdbabd7f7b4f8a042f21ae5f20c6a610ab",
+    "ratchet_long/f0.json": "66c28be2907207fa3d1ff0ce59bcef6a002b4e2e79701b9b7a6a81933af42b38",
+    "ratchet_long/f2.json": "acab5fb47df39c78daf7cfa37baec56ad7466c4173caebc93dc2180ae8e33df7",
+    "ratchet_long/f3.json": "29e8960d8b4715aa9b7fb219a2f660930435577e2b37b74440995c56fdf1ff07",
+    "ratchet_long/f4.json": "c8f3f84de48b919c47bb8dbc597e3eda00d526bbbd4888e002228f6ec3580a4d",
+    "ratchet_long/f5.json": "ea36981249ca8cd196d32fee89ebdc79f432c9ad4ea1acc00caa88294891ff85",
+    "ratchet_long/f6.json": "a7c994a4dd8f4f67e6ca82f3c4c4684c9b4caeb1faff66ef59e469b17e878191",
+    "ratchet_short/f0.json": "37f1fb86404eefea2786d7064cf531506c3e79a12b11d8c6602e4b5736194e13",
+    "ratchet_short/f2.json": "1f48ea8a0a8f397c1a0e9f70393483716fe85757d813f4c9384ed6e7ddf4db7b",
+    "ratchet_short/f3.json": "247e4049a4b39b432a0bc8629b964372d0162d3ae5be8b493f51103f512d8940",
+    "ratchet_short/f4.json": "2a17898ea889de9e3c306b127005c52cf6c85daad815205d0051efeae58d8d6d",
+    "ratchet_short/f5.json": "209c2837163e62d42160d5ea38db95280726cb40ee7fe5e0ba4821f7bccc0d7e",
+    "ratchet_short/f6.json": "71c506b2ec59af0e0f590e5a5a57f585910a159594d99982805054ab65aabc8a",
+    "ref_long/f0.json": "727ff8cb76a74dba7af507d9c4946cc5766fb70a28ed08d39a2609c09703d557",
+    "ref_long/f2.json": "ba0c1a4a6ffee240ce39174a1cfdc975bdea591df2408edc479c7c7cbc4d920b",
+    "ref_long/f3.json": "75f57e03dedd403e28029163b9b8ca30aed4712bb6b8d1e6b110fc63cc7908f8",
+    "ref_long/f4.json": "abebb3004c5e133e7d010f2e4fa6e5a755d2f4b4080d2e7b0f763e4d5ccffa6c",
+    "ref_long/f5.json": "75084e678430a7aac5d37275a65419e352e22acb6f2514848afd718fc2cea224",
+    "ref_long/f6.json": "002ebae6e09398f6c41dc156e088b8035db9d7d7249bbd5782dcd422df23c7df",
+    "ref_short/f0.json": "36d30492ce42da455a43067d92ce60f234a10ef1fabe466a39818d45683a86b3",
+    "ref_short/f2.json": "6bf6cc2450c34c7a19d2ee28e0fa2d9e1236bfba9b3b28c9172b3125f9f52a66",
+    "ref_short/f3.json": "b37e26232894792fe8270080f2f90caf14db05d2ee479b0275595be8224408fe",
+    "ref_short/f4.json": "5e57ed3158f169043c563b7e50f60d0283de8bd44708a9b03a0ae52dd81df4ef",
+    "ref_short/f5.json": "729ef81ca183221bbe3e5fd08c6c3ea9df94c4d3b570159fd54ff5299571a11b",
+    "ref_short/f6.json": "93bed7a88ac5f01616ec20b0d5815fc2ad64b44689ba1f7d3e4e72e4da14f713",
+    "resolution.json": "b6aa063aea546597d1a5153cb9f7ae7e62af1cbd64e869e82e1adfdfa35a1d03"
+  },
+  "coverage_sha256": "fc809c1d22b88dc9730f413c89ef95525032b44099afa1cdda1dfa559c1bc3fa",
+  "dependencies_sha256": {
+    "engine": {
+      "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+      "backtest/eval_windows.py": "44979406e09e40cb297fe6cd604b6f5e583c90baa0647d9fade5b4c1b032391d",
+      "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+      "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+      "backtest/registry_loader.py": "376811b19edc73f14893bf903d2651a67e0983b23e0c61b37679e859b54f3140",
+      "backtest/run_backtest.py": "40fd710f963da46374376e76bd77fb04a3372e8f8d188da56402d0ff5e208e6c",
+      "backtest/tune_live.py": "36a722b6bbfa1629a7157827cd9ecc1221dedc0af62c745f2e5e01333c7666c9",
+      "scheduler/hl_batch.go": "66fc847e116813a4abe6cd86903f1c2a84299ec2f9760e77a1ba5322ae274ecd",
+      "scheduler/regime_multi_window.go": "c64535ba82823a53c3f76ea729ca6f415c188188e5d9f95d405a4dff0f0837ea",
+      "shared_scripts/check_hyperliquid.py": "61166ef6f1cfe896952a574d1ec6044211e6b8b5b3f36982751334d1d03cf396",
+      "shared_strategies/close/regime_atr.py": "de7253b6e5634477337543894124f61e3d39154db6e4ac1a11be34cd13175c58",
+      "shared_strategies/close/registry.py": "063f13ac07fedc116733ffb34fa7cd3330ed700082433ed48785bf6db3cb405b",
+      "shared_strategies/close/trailing_tp_ratchet.py": "08e0151276fce1b7a79be21660a6d56d50ec7b852d3666389e3bfc8502d7f90f",
+      "shared_tools/atr.py": "496a4f41f1c0509795b1a96446e56f0da85099eafcc293f2a8045b16a3dd9283",
+      "shared_tools/closed_bar.py": "75d49989e9d1301d4f9d9291ef25de488b088a8b5b3f899fe8f230a78c22c339",
+      "shared_tools/data_fetcher.py": "7152b6c0aef3f0bccbdede8ac31f8d0d2c34dd67e96cd082f9e531f1f51d29a0",
+      "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+      "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae",
+      "shared_tools/storage.py": "9786b008a0dd05f33102d53164722762222b22fa2c969391e9774e0df71dd1a9",
+      "uv.lock": "fb6867f56ef8c082be69ff99857ba697991c026ac6ae553b37122b0d9b923de1"
+    },
+    "labeller": {
+      "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+      "shared_strategies/open/adx_trend.py": "9ed424ddbeec3471e0b3725ba54938bc38e88689e6b70da41d87f063f951bc17",
+      "shared_strategies/open/indicators_core.py": "6b2770a42821fb0b5d7499e5f19857746ef6598f4b1d70c35505d776b18a704a",
+      "shared_tools/atr.py": "496a4f41f1c0509795b1a96446e56f0da85099eafcc293f2a8045b16a3dd9283",
+      "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae"
+    },
+    "signal": {
+      "shared_strategies/open/chart_patterns.py": "b83c269c938cd9e9013a82095893a84c9a26e3675cccc62f466c1749f55986e8",
+      "shared_strategies/open/futures/strategies.py": "3cd3907e2cac5574cfe2839adec33c21db6503cc8e1d57ad6d932d1a59e0b1d7",
+      "shared_strategies/open/indicators_core.py": "6b2770a42821fb0b5d7499e5f19857746ef6598f4b1d70c35505d776b18a704a",
+      "shared_strategies/open/mtf_confluence.py": "1171dad1aa79000a88e801b8e5d0cc5743a23b7cc26ef2923404ddcfa52ad357",
+      "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+      "shared_strategies/open/spot/strategies.py": "0a40fe1abf06399588f893154e71988b0dd3f6eaddfc4660c6fe59116ea13db9",
+      "shared_tools/strategy_composition.py": "19ce28010602a34774644de566ac40529797feba4cc1f83017d58142f8e6bd56"
+    }
+  },
+  "driver_sha256": {
+    "backtest/candidates/chart_pattern_2015/render_report.py": "9ca5de9627730e1ad13a117f148b463d4769248e351839af85c4d249c4fd5726",
+    "backtest/candidates/chart_pattern_2015/run_study.py": "7ba6ac7daaeceb4cbd44f3da4a010ce21b036ba7c73cdf877064a43c59f80b31"
+  },
+  "locked_at_utc": "2026-11-14T19:37:04Z",
+  "note": "written by run_study.py lock before any selection or judged leg",
+  "protocol_sha256": "06bb9dc650fb35f2647cd54a40dcc20c24e66f8f65235b268e5b183353b291d5",
+  "replay_summary": {
+    "decomposition": {
+      "compared": 1344,
+      "passed": true
+    },
+    "finite_vs_full_frame": {
+      "compared": null,
+      "passed": null
+    },
+    "full_frame_causality": {
+      "compared": 540,
+      "passed": false
+    },
+    "future_invariance": {
+      "compared": 448,
+      "passed": true
+    },
+    "htf_visibility": {
+      "compared": 896,
+      "passed": true
+    },
+    "next_bar_fill": {
+      "compared": 174,
+      "passed": true
+    },
+    "signal_check_path": {
+      "compared": 1344,
+      "passed": true
+    }
+  },
+  "research_config_sha256": "01ee138a58bbd643fc631976c6e55b6e86002d3f3594820ea317d3bd1f4d0869",
+  "source_commit": "ab5214ca216e5923a3f8f5c104e161fca4d41033+uncommitted-changes",
+  "study_manifest_sha256": "2bba27a4871b1ccd401c8262f6d48580c9c296273c81fc4ed801758468618f8c",
+  "validation_sha256": "77e08d18eee942cea40f5a513978a59a0c40412100b1c5983498f6037c17450f"
+}

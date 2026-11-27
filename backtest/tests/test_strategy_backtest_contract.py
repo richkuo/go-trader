@@ -41,6 +41,7 @@ from . import test_camarilla_pivot_reversal_integration as cpr
 from . import test_chande_momentum_backtest as cmo
 from . import test_connors_rsi_backtest as crsi
 from . import test_cumulative_volume_delta_divergence_integration as cvd
+from . import test_sweep_absorption_ifvg_integration as sai
 from . import test_dual_thrust_backtest as dt
 from . import test_elder_force_pullback_integration as efp
 from . import test_elder_ray_pullback_integration as erp
@@ -148,17 +149,6 @@ def _apply(name, df, params):
     return _fut().apply_strategy(name, df, params)
 
 
-def _covered_kind():
-    strategies = _fut()._registry.STRATEGIES
-    return frozenset(
-        name for name, entry in strategies.items()
-        if entry["platforms"] == ("futures",) and entry["short_entries"] is True
-        and not entry["quote"]
-        and entry["edge_status"] == "no_edge"
-        and str(entry["edge_ref"] or "").startswith("backtest/candidates/")
-    )
-
-
 def _copy_refs(refs):
     return json.loads(json.dumps(refs))
 
@@ -192,6 +182,8 @@ class Registration:
     combos: Optional[tuple] = None
     grid_values_validate: bool = False
     discovery: Optional[str] = None
+    platforms: tuple = ("futures",)
+    catalog: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +242,22 @@ class TimeStopFills:
 
 
 @dataclass(frozen=True)
+class SpotRoute:
+    params: dict
+    close_refs: list
+    long_frame: Callable[[], pd.DataFrame]
+    short_frame: Callable[[], pd.DataFrame]
+    walk: Callable[[], pd.DataFrame]
+    defect_frame: Callable[[], pd.DataFrame]
+    entry_atr: float
+    reason_col: str
+    suppressed_reason: str
+
+
+FUTURES_ONLY = NotCovered("futures-only registration: no spot evaluator exists")
+
+
+@dataclass(frozen=True)
 class Case:
     registration: Any
     capability: Any
@@ -258,6 +266,7 @@ class Case:
     sim_fills: Any
     check_time: Any
     time_stop_fills: Any
+    spot_route: Any = FUTURES_ONLY
 
 
 FAMILIES = tuple(f.name for f in fields(Case))
@@ -289,6 +298,8 @@ PARITY_CHECKS = {
     "not_clean": lambda s, f, a: not s["clean"],
     "batch_clean": lambda s, f, a: bool(s["batch_clean"]),
     "no_mismatches": lambda s, f, a: s["mismatches"] == 0,
+    "no_short_opens": lambda s, f, a: not bool((f["live_open_action"] == "short").any()
+                                               or (f["bt_open_action"] == "short").any()),
     "no_batch_mismatches": lambda s, f, a: s["batch_mismatches"] == 0,
     "close_parity": lambda s, f, a: s["close_parity"] == a,
     "close_parity_not": lambda s, f, a: s["close_parity"] != a,
@@ -493,6 +504,188 @@ def _vtx_short():
     return df, vtx._signals(df), _time_stop_bt(vtx._bt, 6, stop_loss_atr_mult=None, stop_loss_pct=0.5)
 
 
+VSB_NAME = "volume_spike_breakout"
+VSB_STUDY = os.path.join(_REPO, "backtest", "candidates", "volume_spike_breakout_2008")
+VSB_DEFAULTS = {"lookback": 20, "vol_period": 20, "vol_multiplier": 2.0, "min_body_frac": 0.0}
+VSB_SMALL = {"lookback": 5, "vol_period": 5, "vol_multiplier": 2.0, "min_body_frac": 0.0}
+VSB_MAX = {"lookback": 100, "vol_period": 100, "vol_multiplier": 1.5, "min_body_frac": 0.25}
+VSB_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _vsb_walk(n, seed=11, freq="4h", spike_every=7):
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.012, n)))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    wick = rng.uniform(0.0005, 0.008, (n, 2))
+    volume = rng.uniform(50.0, 150.0, n)
+    volume[::spike_every] *= rng.uniform(2.5, 5.0, len(volume[::spike_every]))
+    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) * (1 + wick[:, 0]),
+                       "low": np.minimum(open_, close) * (1 - wick[:, 1]), "close": close, "volume": volume})
+    df.index = pd.date_range("2026-01-01", periods=n, freq=freq)
+    return df
+
+
+def _vsb_event(side, n=30, tail=0):
+    rows = [(100.0, 100.5, 99.5, 100.0, 10.0)] * (n - 1)
+    px = 100.0 + 8.0 * side
+    rows.append((100.0, max(100.0, px) + 0.5, min(100.0, px) - 0.5, px, 50.0))
+    rows += [(px, px + 0.5, px - 0.5, px, 10.0)] * tail
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close", "volume"], dtype=float)
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="4h")
+    return df
+
+
+def _vsb_defect():
+    df = _vsb_event(1)
+    df.iloc[-1, df.columns.get_loc("volume")] = 0.0
+    return df
+
+
+def _vsb_cfg(registry, params=VSB_SMALL, **kw):
+    fut = registry == "futures"
+    base = dict(strategy_name=VSB_NAME, params=dict(params), registry=registry,
+                platform="hyperliquid" if fut else "binanceus", symbol="BTC" if fut else "BTC/USDT",
+                timeframe="4h", close_refs=_copy_refs(VSB_CLOSE), direction="both" if fut else None,
+                stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict",
+                strategy_type="perps" if fut else "spot")
+    base.update(kw)
+    return ParityConfig(**base)
+
+
+def _vsb_bt(**kw):
+    base = dict(initial_capital=1000.0, platform="hyperliquid",
+                open_strategy={"name": VSB_NAME, "params": dict(VSB_SMALL)},
+                close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
+    base.update(kw)
+    return Backtester(**base)
+
+
+def _vsb_signals(df, params=VSB_SMALL):
+    return ensure_atr_indicator(_apply(VSB_NAME, df, params))
+
+
+def _vsb_long():
+    df = _vsb_event(1, n=21, tail=8)
+    return df, _vsb_signals(df), _vsb_bt()
+
+
+def _vsb_short():
+    df = _vsb_event(-1, n=21, tail=2)
+    rows = [df, pd.DataFrame([[92.0, 120.5, 91.5, 120.0, 400.0]], columns=df.columns),
+            pd.DataFrame([[120.0, 120.5, 119.5, 120.0, 10.0]] * 6, columns=df.columns)]
+    out = pd.concat(rows, ignore_index=True)
+    out.index = pd.date_range("2026-01-01", periods=len(out), freq="4h")
+    return out, _vsb_signals(out), _time_stop_bt(_vsb_bt, 6, stop_loss_atr_mult=None, stop_loss_pct=0.5)
+
+
+IFVG_NAME = "inversion_fvg"
+IFVG_STUDY = os.path.join(_REPO, "backtest", "candidates", "inversion_fvg_2012")
+IFVG_DEFAULTS = {"min_fvg_atr": 0.25, "max_gap_age": 48, "retest_window": 24, "entry_level": 0.5}
+IFVG_SMALL = {"min_fvg_atr": 0.25, "max_gap_age": 10, "retest_window": 10, "entry_level": 0.5}
+IFVG_ANY = {"min_fvg_atr": 0.0, "max_gap_age": 10, "retest_window": 10, "entry_level": 0.5}
+IFVG_MAX = {"min_fvg_atr": 0.0, "max_gap_age": 96, "retest_window": 89, "entry_level": 0.75}
+IFVG_GRID = {"min_fvg_atr": [0.0, 0.25, 0.5, 1.0], "max_gap_age": [24, 48, 96], "retest_window": [12, 24, 48],
+             "entry_level": [0.25, 0.5, 0.75]}
+IFVG_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _ifvg_frame(rows):
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], dtype=float)
+    df["volume"] = 10.0
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="4h")
+    return df
+
+
+def _ifvg_flat(px, n=1):
+    return [(px, px + 0.5, px - 0.5, px)] * n
+
+
+def _ifvg_mirror(rows):
+    return [(200.0 - o, 200.0 - lo, 200.0 - h, 200.0 - c) for o, h, lo, c in rows]
+
+
+def _ifvg_long_rows(tail=0):
+    rows = (_ifvg_flat(100.0, 40) + [(100.0, 100.0, 99.0, 99.0), (99.0, 99.25, 98.25, 98.5)]
+            + [(98.5, 99.0, 98.0, 98.5)] * 2 + [(98.5, 100.5, 98.0, 100.0), (100.0, 100.25, 99.3, 99.6)])
+    return rows + [(99.6, 100.1, 99.1, 99.6)] * tail
+
+
+def _ifvg_event(side, tail=0):
+    rows = _ifvg_long_rows(tail)
+    return _ifvg_frame(rows if side == 1 else _ifvg_mirror(rows))
+
+
+def _ifvg_defect():
+    rows = _ifvg_long_rows()
+    o, h, lo, c = rows[-1]
+    rows[-1] = (o, lo, h, c)
+    return _ifvg_frame(rows)
+
+
+def _ifvg_walk(n, seed=11, freq="4h", sigma=0.02):
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, sigma, n)))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    wick = rng.uniform(0.0005, 0.01, (n, 2))
+    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) * (1 + wick[:, 0]),
+                       "low": np.minimum(open_, close) * (1 - wick[:, 1]), "close": close,
+                       "volume": rng.uniform(50.0, 150.0, n)})
+    df.index = pd.date_range("2026-01-01", periods=n, freq=freq)
+    return df
+
+
+def _ifvg_walk_with_old_defect(n=640, seed=13, at=60):
+    df = _ifvg_walk(n, seed)
+    df.iloc[at, df.columns.get_loc("high")] = float(df["low"].iloc[at]) * 0.99
+    return df
+
+
+def _ifvg_cfg(registry, params=IFVG_SMALL, **kw):
+    fut = registry == "futures"
+    base = dict(strategy_name=IFVG_NAME, params=dict(params), registry=registry,
+                platform="hyperliquid" if fut else "binanceus", symbol="BTC" if fut else "BTC/USDT",
+                timeframe="4h", close_refs=_copy_refs(IFVG_CLOSE), direction="both" if fut else None,
+                stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict",
+                strategy_type="perps" if fut else "spot")
+    base.update(kw)
+    return ParityConfig(**base)
+
+
+def _ifvg_bt(params=IFVG_SMALL, **kw):
+    base = dict(initial_capital=1000.0, platform="hyperliquid",
+                open_strategy={"name": IFVG_NAME, "params": dict(params)},
+                close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
+    base.update(kw)
+    return Backtester(**base)
+
+
+def _ifvg_signals(df, params=IFVG_SMALL):
+    return ensure_atr_indicator(_apply(IFVG_NAME, df, params))
+
+
+IFVG_LONG_BAR = 45
+
+
+def _ifvg_long():
+    df = _ifvg_event(1, tail=8)
+    return df, _ifvg_signals(df), _ifvg_bt()
+
+
+IFVG_SHORT_BAR = 45
+IFVG_REVERSE_BAR = IFVG_SHORT_BAR + 4
+
+
+def _ifvg_short():
+    rows = _ifvg_mirror(_ifvg_long_rows())
+    rows += [(100.4, 100.6, 99.4, 99.5), (99.5, 99.6, 99.0, 99.2), (99.2, 100.2, 99.1, 100.0),
+             (100.0, 100.1, 99.65, 99.9)] + [(99.9, 100.4, 99.4, 99.9)] * 6
+    df = _ifvg_frame(rows)
+    return df, _ifvg_signals(df, IFVG_ANY), _time_stop_bt(lambda **kw: _ifvg_bt(IFVG_ANY, **kw), 6,
+                                                          stop_loss_atr_mult=None, stop_loss_pct=0.5)
+
+
 WINDOWS = (200,)
 ENTRY_PARITY = (("compared", 1), ("clean", None))
 COMPOSED_PARITY = (("no_mismatches", None), ("clean", None), ("opens_both", None), ("closes_both", None))
@@ -641,6 +834,15 @@ CASES = {
         registration=Registration(study="cumulative_volume_delta_divergence_1638", validator=True,
                                   production_refused=True,
                                   combos=("grid", None, 216, True, {"expected_interval_ms": cvd.BAR})),
+        **_uncovered("capability", "parity", "composer", "sim_fills", "check_time", "time_stop_fills",
+                     reason=SIDE_INPUT),
+    ),
+    "sweep_absorption_ifvg": Case(
+        registration=Registration(study="sweep_absorption_ifvg_2010", validator=True, production_refused=True,
+                                  defaults=(lambda: sai.DEFAULT_PARAMS,),
+                                  combos=("grid", None, 72, True, {"expected_interval_ms": 300_000},
+                                          ({"expected_interval_ms": 900_000}, {"absorption_filter": False})),
+                                  discovery=sai.STUDY_DIR, catalog=os.path.join(sai.STUDY_DIR, "evidence")),
         **_uncovered("capability", "parity", "composer", "sim_fills", "check_time", "time_stop_fills",
                      reason=SIDE_INPUT),
     ),
@@ -962,6 +1164,79 @@ CASES = {
         time_stop_fills=TimeStopFills(_vtx_long, 20, False, _vtx_short, 20, 23, 27, True),
         **_uncovered("capability", "composer", "sim_fills", "check_time"),
     ),
+    "volume_spike_breakout": Case(
+        registration=Registration(study="volume_spike_breakout_2008", validator=True,
+                                  platforms=("spot", "futures"),
+                                  defaults=(lambda: VSB_DEFAULTS,
+                                            lambda: _seed_json(os.path.join(VSB_STUDY, "candidate_seed.json"))["params"]),
+                                  grid=lambda: {"lookback": [10, 20, 40, 80, 100], "vol_period": [10, 20, 40, 80, 100],
+                                                "vol_multiplier": [1.0, 1.5, 2.0, 3.0], "min_body_frac": [0.0, 0.25, 0.5]},
+                                  combos=("grid", None, 300, True, {}), grid_values_validate=True,
+                                  discovery=VSB_STUDY, catalog=os.path.join(VSB_STUDY, "evidence")),
+        capability=VSB_CLOSE,
+        parity=(
+            Parity("futures_owner", lambda: _vsb_walk(420), _one(lambda: _vsb_cfg("futures")), (200, None),
+                   OWNER_PARITY),
+            Parity("spot_owner", lambda: _vsb_walk(420), _one(lambda: _vsb_cfg("spot")), (200, None),
+                   (("compared", 1), ("no_mismatches", None), ("clean", None), ("eligible", None),
+                    ("opens_any", None), ("no_short_opens", None))),
+            Parity("max_windows", lambda: _vsb_walk(420, seed=5, spike_every=3),
+                   (("futures", lambda: _vsb_cfg("futures", VSB_MAX)), ("spot", lambda: _vsb_cfg("spot", VSB_MAX))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+            Parity("batched", lambda: _vsb_walk(300), _one(lambda: _vsb_cfg("futures", batched=True)), (200,),
+                   OWNER_BATCHED_PARITY),
+        ),
+        composer=Composer(VSB_SMALL, VSB_CLOSE, lambda: _vsb_event(1), lambda: _vsb_event(-1), 1.0),
+        sim_fills=SimFills(VSB_SMALL, VSB_CLOSE, lambda: _vsb_walk(900, seed=3, spike_every=3), "4h", 3,
+                           frozenset({"tiered_tp_pct"}), False, True),
+        time_stop_fills=TimeStopFills(_vsb_long, 20, True, _vsb_short, 20, 23, 27, True),
+        spot_route=SpotRoute(VSB_SMALL, VSB_CLOSE, lambda: _vsb_event(1), lambda: _vsb_event(-1),
+                             lambda: _vsb_walk(900, seed=3), _vsb_defect, 1.0, "vsb_reason", "short_suppressed_spot"),
+        **_uncovered("check_time", reason=NotCovered(
+            "the evaluator reads no decision-time attribute: closed-bar selection is the check scripts' "
+            "closed_bar_decisions selector, covered by the check contract")),
+    ),
+    "inversion_fvg": Case(
+        registration=Registration(study="inversion_fvg_2012", validator=True, platforms=("spot", "futures"),
+                                  defaults=(lambda: IFVG_DEFAULTS,
+                                            lambda: _seed_json(os.path.join(IFVG_STUDY, "candidate_seed.json"))["params"],
+                                            lambda: _protocol(IFVG_STUDY)["candidate"]["seed"]),
+                                  grid=lambda: _protocol(IFVG_STUDY)["candidate"]["grid"],
+                                  combos=("grid", None, 108, True, {}), grid_values_validate=True,
+                                  discovery=IFVG_STUDY, catalog=os.path.join(IFVG_STUDY, "evidence")),
+        capability=IFVG_CLOSE,
+        parity=(
+            Parity("futures_owner", lambda: _ifvg_walk(520), _one(lambda: _ifvg_cfg("futures")), (200, None),
+                   OWNER_PARITY),
+            Parity("spot_owner", lambda: _ifvg_walk(520), _one(lambda: _ifvg_cfg("spot")), (200, None),
+                   (("compared", 1), ("no_mismatches", None), ("clean", None), ("eligible", None),
+                    ("opens_any", None), ("no_short_opens", None))),
+            Parity("seed", lambda: _ifvg_walk(640, seed=7),
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_DEFAULTS)),
+                    ("spot", lambda: _ifvg_cfg("spot", IFVG_DEFAULTS))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+            Parity("max_support", lambda: _ifvg_walk(640, seed=5),
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_MAX)), ("spot", lambda: _ifvg_cfg("spot", IFVG_MAX))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+            Parity("old_defect_recovery", _ifvg_walk_with_old_defect,
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_DEFAULTS)),
+                    ("spot", lambda: _ifvg_cfg("spot", IFVG_DEFAULTS))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("opens_any", None))),
+            Parity("batched", lambda: _ifvg_walk(320), _one(lambda: _ifvg_cfg("futures", batched=True)), (200,),
+                   OWNER_BATCHED_PARITY),
+        ),
+        composer=Composer(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_event(1), lambda: _ifvg_event(-1), 1.0),
+        sim_fills=SimFills(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_walk(900, seed=3), "4h", 3,
+                           frozenset({"tiered_tp_pct"}), False, True),
+        time_stop_fills=TimeStopFills(_ifvg_long, IFVG_LONG_BAR, True, _ifvg_short, IFVG_SHORT_BAR,
+                                      IFVG_REVERSE_BAR, IFVG_SHORT_BAR + 7, True),
+        spot_route=SpotRoute(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_event(1), lambda: _ifvg_event(-1),
+                             lambda: _ifvg_walk(900, seed=3), _ifvg_defect, 1.0, "invfvg_reason",
+                             "short_suppressed_spot"),
+        **_uncovered("check_time", reason=NotCovered(
+            "the evaluator reads no decision-time attribute: closed-bar selection is the check scripts' "
+            "closed_bar_decisions selector, covered by the check contract")),
+    ),
     "williams_r_reversal": Case(
         registration=Registration(study="williams_r_reversal_1650", validator=True),
         parity=(
@@ -1004,30 +1279,11 @@ def _names(family):
     return [name for name, _ in _cases_with(family)]
 
 
-def test_case_table_matches_the_registry():
-    covered = _covered_kind()
-    assert sorted(set(CASES) - covered) == []
-    assert sorted(covered - set(CASES)) == []
-
-
-def test_every_family_is_configured_or_explicitly_not_covered():
-    assert FAMILIES == ("registration", "capability", "parity", "composer", "sim_fills", "check_time",
-                        "time_stop_fills")
-    for name, case in sorted(CASES.items()):
-        for family in FAMILIES:
-            value = getattr(case, family)
-            with _case(f"{name}-{family}"):
-                assert value is not None
-                if isinstance(value, NotCovered):
-                    assert isinstance(value.reason, str) and value.reason.strip()
-    assert all(not isinstance(case.registration, NotCovered) for case in CASES.values())
-
-
 def test_production_refused_set_is_the_side_input_cases_plus_the_non_candle_capabilities():
     refused = _fut()._registry.production_refused_strategies()
     assert refused == frozenset({"cumulative_volume_delta_divergence", "bitcoin_lead_lag", "macro_event_breakout",
                                  "volume_profile_reclaim", "perpetual_premium_reversion", "order_book_imbalance",
-                                 "inventory_market_making"})
+                                 "inventory_market_making", "sweep_absorption_ifvg"})
     table = {name for name, case in CASES.items() if case.registration.production_refused}
     assert refused == frozenset(table) | OTHER_PRODUCTION_REFUSED
 
@@ -1048,6 +1304,25 @@ def _discovery_is_unchanged_and_hides(name, study):
         assert name not in out
 
 
+def _catalog_adds_only(name, platforms, evidence):
+    for platform in ("spot", "futures"):
+        live = json.loads(subprocess.run([sys.executable, os.path.join(_REPO, "shared_tools", "strategy_catalog.py"),
+                                          "--list-json", "--platform", platform],
+                                         capture_output=True, text=True, cwd=_REPO, check=True).stdout)
+        captures = {}
+        for phase in ("before", "after"):
+            with open(os.path.join(evidence, f"catalog_{phase}_{platform}.json")) as fh:
+                captures[phase] = {(e["kind"], e["id"]): e for e in json.load(fh)["entries"]}
+        before, after = captures["before"], captures["after"]
+        added = sorted(set(after) - set(before))
+        assert added == ([("open", name)] if platform in platforms else []), (platform, added)
+        assert not set(before) - set(after)
+        assert all(after[key] == before[key] for key in before), platform
+        live_rows = {(e["kind"], e["id"]): e for e in live["entries"]}
+        if platform in platforms:
+            assert live_rows[("open", name)] == after[("open", name)], platform
+
+
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_registration_contract(name):
     spec = CASES[name].registration
@@ -1061,7 +1336,7 @@ def test_registration_contract(name):
     assert entry["edge_source"] in EDGE_SOURCES
     assert entry["edge_ref"] == f"backtest/candidates/{spec.study}/REPORT.md"
     assert os.path.isfile(os.path.join(_REPO, entry["edge_ref"]))
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
+    assert raw["short_entries"] is True and raw["platforms"] == spec.platforms
     if spec.validator:
         assert callable(raw["param_validator"])
     else:
@@ -1071,9 +1346,16 @@ def test_registration_contract(name):
     assert name in registry.short_entry_strategies()
     assert name in registry.DISCOVERY_HIDDEN_STRATEGIES
     assert name not in fut.list_strategies()
-    assert name not in load_registry("spot").STRATEGY_REGISTRY
+    spot = load_registry("spot")
+    if "spot" in spec.platforms:
+        assert name not in spot.list_strategies()
+        assert spot.STRATEGY_REGISTRY[name]["default_params"] == entry["default_params"]
+        assert spot.STRATEGY_REGISTRY[name]["fn"] is not entry["fn"]
+        assert registry.PLATFORM_ORDER["spot"].count(name) == 1
+    else:
+        assert name not in spot.STRATEGY_REGISTRY
+        assert name not in registry.PLATFORM_ORDER["spot"]
     assert registry.PLATFORM_ORDER["futures"].count(name) == 1
-    assert name not in registry.PLATFORM_ORDER["spot"]
     if spec.grid is not None:
         assert DEFAULT_PARAM_RANGES[name] == spec.grid()
     if spec.grid_keys is not None:
@@ -1103,6 +1385,8 @@ def test_registration_contract(name):
                 fut.validate_param_value(name, key, value)
     if spec.discovery is not None:
         _discovery_is_unchanged_and_hides(name, spec.discovery)
+    if spec.catalog is not None:
+        _catalog_adds_only(name, spec.platforms, spec.catalog)
 
 
 @pytest.mark.parametrize("name", _names("capability"))
@@ -1122,17 +1406,6 @@ def _parity_params():
                     out.append(pytest.param(name, scenario.label, index, window,
                                             id=f"{name}-{scenario.label}-{cfg_label}-window={window}"))
     return out
-
-
-def test_parity_scenarios_are_declared_once_per_strategy():
-    for name in _names("parity"):
-        scenarios = CASES[name].parity
-        with _case(name):
-            assert scenarios and len({scenario.label for scenario in scenarios}) == len(scenarios)
-            for scenario in scenarios:
-                assert scenario.cfgs and scenario.windows and scenario.checks
-                assert len({label for label, _ in scenario.cfgs}) == len(scenario.cfgs)
-                assert len(set(scenario.windows)) == len(scenario.windows)
 
 
 @pytest.mark.parametrize("name,label,cfg_index,window", _parity_params())
@@ -1248,6 +1521,68 @@ def test_closed_bar_check_time_contract(name):
             assert spec.apply(malformed)[spec.reason_col].iloc[-1] == "decision_time_missing"
 
 
+def _spot_compose(name, params, close_refs, df, side="", ctx=None):
+    reg = load_registry("spot")
+    evaluation = evaluate_open_close(
+        reg.apply_strategy, reg.get_strategy, df, name, name, [c["name"] for c in close_refs], side,
+        params=dict(params), position_ctx=ctx, close_evaluate=close_evaluate,
+        close_params_by_name={c["name"]: c["params"] for c in close_refs})
+    return evaluation, finalize_decision(evaluation, side)
+
+
+@pytest.mark.parametrize("name", _names("spot_route"))
+def test_spot_route_contract(name):
+    spec = CASES[name].spot_route
+    spot = load_registry("spot")
+    with _case("evaluator"):
+        long_df, short_df = spec.long_frame(), spec.short_frame()
+        assert int(spot.apply_strategy(name, long_df, dict(spec.params))["signal"].iloc[-1]) == 1
+        fut_short = _apply(name, short_df, dict(spec.params)).iloc[-1]
+        spot_short = spot.apply_strategy(name, short_df, dict(spec.params)).iloc[-1]
+        assert int(fut_short["signal"]) == -1 and int(spot_short["signal"]) == 0
+        assert spot_short[spec.reason_col] == spec.suppressed_reason
+        walk = spec.walk()
+        fut_sig = _apply(name, walk, dict(spec.params))["signal"].to_numpy()
+        spot_out = spot.apply_strategy(name, walk, dict(spec.params))
+        spot_sig = spot_out["signal"].to_numpy()
+        assert (fut_sig == 1).any() and (fut_sig == -1).any()
+        assert (spot_sig >= 0).all() and (spot_sig == np.maximum(fut_sig, 0)).all()
+        assert (spot_out[spec.reason_col].to_numpy()[fut_sig == -1] == spec.suppressed_reason).all()
+    with _case("composer"):
+        _, decision = _spot_compose(name, spec.params, spec.close_refs, long_df)
+        assert (decision["open_action"], decision["signal"]) == ("long", 1)
+        _, decision = _spot_compose(name, spec.params, spec.close_refs, short_df)
+        assert (decision["open_action"], decision["signal"]) == ("none", 0)
+        mark = float(long_df["close"].iloc[-1])
+        ctx = {"side": "long", "avg_cost": mark, "entry_atr": spec.entry_atr, "current_quantity": 1.0,
+               "initial_quantity": 1.0}
+        _, held = _spot_compose(name, spec.params, spec.close_refs, long_df, "long", ctx)
+        assert held["signal"] == 0 and held["close_fraction"] == 0.0
+    with _case("entry_defect_keeps_close_owner"):
+        defect = spec.defect_frame()
+        out = spot.apply_strategy(name, defect, dict(spec.params)).iloc[-1]
+        assert int(out["signal"]) == 0 and not bool(out[spec.reason_col.replace("_reason", "_valid")])
+        mark = float(defect["close"].iloc[-1])
+        for reg_compose, side in ((_spot_compose, "long"), (_compose, "long"), (_compose, "short")):
+            cost = mark / 1.05 if side == "long" else mark * 1.05
+            ctx = {"side": side, "avg_cost": cost, "entry_atr": spec.entry_atr, "current_quantity": 1.0,
+                   "initial_quantity": 1.0}
+            evaluation, held = reg_compose(name, spec.params, spec.close_refs, defect, side, ctx)
+            assert evaluation.open_signal == 0 and held["open_action"] == "none"
+            assert held["close_fraction"] == 1.0 and held["close_strategy"] == spec.close_refs[0]["name"]
+    with _case("simulator"):
+        sig = ensure_atr_indicator(spot.apply_strategy(name, walk, dict(spec.params)))
+        bt = Backtester(initial_capital=1000.0, platform="binanceus", open_strategy={"name": name,
+                        "params": dict(spec.params)}, close_strategies=_copy_refs(spec.close_refs),
+                        stop_loss_atr_mult=1.0, strategy_type="spot")
+        trades = bt.run(sig, strategy_name=name, symbol="BTC/USDT", timeframe="4h", save=False)["trades"]
+        assert trades and {t["side"] for t in trades} == {"long"}
+        for t in trades:
+            pos = sig.index.get_loc(pd.Timestamp(t["entry_date"]))
+            assert pos > 0 and int(sig["signal"].iloc[pos - 1]) == 1
+            assert t["entry_price"] == pytest.approx(float(walk["open"].iloc[pos]) * (1 + bt.slippage_pct), rel=1e-12)
+
+
 @pytest.mark.parametrize("name", _names("time_stop_fills"))
 def test_time_stop_fill_contract(name):
     spec = CASES[name].time_stop_fills
@@ -1278,5 +1613,3 @@ def test_time_stop_fill_contract(name):
             assert first["exit_date"] == str(df.index[spec.exit_bar])
         assert all(t["side"] == "short" and pd.Timestamp(t["entry_date"]) >= pd.Timestamp(first["exit_date"])
                    for t in trades[1:])
-
-

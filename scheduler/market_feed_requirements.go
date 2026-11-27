@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -76,6 +77,9 @@ type feedStrategyRequirement struct {
 	HTF            marketFeedKey
 	HasHTF         bool
 	HTFLookback    int
+	ResearchHTF    marketFeedKey
+	HasResearchHTF bool
+	ResearchHTFRow int
 	Regime         marketFeedKey
 	HasRegime      bool
 	RegimeLookback int
@@ -126,6 +130,20 @@ func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64
 	return out
 }
 
+func (e feedStrategyRequirement) fundingNeed() feedFundingNeed {
+	need := feedFundingNeed{Scalar: e.FundingScalar, Records: e.FundingRecords}
+	if e.FundingRecords {
+		need = need.withReader(e.Signal, e.SignalLookback)
+	}
+	return need
+}
+
+func (e feedStrategyRequirement) readsClosedOnly(key marketFeedKey) bool {
+	return e.ClosedBar &&
+		(e.HasHTF && key == e.HTF || e.HasResearchHTF && key == e.ResearchHTF) &&
+		key != e.Signal && (!e.HasLeader || key != e.Leader) && (!e.HasRegime || key != e.Regime)
+}
+
 type feedRequirements struct {
 	Keys         map[marketFeedKey]int
 	Order        []marketFeedKey
@@ -135,6 +153,11 @@ type feedRequirements struct {
 	Strategies   map[string]feedStrategyRequirement
 	KeyCadences  map[marketFeedKey][]int
 	SignalKeys   map[marketFeedKey]bool
+
+	FormingKeys    map[marketFeedKey]bool
+	ClosedKeys     map[marketFeedKey]bool
+	ClosedOnlyKeys map[marketFeedKey]bool
+	ReuseBlocked   string
 
 	AccountingCoins []string
 
@@ -195,6 +218,37 @@ func (r feedRequirements) observationKeys() []feedObservationKey {
 	}
 	sortFeedObservationKeys(out)
 	return out
+}
+
+func (r *feedRequirements) markReader(key marketFeedKey, closedOnly bool) {
+	if closedOnly {
+		if r.ClosedKeys == nil {
+			r.ClosedKeys = make(map[marketFeedKey]bool)
+		}
+		r.ClosedKeys[key] = true
+		return
+	}
+	if r.FormingKeys == nil {
+		r.FormingKeys = make(map[marketFeedKey]bool)
+	}
+	r.FormingKeys[key] = true
+}
+
+func (r feedRequirements) closedOnlyReuse(key marketFeedKey) bool {
+	return r.ReuseBlocked == "" && r.ClosedOnlyKeys[key]
+}
+
+func (r feedRequirements) keyReuseLabel(key marketFeedKey) string {
+	switch {
+	case r.ReuseBlocked != "":
+		return "refresh(" + r.ReuseBlocked + ")"
+	case r.ClosedOnlyKeys[key]:
+		return "closed_only"
+	case r.FormingKeys[key]:
+		return "refresh(a reader uses the forming bar)"
+	default:
+		return "refresh(no proved closed-only reader)"
+	}
 }
 
 func (r feedRequirements) requires(key marketFeedKey) bool {
@@ -287,8 +341,10 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.SignalLookback = rows
 			}
 			req.addKey(entry.Leader, entry.LeaderLookback)
+			req.markReader(entry.Leader, false)
 		}
 		req.addKey(entry.Signal, entry.SignalLookback)
+		req.markReader(entry.Signal, false)
 
 		if feedStrategyUsesHTF(sc) {
 			htfTimeframe := hlFeedHTFTimeframe(timeframe)
@@ -300,6 +356,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.HasHTF = true
 				entry.HTFLookback = hlFeedHTFLookback + closedBarExtra
 				req.addKey(entry.HTF, entry.HTFLookback)
+				req.markReader(entry.HTF, entry.ClosedBar)
 			}
 		}
 
@@ -313,6 +370,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.HasRegime = true
 				entry.RegimeLookback = bundleReq.OhlcvLimit + closedBarExtra
 				req.addKey(entry.Regime, entry.RegimeLookback)
+				req.markReader(entry.Regime, false)
 			}
 		}
 
@@ -321,10 +379,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		entry.FundingScalar = slotName == fundingScalarStrategyName
 		entry.FundingRecords = openName == fundingRecordsStrategyName
 		if entry.FundingScalar || entry.FundingRecords {
-			need := req.Funding[symbol]
-			need.Scalar = need.Scalar || entry.FundingScalar
-			need.Records = need.Records || entry.FundingRecords
-			req.Funding[symbol] = need
+			req.Funding[symbol] = req.Funding[symbol].merge(entry.fundingNeed())
 		}
 
 		if feedStrategyUsesOpenInterest(sc) {
@@ -338,11 +393,24 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				req.addObservation(openInterestKeyFor(symbol), window)
 			}
 		}
+		if feedStrategyUsesResearchHTF(sc) {
+			intervalMs, _ := hlCandleIntervalMs(timeframe)
+			support, serr := sweepAbsorptionStrategySupport(sc, intervalMs)
+			if serr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, sweepAbsorptionStrategyName, serr))
+			} else {
+				entry.ResearchHTF = feedKeyFor(symbol, sweepAbsorptionHTFTimeframe)
+				entry.HasResearchHTF = true
+				entry.ResearchHTFRow = int(support.HTFRows)
+				req.addKey(entry.ResearchHTF, entry.ResearchHTFRow)
+				req.markReader(entry.ResearchHTF, entry.ClosedBar)
+			}
+		}
 		if feedStrategyUsesTradeFlow(sc) {
 			intervalMs, _ := hlCandleIntervalMs(timeframe)
-			window, werr := cvdSessionWindowMs(sc, intervalMs)
+			window, werr := tradeFlowWindowMs(sc, intervalMs)
 			if werr != nil {
-				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, cumulativeVolumeDeltaStrategyName, werr))
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, strings.TrimSpace(effectiveOpenStrategy(sc)), werr))
 			} else {
 				entry.TradeFlow = true
 				entry.TradeWindowMs = window
@@ -388,6 +456,11 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		sort.Strings(errs)
 		return feedRequirements{}, fmt.Errorf("market_feed=%s rejects this config:\n  %s", cfg.marketFeedMode(), strings.Join(errs, "\n  "))
 	}
+	for _, sc := range cfg.Strategies {
+		if bundleReq, ok := strategyRegimeBundleRequest(sc, rc); ok && bundleReq.Key.Platform == "hyperliquid" {
+			req.markReader(feedKeyFor(bundleReq.Key.Symbol, bundleReq.Key.Timeframe), false)
+		}
+	}
 	resolveMacroPathConflicts(&req)
 	pruneUnusedMacro(&req)
 	hlCoins, _ := collectPerpsMarkSymbols(cfg.Strategies)
@@ -397,9 +470,45 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	return req, nil
 }
 
+func validateMarketFeedWeightBudgetJSON(data []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	raw, ok := root["market_feed_weight_budget"]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var probe feedWeightBudgetConfig
+	if err := dec.Decode(&probe); err != nil {
+		return []string{fmt.Sprintf("market_feed_weight_budget: %v (allowed fields: weight_per_minute, weight_startup, weight_reserve)", err)}
+	}
+	return nil
+}
+
+func marketFeedWeightBudgetErrors(cfg *Config) []string {
+	b := cfg.MarketFeedWeightBudget
+	if b == nil {
+		return nil
+	}
+	if cfg.marketFeedMode() != marketFeedWebsocket {
+		return []string{fmt.Sprintf("market_feed_weight_budget applies only to the embedded websocket owner (market_feed %q); market_feed is %q", marketFeedWebsocket, cfg.marketFeedMode())}
+	}
+	errs := feedWeightPolicyErrors("market_feed_weight_budget", b.WeightPerMinute, b.WeightStartup, b.WeightReserve, false)
+	if len(errs) == 0 && b.WeightPerMinute == nil {
+		errs = append(errs, "market_feed_weight_budget is empty: set weight_per_minute, weight_startup and weight_reserve, or remove the block")
+	}
+	return errs
+}
+
 func validateMarketFeedConfig(cfg *Config) error {
 	if cfg == nil {
 		return nil
+	}
+	if errs := marketFeedWeightBudgetErrors(cfg); len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	switch cfg.marketFeedMode() {
 	case marketFeedREST:
@@ -412,7 +521,7 @@ func validateMarketFeedConfig(cfg *Config) error {
 		}
 		if ids := tradeFlowStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply trade-flow observations for %s (strategies %s); use market_feed %q or %q",
-				marketFeedREST, cumulativeVolumeDeltaStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+				marketFeedREST, strings.Join(tradeFlowStrategyNamesSorted(), ", "), strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		if ids := premiumStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply synchronized quote and oracle records for %s (strategies %s); its transport samples only at deadlines and cannot meet the frozen 60 s premium sample contract; use market_feed %q or %q",
@@ -459,7 +568,14 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 			continue
 		}
 		if st := o.keys[key]; st != nil {
+			if lookback > st.historyTarget {
+				st.restVerified = false
+			}
 			st.raiseRequired(lookback)
+			st.historyTarget = lookback
+			if !st.needsHistory() {
+				st.historyErr = ""
+			}
 			continue
 		}
 		o.keys[key] = newFeedKeyState(key, intervalMs, lookback)
@@ -478,34 +594,40 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 	o.subVersion++
 	o.applySeq++
 	token := o.applySeq
-	pending := make([]marketFeedKey, 0, len(req.Order))
+	now := o.now()
+	pending := make([]*feedFetchTicket, 0, len(req.Order))
 	for _, key := range req.Order {
 		st := o.keys[key]
-		if st == nil {
+		if st == nil || !st.needsHistory() {
 			continue
 		}
-		if st.Status == feedStatusBootstrapping || len(st.Bars) < feedReadyFloor(st.Required) {
-			pending = append(pending, key)
+		t, err := o.admitKeyFetchLocked(key, feedRestBootstrap, false, now)
+		if err != nil {
+			o.logf("[feed] %s: bootstrap not started by this generation: %v", key, err)
+			continue
 		}
+		pending = append(pending, t)
 	}
 	o.feedMu.Unlock()
 
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		for _, key := range pending {
-			key := key
+		for _, t := range pending {
+			t := t
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				bootstrapCtx, cancel := context.WithTimeout(ctx, feedBootstrapKeyBudget)
 				defer cancel()
-				if err := o.fetchAndMerge(bootstrapCtx, key, feedRestBootstrap); err != nil {
-					o.logf("[feed] %s: bootstrap failed: %v", key, err)
-					o.raiseAlert(key, "bootstrap_failed", err.Error())
+				if err := o.executeKeyFetch(bootstrapCtx, t); err != nil {
+					o.logf("[feed] %s: bootstrap failed: %v", t.key, err)
+					if !feedRateLimitErr(err) && !feedFetchTypedResult(err) {
+						o.raiseAlert(t.key, "bootstrap_failed", err.Error())
+					}
 					return
 				}
-				o.logf("[feed] %s: bootstrap complete", key)
+				o.logf("[feed] %s: bootstrap complete", t.key)
 			}()
 		}
 		wg.Wait()
@@ -531,6 +653,8 @@ func (o *marketFeedOwner) publishGeneration(req feedRequirements, token uint64, 
 	}
 	o.dropUnneededObservationsLocked(req.Observations)
 	o.dropUnneededBooksLocked(req.Books)
+	o.retireFundingLocked(req.Funding)
+	o.fundingCoverage = fundingCoverageID(req.Funding)
 	o.published = make(map[marketFeedKey]bool, len(req.Order))
 	for _, key := range req.Order {
 		o.published[key] = true
@@ -549,63 +673,6 @@ func (o *marketFeedOwner) fundingWork() map[string]feedFundingNeed {
 	return out
 }
 
-const feedFundingTTL = 5 * time.Minute
-
-func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[string]int64) {
-	needs := o.fundingWork()
-	if len(needs) == 0 {
-		return
-	}
-	ctx = withFeedReason(ctx, string(feedRestFunding))
-	coins := make([]string, 0, len(needs))
-	for coin := range needs {
-		coins = append(coins, coin)
-	}
-	sort.Strings(coins)
-	now := o.now()
-	for _, coin := range coins {
-		need := needs[coin]
-		o.feedMu.Lock()
-		existing := o.funding[coin]
-		fresh := existing != nil && existing.Err == "" && now.Sub(existing.FetchedAt) < feedFundingTTL &&
-			(!need.Scalar || existing.HasScalar) && (!need.Records || existing.HasRecords)
-		o.feedMu.Unlock()
-		if fresh {
-			continue
-		}
-		entry := &feedFunding{FetchedAt: now, Source: "rest"}
-		if need.Scalar {
-			current, err := fetchHyperliquidFundingRateFn(ctx, coin)
-			if err != nil {
-				entry.Err = err.Error()
-			} else {
-				avg, avgErr := hlFundingAverage7d(ctx, coin, now)
-				if avgErr != nil {
-					entry.Err = avgErr.Error()
-				} else {
-					entry.Current, entry.Avg7d, entry.HasScalar = current, avg, true
-				}
-			}
-		}
-		if need.Records && entry.Err == "" {
-			startMs := earliestBarMs[coin]
-			records, err := hlFundingRecordsSince(ctx, coin, startMs, now)
-			if err != nil {
-				entry.Err = err.Error()
-			} else {
-				entry.Records, entry.HasRecords = records, true
-			}
-		}
-		if entry.Err != "" {
-			o.logf("[feed] funding %s: %s", coin, entry.Err)
-			o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
-		}
-		o.feedMu.Lock()
-		o.funding[coin] = entry
-		o.feedMu.Unlock()
-	}
-}
-
 func premiumStrategyIDs(cfg *Config) []string {
 	var ids []string
 	for _, sc := range cfg.Strategies {
@@ -615,6 +682,15 @@ func premiumStrategyIDs(cfg *Config) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func tradeFlowStrategyNamesSorted() []string {
+	out := make([]string, 0, len(tradeFlowStrategyNames))
+	for name := range tradeFlowStrategyNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func tradeFlowStrategyIDs(cfg *Config) []string {

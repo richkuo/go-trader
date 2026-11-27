@@ -1,14 +1,16 @@
 
 import sys
 import os as _os
-sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
-from adapter import (
-    DeribitOptionsAdapter, OptionPosition, OptionSide, OptionType, Greeks
+from shared_tools.option_types import (
+    OptionsBook, OptionPosition, OptionSide, OptionType, Greeks
 )
 
 
@@ -83,7 +85,7 @@ class OptionsRiskManager:
             "timestamp": datetime.utcnow().isoformat(),
         })
 
-    def check_can_trade(self, adapter: DeribitOptionsAdapter,
+    def check_can_trade(self, adapter: OptionsBook,
                          proposed_premium_usd: float = 0,
                          proposed_side: str = "buy",
                          underlying: str = "") -> dict:
@@ -141,7 +143,7 @@ class OptionsRiskManager:
 
         return {"allowed": True, "reason": "OK"}
 
-    def check_greeks_limits(self, adapter: DeribitOptionsAdapter) -> dict:
+    def check_greeks_limits(self, adapter: OptionsBook) -> dict:
         greeks = adapter.get_portfolio_greeks()
         violations = []
 
@@ -169,7 +171,7 @@ class OptionsRiskManager:
         self.reset_monthly_hedge()
         self.monthly_hedge_spend += cost_usd
 
-    def estimate_margin(self, adapter: DeribitOptionsAdapter) -> dict:
+    def estimate_margin(self, adapter: OptionsBook) -> dict:
         positions = adapter.get_positions()
         total_margin = 0.0
 
@@ -192,7 +194,7 @@ class OptionsRiskManager:
             "portfolio_value": round(portfolio_value, 2),
         }
 
-    def max_loss_scenario(self, adapter: DeribitOptionsAdapter,
+    def max_loss_scenario(self, adapter: OptionsBook,
                            spot_move_pct: float = 20.0) -> dict:
         positions = adapter.get_positions()
         scenarios = {}
@@ -224,7 +226,7 @@ class OptionsRiskManager:
         self.circuit_break_active = True
         self.circuit_break_until = datetime.utcnow() + timedelta(minutes=self.config.cooldown_minutes)
 
-    def format_status(self, adapter: DeribitOptionsAdapter) -> str:
+    def format_status(self, adapter: OptionsBook) -> str:
         portfolio_value = adapter.get_portfolio_value()
         greeks = adapter.get_portfolio_greeks()
         premium = adapter.get_premium_at_risk()

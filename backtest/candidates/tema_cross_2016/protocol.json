@@ -1,0 +1,1016 @@
+{
+  "cache_parity": {
+    "arms": [
+      "control",
+      "gate_p21_up_clean"
+    ],
+    "coin": "BTC",
+    "frame": "paper",
+    "interval": "1h",
+    "window": "is"
+  },
+  "capital_usd": 1000.0,
+  "costs": {
+    "cached_stress_slippage_multiplier": 2,
+    "text": "cached-path legs (proxy windows, every frame): net = Hyperliquid taker fee and the default 0.05% slippage; stress = 2 x the default slippage (the cached path has no half spread and a manifest cannot carry the venue-absent funding hours); gross = commission 0 and slippage 0 (the gross_edge_noise.py convention). Manifest legs: cost_multiplier 1 and 2."
+  },
+  "deployed_copy": "deployed_tema_cross_sanitized.json",
+  "disclosures": [
+    "closed-bar decisions are opt-in live and the deployed entries do not set them",
+    "the paper regime_directional_policy is uncertified, so live runs it off; the arms run it off",
+    "use_defaults resolves to the system ratchet ladders",
+    "the venue windows lie inside oos",
+    "live circuit-breaker and drawdown limits are not modelled",
+    "the live higher-timeframe check fetches the last 60 buckets and also sees the bucket that closes at the decision bar, one bucket earlier than the shifted frozen series",
+    "on the registry-close spot shape the higher-timeframe filter also suppresses the exit signal while the trend is up, as live does for that shape",
+    "the live shape runs isolated margin at leverage 20 with a fixed margin per trade; the backtest uses 1000 USD of strategy cash"
+  ],
+  "fee_platform": "hyperliquid",
+  "fidelity": {
+    "agreement_threshold": 0.95,
+    "engine_check_every": 25,
+    "min_agreement_bars": 30,
+    "proxy_windows": [
+      "oos",
+      "2023H2",
+      "2024",
+      "2025H1"
+    ],
+    "text": "for every composite window that a noise baseline or a judged arm reads: validate_frames on the pooled proxy windows and the venue tail with the frame's label limit as the lookback, plus the engine label check on every 25th bar; an agreement row for a judged ADX gate window; and a live-rule row for the frozen higher-timeframe trend (the 60 closed buckets the live filter fetches, through htf_trend_filter, against the frozen series at each bucket close) where a reader uses htf_filter. A row passes at agreement >= 0.95 on >= 30 bars.",
+    "venue_windows": {
+      "1h": [
+        "tail"
+      ],
+      "30m": [
+        "tail"
+      ]
+    }
+  },
+  "frames": {
+    "live": {
+      "arms": {
+        "bar_1h": {
+          "base": "live_long",
+          "compare_datasets": [
+            [
+              "ETH",
+              "30m"
+            ]
+          ],
+          "control": "live_long",
+          "datasets": [
+            [
+              "ETH",
+              "1h"
+            ]
+          ],
+          "family": "bar",
+          "in_family": true,
+          "interval": "1h",
+          "noise_baseline": "live_long"
+        },
+        "combo": {
+          "base": "live_long",
+          "control": "live_long",
+          "families": [
+            "gate",
+            "period"
+          ],
+          "family": "combo",
+          "in_family": true,
+          "min_members": 2,
+          "noise_baseline": "live_long"
+        },
+        "gate_adx_up": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up"
+            ],
+            "regime_gate_window": "medium"
+          }
+        },
+        "gate_cm_not_down": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "ranging_directional",
+              "ranging_quiet",
+              "ranging_volatile",
+              "trending_up_choppy",
+              "trending_up_clean"
+            ]
+          }
+        },
+        "gate_cm_up": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up_choppy",
+              "trending_up_clean"
+            ]
+          }
+        },
+        "gate_p21_up_clean": {
+          "add_regime_windows": {
+            "comp_p21": {
+              "classifier": "composite",
+              "period": 21
+            }
+          },
+          "base": "live_long",
+          "control": "live_long",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up_clean"
+            ],
+            "regime_gate_window": "comp_p21"
+          }
+        },
+        "live_both": {
+          "control": "live_both",
+          "family": "control",
+          "in_family": false,
+          "noise_baseline": "live_both"
+        },
+        "live_both_nohtf": {
+          "base": "live_both",
+          "control": "live_both",
+          "family": "reference",
+          "in_family": false,
+          "noise_baseline": "live_both",
+          "strategy_overrides": {
+            "htf_filter": false
+          }
+        },
+        "live_long": {
+          "base": "live_both",
+          "control": "live_both",
+          "family": "direction",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "direction": "long"
+          }
+        },
+        "live_long_nohtf": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "reference",
+          "in_family": false,
+          "noise_baseline": "live_long",
+          "strategy_overrides": {
+            "htf_filter": false
+          }
+        },
+        "p_13_34_89": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "params": {
+            "long_period": 89,
+            "mid_period": 34,
+            "short_period": 13
+          }
+        },
+        "p_21_55_144": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "params": {
+            "long_period": 144,
+            "mid_period": 55,
+            "short_period": 21
+          }
+        },
+        "p_34_89_233": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "params": {
+            "long_period": 233,
+            "mid_period": 89,
+            "short_period": 34
+          }
+        },
+        "p_55_144_377": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "params": {
+            "long_period": 377,
+            "mid_period": 144,
+            "short_period": 55
+          }
+        },
+        "p_8_21_55": {
+          "base": "live_long",
+          "control": "live_long",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "live_long",
+          "params": {
+            "long_period": 55,
+            "mid_period": 21,
+            "short_period": 8
+          }
+        }
+      },
+      "builder": "config",
+      "config_source": "live",
+      "datasets": [
+        [
+          "ETH",
+          "30m"
+        ]
+      ],
+      "description": "the one deployed live strategy (ETH 30m, direction both, htf_filter true, explicit ratchet ladder, isolated margin at leverage 20 with a fixed margin per trade) on frozen Binance US proxy candles with Hyperliquid fees and funding",
+      "families": [
+        "gate",
+        "direction",
+        "period",
+        "bar"
+      ],
+      "label_limit": 2891,
+      "noise_baselines": [
+        "live_both",
+        "live_long"
+      ],
+      "period_grid": [
+        "p_8_21_55",
+        "p_13_34_89",
+        "p_21_55_144",
+        "p_34_89_233",
+        "p_55_144_377"
+      ],
+      "registry": "futures",
+      "venue": true,
+      "venue_datasets": [
+        [
+          "ETH",
+          "30m"
+        ],
+        [
+          "ETH",
+          "1h"
+        ]
+      ],
+      "warmup_bars": 2891,
+      "warmup_rule": "the live fetch depth of the live regime block: 2 x 1440 + 1 + 10 = 2891"
+    },
+    "paper": {
+      "arms": {
+        "bar_1h": {
+          "alias": "control",
+          "compare_datasets": [
+            [
+              "BNB",
+              "30m"
+            ],
+            [
+              "BTC",
+              "30m"
+            ],
+            [
+              "ETH",
+              "30m"
+            ],
+            [
+              "HYPE",
+              "30m"
+            ],
+            [
+              "SOL",
+              "30m"
+            ]
+          ],
+          "control": "control",
+          "datasets": [
+            [
+              "BNB",
+              "1h"
+            ],
+            [
+              "BTC",
+              "1h"
+            ],
+            [
+              "ETH",
+              "1h"
+            ],
+            [
+              "HYPE",
+              "1h"
+            ],
+            [
+              "SOL",
+              "1h"
+            ]
+          ],
+          "family": "bar",
+          "in_family": true,
+          "noise_baseline": "control"
+        },
+        "combo": {
+          "control": "control",
+          "families": [
+            "gate",
+            "htf",
+            "period"
+          ],
+          "family": "combo",
+          "in_family": true,
+          "min_members": 2,
+          "noise_baseline": "control"
+        },
+        "control": {
+          "control": "control",
+          "family": "control",
+          "in_family": false,
+          "noise_baseline": "control"
+        },
+        "gate_adx_up": {
+          "base": "control",
+          "control": "control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "control",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up"
+            ],
+            "regime_gate_window": "medium"
+          }
+        },
+        "gate_cm_not_down": {
+          "base": "control",
+          "control": "control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "control",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "ranging_directional",
+              "ranging_quiet",
+              "ranging_volatile",
+              "trending_up_choppy",
+              "trending_up_clean"
+            ]
+          }
+        },
+        "gate_cm_up": {
+          "base": "control",
+          "control": "control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "control",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up_choppy",
+              "trending_up_clean"
+            ]
+          }
+        },
+        "gate_p21_up_clean": {
+          "add_regime_windows": {
+            "comp_p21": {
+              "classifier": "composite",
+              "period": 21
+            }
+          },
+          "base": "control",
+          "control": "control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "control",
+          "strategy_overrides": {
+            "allowed_regimes": [
+              "trending_up_clean"
+            ],
+            "regime_gate_window": "comp_p21"
+          }
+        },
+        "htf": {
+          "base": "control",
+          "control": "control",
+          "family": "htf",
+          "in_family": true,
+          "noise_baseline": "control",
+          "strategy_overrides": {
+            "htf_filter": true
+          }
+        },
+        "p_13_34_89": {
+          "base": "control",
+          "control": "control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "control",
+          "params": {
+            "long_period": 89,
+            "mid_period": 34,
+            "short_period": 13
+          }
+        },
+        "p_21_55_144": {
+          "base": "control",
+          "control": "control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "control",
+          "params": {
+            "long_period": 144,
+            "mid_period": 55,
+            "short_period": 21
+          }
+        },
+        "p_34_89_233": {
+          "base": "control",
+          "control": "control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "control",
+          "params": {
+            "long_period": 233,
+            "mid_period": 89,
+            "short_period": 34
+          }
+        },
+        "p_55_144_377": {
+          "base": "control",
+          "control": "control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "control",
+          "params": {
+            "long_period": 377,
+            "mid_period": 144,
+            "short_period": 55
+          }
+        },
+        "p_8_21_55": {
+          "base": "control",
+          "control": "control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "control",
+          "params": {
+            "long_period": 55,
+            "mid_period": 21,
+            "short_period": 8
+          }
+        }
+      },
+      "builder": "config",
+      "config_source": "paper",
+      "datasets": [
+        [
+          "BNB",
+          "30m"
+        ],
+        [
+          "BNB",
+          "1h"
+        ],
+        [
+          "BTC",
+          "30m"
+        ],
+        [
+          "BTC",
+          "1h"
+        ],
+        [
+          "ETH",
+          "30m"
+        ],
+        [
+          "ETH",
+          "1h"
+        ],
+        [
+          "HYPE",
+          "30m"
+        ],
+        [
+          "HYPE",
+          "1h"
+        ],
+        [
+          "SOL",
+          "30m"
+        ],
+        [
+          "SOL",
+          "1h"
+        ]
+      ],
+      "description": "the ten deployed paper strategies (BNB, BTC, ETH, HYPE, SOL at 30m and 1h) on frozen Binance US proxy candles with Hyperliquid fees and funding",
+      "families": [
+        "gate",
+        "htf",
+        "period",
+        "bar"
+      ],
+      "label_limit": 3011,
+      "noise_baselines": [
+        "control"
+      ],
+      "period_grid": [
+        "p_8_21_55",
+        "p_13_34_89",
+        "p_21_55_144",
+        "p_34_89_233",
+        "p_55_144_377"
+      ],
+      "registry": "futures",
+      "venue": true,
+      "venue_datasets": [
+        [
+          "BNB",
+          "30m"
+        ],
+        [
+          "BNB",
+          "1h"
+        ],
+        [
+          "BTC",
+          "30m"
+        ],
+        [
+          "BTC",
+          "1h"
+        ],
+        [
+          "ETH",
+          "30m"
+        ],
+        [
+          "ETH",
+          "1h"
+        ],
+        [
+          "HYPE",
+          "30m"
+        ],
+        [
+          "HYPE",
+          "1h"
+        ],
+        [
+          "SOL",
+          "30m"
+        ],
+        [
+          "SOL",
+          "1h"
+        ]
+      ],
+      "warmup_bars": 3011,
+      "warmup_rule": "the live fetch depth of the paper regime block: 2 x 1500 + 1 + 10 = 3011"
+    },
+    "spot": {
+      "arms": {
+        "bar_4h": {
+          "alias": "spot_control",
+          "compare_datasets": [
+            [
+              "BTC",
+              "1h"
+            ],
+            [
+              "ETH",
+              "1h"
+            ],
+            [
+              "SOL",
+              "1h"
+            ]
+          ],
+          "control": "spot_control",
+          "datasets": [
+            [
+              "BTC",
+              "4h"
+            ],
+            [
+              "ETH",
+              "4h"
+            ],
+            [
+              "SOL",
+              "4h"
+            ]
+          ],
+          "family": "bar",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "combo": {
+          "control": "spot_control",
+          "families": [
+            "gate",
+            "htf",
+            "period"
+          ],
+          "family": "combo",
+          "in_family": true,
+          "min_members": 2,
+          "noise_baseline": "spot_control"
+        },
+        "gate_adx_up": {
+          "base": "spot_control",
+          "candidate_overrides": {
+            "allowed_regimes": [
+              "trending_up"
+            ],
+            "regime_gate_window": "medium"
+          },
+          "control": "spot_control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "gate_cm_not_down": {
+          "base": "spot_control",
+          "candidate_overrides": {
+            "allowed_regimes": [
+              "ranging_directional",
+              "ranging_quiet",
+              "ranging_volatile",
+              "trending_up_choppy",
+              "trending_up_clean"
+            ],
+            "regime_gate_window": "composite_medium"
+          },
+          "control": "spot_control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "gate_cm_up": {
+          "base": "spot_control",
+          "candidate_overrides": {
+            "allowed_regimes": [
+              "trending_up_choppy",
+              "trending_up_clean"
+            ],
+            "regime_gate_window": "composite_medium"
+          },
+          "control": "spot_control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "gate_p21_up_clean": {
+          "base": "spot_control",
+          "candidate_overrides": {
+            "allowed_regimes": [
+              "trending_up_clean"
+            ],
+            "regime_gate_window": "comp_p21"
+          },
+          "control": "spot_control",
+          "family": "gate",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "htf": {
+          "base": "spot_control",
+          "candidate_overrides": {
+            "htf_filter": true
+          },
+          "control": "spot_control",
+          "family": "htf",
+          "in_family": true,
+          "noise_baseline": "spot_control"
+        },
+        "p_13_34_89": {
+          "base": "spot_control",
+          "control": "spot_control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "spot_control",
+          "params": {
+            "long_period": 89,
+            "mid_period": 34,
+            "short_period": 13
+          }
+        },
+        "p_21_55_144": {
+          "base": "spot_control",
+          "control": "spot_control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "spot_control",
+          "params": {
+            "long_period": 144,
+            "mid_period": 55,
+            "short_period": 21
+          }
+        },
+        "p_34_89_233": {
+          "base": "spot_control",
+          "control": "spot_control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "spot_control",
+          "params": {
+            "long_period": 233,
+            "mid_period": 89,
+            "short_period": 34
+          }
+        },
+        "p_55_144_377": {
+          "base": "spot_control",
+          "control": "spot_control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "spot_control",
+          "params": {
+            "long_period": 377,
+            "mid_period": 144,
+            "short_period": 55
+          }
+        },
+        "p_8_21_55": {
+          "base": "spot_control",
+          "control": "spot_control",
+          "family": "period",
+          "in_family": true,
+          "noise_baseline": "spot_control",
+          "params": {
+            "long_period": 55,
+            "mid_period": 21,
+            "short_period": 8
+          }
+        },
+        "spot_control": {
+          "control": "spot_control",
+          "family": "control",
+          "in_family": false,
+          "noise_baseline": "spot_control"
+        }
+      },
+      "base_candidate": {
+        "direction": "long",
+        "name": "tema_cross",
+        "params": {}
+      },
+      "builder": "candidate",
+      "datasets": [
+        [
+          "BTC",
+          "1h"
+        ],
+        [
+          "BTC",
+          "4h"
+        ],
+        [
+          "ETH",
+          "1h"
+        ],
+        [
+          "ETH",
+          "4h"
+        ],
+        [
+          "SOL",
+          "1h"
+        ],
+        [
+          "SOL",
+          "4h"
+        ]
+      ],
+      "description": "M1 audit frame: Binance US spot candles for BTC, ETH and SOL at 1h and 4h, the registry close (the strategy's own exit signal), long only, Hyperliquid fees, funding charged as the M1 harness does",
+      "families": [
+        "gate",
+        "htf",
+        "period",
+        "bar"
+      ],
+      "label_limit": 711,
+      "noise_baselines": [
+        "spot_control"
+      ],
+      "period_grid": [
+        "p_8_21_55",
+        "p_13_34_89",
+        "p_21_55_144",
+        "p_34_89_233",
+        "p_55_144_377"
+      ],
+      "regime": {
+        "enabled": true,
+        "windows": {
+          "comp_p21": {
+            "classifier": "composite",
+            "period": 21
+          },
+          "composite_medium": {
+            "classifier": "composite",
+            "period": 350,
+            "thresholds": {
+              "adx": 20,
+              "range_pct": 0.03,
+              "return_pct": 0.02
+            }
+          },
+          "medium": {
+            "classifier": "adx",
+            "period": 350
+          }
+        }
+      },
+      "registry": "spot",
+      "venue": false,
+      "warmup_bars": 711,
+      "warmup_rule": "required_ohlcv_limit of the frame regime block: 2 x 350 + 1 + 10 = 711"
+    }
+  },
+  "frozen_copy": {
+    "note": "the breakout_2014 proxy candles and funding, the venue files and the four offline manifests, copied byte for byte with their sha256; breakout_2014 read every proxy and venue window of these files with breakout",
+    "venue_dirs": [
+      "venue_30m",
+      "venue_1h"
+    ]
+  },
+  "funding_mode": "charge",
+  "htf": {
+    "ema_period": 50,
+    "min_closed_buckets": 50,
+    "text": "the frozen higher-timeframe input derives the default higher timeframe (30m and 1h to 4h, 4h to 1d) from the leg's own candles on epoch-aligned buckets, counts a bucket only when its last lower-timeframe slot is present, indexes the EMA-50 trend by bucket open time and shifts it one bucket before the forward fill; a leg needs 50 closed buckets before its first scored bar; no network call"
+  },
+  "htf_parity": {
+    "coin": "ETH",
+    "exchange_htf": "4h",
+    "frame": "paper",
+    "interval": "30m",
+    "window": "is"
+  },
+  "intrabar_resolution": "ohlc_walk",
+  "issue": 2016,
+  "noise_gate": {
+    "text": "per noise baseline: pooled per-trade pnl_pct of the zero-cost leg over is, oos, 2023H2, 2024 and 2025H1 (disjoint), analyze_sample; verdict no_positive_edge makes every arm with that noise baseline unable to make its frame positive. Written before any judged leg of a filter arm is read."
+  },
+  "prior_reads": [
+    "issue 1282 and the fee rescreen (issue 1315) read is, oos, 2023, 2024 and 2025H1 of the six spot datasets for the registry-default tema_cross baseline (1h and 4h)",
+    "breakout_2014 read every proxy window (is, oos, 2023H2, 2024, 2025H1, stitched) and the venue tail and common windows of the reused files with breakout",
+    "no filter arm, no 30m leg and no deployed-shape leg of tema_cross was read before this study"
+  ],
+  "proxy": {
+    "candle_source": "Binance US spot USDT pairs through ccxt (proxy for Hyperliquid perpetual prices); Hyperliquid fees and funding",
+    "dataset_windows": [
+      "is",
+      "oos",
+      "stitched"
+    ],
+    "judged_windows": [
+      "oos",
+      "2023H2",
+      "2024",
+      "2025H1",
+      "stitched"
+    ],
+    "noise_windows": [
+      "is",
+      "oos",
+      "2023H2",
+      "2024",
+      "2025H1"
+    ],
+    "pinned_end": "2026-11-10",
+    "pooled_windows": [
+      "oos",
+      "2023H2",
+      "2024",
+      "2025H1"
+    ],
+    "selection_window": "is",
+    "window_roles": {
+      "2023H2": "judged, pooled (no venue funding before 2023-05-12)",
+      "2024": "judged, pooled",
+      "2025H1": "judged, pooled, trimmed so it cannot overlap is",
+      "is": "selection",
+      "oos": "judged, pooled",
+      "stitched": "one continuous run from a flat book over is and oos; reported, never pooled into a statistic"
+    },
+    "windows": {
+      "2023H2": [
+        "2023-07-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-06-10"
+      ],
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        "2026-11-10"
+      ],
+      "stitched": [
+        "2025-06-10",
+        "2026-11-10"
+      ]
+    }
+  },
+  "selection_rule": {
+    "min_is_clusters": 10,
+    "min_is_trades": 30,
+    "text": "on is only, at base cost, per frame: a filter arm is shortlisted when its mean drawdown-adjusted return over its datasets is above its control's over the compare datasets, it has at least 30 trades and 10 position clusters, it trades on at least half its datasets, and no leg is funding_incomplete. A period arm also needs each grid neighbour above the control (plateau). The pick of a family is its shortlisted arm with the highest mean ddadj. The combination arm merges the picks of the frame's combination families (spot and paper: gate, htf, period; live: gate and period on live_long) when at least two exist; it is scored on is and judged when shortlisted. Judged arms: the family picks and a shortlisted combination."
+  },
+  "smoke": {
+    "end": "2021-06-01",
+    "note": "synthetic candles in a throwaway cache, network blocked, funding off; reads no frozen window",
+    "scored_bars": {
+      "1h": 600,
+      "30m": 600,
+      "4h": 400
+    }
+  },
+  "spot_4h_acquisition": {
+    "coins": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "exchange": "binanceus",
+    "start": "2022-08-01"
+  },
+  "statistics": {
+    "alpha": 0.05,
+    "family_size": 36,
+    "n_resamples": 10000,
+    "seed": 1066,
+    "text": "per judged arm: pooled net per-trade returns (pnl_pct_net of the base-cost leg) over oos, 2023H2, 2024 and 2025H1; p_plain = sign_flip_permutation, p_cluster = cluster_sign_flip_permutation over overlapping-position clusters across datasets; p_decision = max(p_plain, p_cluster); benjamini_hochberg(alpha 0.05, family_size 36) over every judged arm of every frame. Family size: 12 in-family arms per frame times 3 frames."
+  },
+  "status": "frozen before any window was scored; run_study.py lock records this file's sha256 and every scoring command refuses a different file",
+  "study": "tema_cross_2016",
+  "suggest_only": "no command writes a live or paper config, a registry default or edge_status, and none sends an order",
+  "timing": {
+    "coin": "BTC",
+    "frame": "paper",
+    "interval": "1h"
+  },
+  "venue": {
+    "candle_source": "Hyperliquid mainnet perpetual candles (the breakout_2014 venue manifests, copied byte for byte)",
+    "cost_multipliers": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "note": "venue and bridge legs use the manifest execution spec; the stress leg is the manifest cost_multiplier 2",
+    "verdict_window": "tail",
+    "windows": {
+      "1h": [
+        "common",
+        "tail"
+      ],
+      "30m": [
+        "tail"
+      ]
+    }
+  },
+  "venue_rule": {
+    "min_clusters": 30,
+    "text": "on the venue tail window over the arm's kept venue datasets against its control's kept compare datasets: inconclusive if coverage is incomplete or the arm has fewer than 30 pooled clusters at cost x1; pass if it beats the control on mean Sharpe and mean ddadj at cost x1 and x2; fail if it loses on both at cost x1; else inconclusive. The venue verdict acts as a veto."
+  },
+  "verdict_rule": {
+    "min_clusters": 30,
+    "min_trades": 100,
+    "text": "a frame is positive when a judged arm has net per-trade return above 0 at base and stress cost (pooled windows), passes the BH correction, has at least 100 trades and 30 clusters, at least half the frame's datasets remain, its noise baseline is not no_positive_edge, and (perps frames) its venue verdict is not fail. Inconclusive when no arm is positive and a judged arm passes every check except a sample or dataset floor. Else negative. Excluded datasets (coverage, funding_incomplete leg, failing fidelity row) leave every arm of the frame once. Among positive arms the suggestion takes the lowest p_decision, then the higher net per-trade return. The perps frames decide the suggestion; the spot frame is reported beside them."
+  }
+}

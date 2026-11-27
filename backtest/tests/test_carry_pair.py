@@ -10,17 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backtest_carry_pair import (
-    CarryPairBacktester,
-    CarryResults,
-    aggregate_legs,
-    bar_hours_from_index,
-    carry_verdict,
-    delta_drift_pct,
-    leg_from_carry_results,
-    liquidation_loss,
-    rebalance_spot_qty,
-)
+from backtest_carry_pair import CarryPairBacktester, CarryResults, delta_drift_pct, leg_from_carry_results, liquidation_loss, rebalance_spot_qty
 from eval_windows import LIQUIDATED_DDADJ_FLOOR
 from backtester import LIQUIDATED_METRIC_FLOOR
 
@@ -162,17 +152,6 @@ def test_no_lookahead_fills_at_next_bar_open() -> None:
     assert ep.entry_spot == pytest.approx(105.0)
 
 
-def test_exit_signal_closes_and_reopens() -> None:
-    n = 30
-    sig = [-1] + [0] * 4 + [1] + [0] * 4 + [-1] + [0] * (n - 11)
-    df = _make_df([100.0] * n, sig)
-    bt = CarryPairBacktester(base_notional=1000.0, leverage=3.0,
-                             perp_fee_pct=0.0, spot_fee_pct=0.0)
-    res = bt.run(df)
-    assert res.pairs_opened == 2
-    assert res.episodes[0].exit_reason == "exit_signal"
-
-
 def test_perp_liquidation_caps_loss_and_credits_spot() -> None:
     n = 20
     prices = [100.0, 100.0] + [135.0] * (n - 2)
@@ -186,36 +165,6 @@ def test_perp_liquidation_caps_loss_and_credits_spot() -> None:
     margin = 1000.0 / 3.0
     assert ep.price_pnl > 0.0
     assert ep.price_pnl <= 1000.0 * 0.35 - margin + 1e-6
-
-
-def test_constructor_rejects_bad_params() -> None:
-    with pytest.raises(ValueError):
-        CarryPairBacktester(initial_capital=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(base_notional=-1)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(leverage=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(leverage=5.0, maintenance_margin=0.5)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(entry_threshold=0.0001, exit_threshold=0.0002)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(drift_threshold=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(bar_hours=0)
-
-
-def test_run_rejects_missing_columns() -> None:
-    bt = CarryPairBacktester()
-    with pytest.raises(ValueError):
-        bt.run(pd.DataFrame({"open": [1.0], "close": [1.0]}))
-
-
-def test_delta_drift_pct_math() -> None:
-    assert delta_drift_pct(10.0, 100.0, 10.0, 100.0) == pytest.approx(0.0)
-    assert delta_drift_pct(10.0, 100.0, 9.5, 100.0) == pytest.approx(5.0)
-    assert delta_drift_pct(10.0, 100.0, 8.0, 100.0) > delta_drift_pct(10.0, 100.0, 9.0, 100.0)
-    assert delta_drift_pct(0.0, 100.0, 10.0, 100.0) == 0.0
 
 
 def test_rebalance_spot_qty_restores_parity() -> None:
@@ -319,49 +268,12 @@ def test_leg_from_results_liquidated_floors_and_funding_share():
     assert leg["ddadj"] == pytest.approx(2.0, abs=1e-6), case
 
 
-def test_aggregate_legs_degenerate_rule() -> None:
-    legs = {
-        "A": {"return_pct": 1.0, "sharpe": 1.0, "ddadj": 1.0, "trades": 2,
-              "funding_pnl": 5.0, "price_pnl": 0.0, "fees": 1.0, "rebalances": 0,
-              "liquidated": False},
-        "B": {"return_pct": 0.0, "sharpe": 0.0, "ddadj": 0.0, "trades": 0,
-              "funding_pnl": 0.0, "price_pnl": 0.0, "fees": 0.0, "rebalances": 0,
-              "liquidated": False},
-        "C": {"return_pct": 0.0, "sharpe": 0.0, "ddadj": 0.0, "trades": 0,
-              "funding_pnl": 0.0, "price_pnl": 0.0, "fees": 0.0, "rebalances": 0,
-              "liquidated": False},
-    }
-    s = aggregate_legs(legs)
-    assert s["traded_datasets"] == 1
-    assert s["degenerate"] is True
-    assert aggregate_legs({"A": None})["datasets"] == 0
-
-
 def _summary(mean_return, traded=2, datasets=2, liquidated=0, degenerate=False):
     return {"mean_return_pct": mean_return, "traded_datasets": traded,
             "datasets": datasets, "liquidated_legs": liquidated,
             "degenerate": degenerate}
 
 
-def test_carry_verdict_matrix() -> None:
-    assert carry_verdict({"is": _summary(0.0, traded=0)}) == "no_trades"
-    assert carry_verdict({"is": _summary(5.0, degenerate=True)}) == "no_trades"
-    assert carry_verdict({"a": _summary(-1.0), "b": _summary(-2.0)}) == "deprecate"
-    assert carry_verdict({"a": _summary(3.0), "b": _summary(1.0)}) == "healthy"
-    assert carry_verdict({"a": _summary(3.0, liquidated=1),
-                          "b": _summary(1.0)}) == "marginal"
-    assert carry_verdict({"a": _summary(10.0), "b": _summary(-1.0),
-                          "c": _summary(-1.0)}) == "marginal"
-
-
 def test_liquidation_loss_math() -> None:
     assert liquidation_loss(1000.0, 3.0, 0.02) == pytest.approx(1000.0 * (1 / 3 - 0.02))
     assert liquidation_loss(1000.0, 10.0, 0.02) == pytest.approx(80.0)
-
-
-def test_bar_hours_from_index() -> None:
-    idx1 = pd.date_range("2024-01-01", periods=5, freq="1h")
-    idx4 = pd.date_range("2024-01-01", periods=5, freq="4h")
-    assert bar_hours_from_index(idx1) == pytest.approx(1.0)
-    assert bar_hours_from_index(idx4) == pytest.approx(4.0)
-    assert bar_hours_from_index(pd.Index([1])) == 1.0

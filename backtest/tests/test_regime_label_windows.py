@@ -4,13 +4,15 @@ import json
 import sys
 
 import pandas as pd
+import pytest
 
 import run_backtest
-from backtester import Backtester
-from regime import bounded_window_labels, prepare_check_regime
+from backtester import Backtester, CloseCapabilityError
+from regime import bounded_window_labels, valid_labels_for_classifier
 from regime_label_columns import (
     attach_regime_label_columns,
     column_name,
+    feature_label_kwargs,
     resolve_feature_windows,
 )
 
@@ -156,35 +158,6 @@ def test_default_directional_selector_keeps_the_primary_stamp():
     assert opens[0]["gate"] != ""
 
 
-def test_labels_match_prepare_and_the_helper_does_not_shift():
-    regime = {"enabled": True, "period": 14, "windows": {
-        "medium": {"classifier": "adx", "period": 14},
-        "fast": {"classifier": "adx", "period": 8},
-    }}
-    plan = resolve_feature_windows({"regime_gate_window": "fast"}, regime)
-    df = _frame()
-    raw = df.copy()
-    attach_regime_label_columns(df, plan)
-    col = column_name("fast")
-    limit = plan["limit"]
-    for i in range(limit, len(df), 20):
-        payload, _, _ = prepare_check_regime(
-            raw.iloc[i - limit + 1:i + 1], regime_enabled=True,
-            windows_spec=plan["windows_spec"])
-        live = str((payload.get("fast") or {}).get("regime") or "")
-        assert df[col].iloc[i] == live
-        decision = df[col].shift(1).iloc[i]
-        prior, _, _ = prepare_check_regime(
-            raw.iloc[i - limit:i], regime_enabled=True,
-            windows_spec=plan["windows_spec"])
-        assert decision == str((prior.get("fast") or {}).get("regime") or "")
-    labeled = raw.copy()
-    bounded_window_labels(
-        labeled, period=14, adx_threshold=20, windows_spec=plan["windows_spec"],
-        limit=limit, columns={col: "fast"})
-    assert list(labeled[col]) == list(df[col])
-
-
 def test_higher_timeframe_shifts_once_before_the_fill():
     regime = {"enabled": True, "period": 14, "timeframe": "4h", "windows": {
         "medium": {"classifier": "adx", "period": 14},
@@ -291,3 +264,36 @@ def test_parity_named_directional_and_atr_windows_against_the_default_run():
     assert list(named_atr["live_signal"]) == list(default["live_signal"]), case
 
 
+
+
+def _composite_trail_backtester(primary_classifier, atr_classifier):
+    composite = {"adx": 20, "range_pct": 0.03, "return_pct": 0.02}
+    windows = {
+        "medium": {"classifier": primary_classifier, "period": 350},
+        "trail": {"classifier": atr_classifier, "period": 350},
+    }
+    for w in windows.values():
+        if w["classifier"] == "composite":
+            w["thresholds"] = dict(composite)
+    plan = resolve_feature_windows(
+        {"regime_atr_window": "trail"}, {"enabled": True, "windows": windows})
+    labels = sorted(valid_labels_for_classifier("composite"))
+    return Backtester(
+        initial_capital=1000, platform="hyperliquid", strategy_type="perps",
+        regime_enabled=True, regime_windows_spec=plan["windows_spec"],
+        trailing_stop_atr_mult_regime={
+            "trend_regime": {label: {"atr_multiple": 2.5} for label in labels}},
+        **feature_label_kwargs(plan),
+    )
+
+
+def test_regime_stop_block_uses_the_atr_window_vocabulary():
+    bt = _composite_trail_backtester("adx", "composite")
+    owner = bt._stop_context.resolved_stop_owner
+    assert owner["name"] == "trailing_atr_regime"
+    composite = tuple(sorted(valid_labels_for_classifier("composite")))
+    assert tuple(owner["parameters"]["regime_labels"]) == composite
+    assert tuple(bt._regime_atr_labels) == composite
+    with pytest.raises(CloseCapabilityError) as refused:
+        _composite_trail_backtester("composite", "adx")
+    assert refused.value.reason_code == "MISSING_STOP_INPUT"

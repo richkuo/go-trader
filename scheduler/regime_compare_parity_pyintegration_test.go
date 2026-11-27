@@ -265,6 +265,40 @@ assert not live and not strategy["regime"]
 json.dump(out, sys.stdout, allow_nan=False)
 `
 
+func TestRegimeReadinessContractProcesses(t *testing.T) {
+	t.Parallel()
+	t.Run("entry-admission-transitions", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessEntryAdmissionTransitions(t)
+	})
+	t.Run("once", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessOnceIntegration(t)
+	})
+	t.Run("process", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessProcessIntegration(t)
+	})
+	for _, mode := range []string{"websocket", "shared"} {
+		mode := mode
+		t.Run("pending-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessPendingProcess(t, mode)
+		})
+	}
+	for _, mode := range []string{"rest", "websocket", "shared"} {
+		mode := mode
+		t.Run("entry-admission-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryAdmissionProcess(t, mode)
+		})
+		t.Run("entry-limit-recovery-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryLimitRecovery(t, mode)
+		})
+	}
+}
+
 func TestRegimeReadinessContractIntegration(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
@@ -350,17 +384,9 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if !reflect.DeepEqual(metricBefore, metricCapture) {
 		t.Fatal("current metric mutation changed captured entry evidence")
 	}
-	t.Run("once", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessOnceIntegration(t)
-	})
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
 	regimeReadinessStopBackfillIntegration(t, bundles, rc)
 	regimeReadinessClassifierCaseIntegration(t, root)
-	t.Run("process", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessProcessIntegration(t)
-	})
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -415,7 +441,7 @@ func regimeReadinessManual(id, mode string) StrategyConfig {
 
 func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := regimeReadinessManual("readiness-manual", "paper")
+	sc := regimeReadinessManual("readiness-manual", "live")
 	cfg := &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
 	orders, cancels := 0, 0
 	type sentOrder struct {
@@ -423,7 +449,7 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 		size, slPct float64
 	}
 	var sentOrders []sentOrder
-	recorder := func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	recorder := func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		orders++
 		sentOrders = append(sentOrders, sentOrder{side: side, size: size, slPct: stopLossPct})
 		if cancelStopLossOID != 0 || len(extraCancelOIDs) > 0 {
@@ -436,7 +462,7 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	t.Cleanup(func() { runHyperliquidExecuteFn = previousExecute })
 	d := manualCoreDeps{cfg: cfg, resolveRegime: func(StrategyConfig) (RegimePayload, error) { return bundles[2].Payload, nil }, execute: recorder, loadState: func(string, string) (manualStateView, error) {
 		return manualStateView{HasStrategy: true, Pos: &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long"}}, nil
-	}, cancelOrder: func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+	}, cancelOrder: func(hlWriteAuth, string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
 		cancels++
 		return nil, "", fmt.Errorf("offline cancellation reached")
 	}}
@@ -514,17 +540,6 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	if s := paperBook(1, true); len(s.TradeHistory) != 1 || s.Positions["BTC"] == nil || s.Positions["BTC"].Side != "long" {
 		t.Fatalf("paper cold same-side add changed the book: %+v trades %d", s.Positions, len(s.TradeHistory))
 	}
-	futures := NewStrategyState(StrategyConfig{ID: "readiness-topstep", Type: "futures", Platform: "topstep", Capital: 10000})
-	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 1000}
-	if _, err := ExecuteFuturesSignalWithFillFee(futures, 1, "ES", 5000, spec, 2.5, 1, 0, 0, "", 0, logger); err != nil || futures.Positions["ES"] == nil {
-		t.Fatalf("futures long open: %v", err)
-	}
-	futuresSignal, futuresClose := -1, 0.0
-	applyRegimeReadinessHold(hold, &futuresSignal, &futuresClose, futures.Positions["ES"].Quantity, futures.Positions["ES"].Side, true, true, logger)
-	if _, err := ExecuteFuturesSignalWithFillFee(futures, futuresSignal, "ES", 5000, spec, 2.5, 1, 0, 0, "", futuresClose, logger); err != nil || len(futures.Positions) != 0 {
-		t.Fatalf("futures cold reversal left %+v: %v", futures.Positions, err)
-	}
-	t.Logf("readiness hold futures reversal: long ES closed, open positions %d", len(futures.Positions))
 
 	pos := &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 100, Side: "long", Regime: "trending_up_clean", RegimeWindows: map[string]string{"medium": "trending_up_clean", "long": ""}, RegimeSnapshots: bundles[2].Payload.Snapshots()}
 	if positionCtxForCheck(sc, pos, rc).Regime != "" || positionATRRegimeLabel(hyperliquidProtectionPositionSnapshot(pos), sc) != "" {
@@ -599,7 +614,6 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 	entries := []map[string]any{
 		{"id": "ready-bus", "type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000},
 		{"id": "ready-rh", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000},
-		{"id": "ready-ts", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}},
 	}
 	for _, e := range entries {
 		e["max_drawdown_pct"] = 90
@@ -616,11 +630,11 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 	}
 	bin := pyintegrationBinary(t)
 	for _, stage := range []string{"cold-entry", "ready-entry", "cold-close"} {
-		spot, fut := "up", "up"
+		spot := "up"
 		if stage == "cold-close" {
-			spot, fut = "down", "tp"
+			spot = "down"
 		}
-		fixture := htfITWriteFixture(t, filepath.Join(dir, stage+".json"), htfITFixture{HTF: "short", Spot: spot, Fut: fut})
+		fixture := htfITWriteFixture(t, filepath.Join(dir, stage+".json"), htfITFixture{HTF: "short", Spot: spot})
 		if stage == "ready-entry" {
 			var doc map[string]any
 			raw, err := os.ReadFile(fixture)
@@ -636,7 +650,6 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 					doc["ccxt"].(map[string]any)[key] = htfITBars(104, 4*htfITHour, now, "")
 				}
 			}
-			doc["yahoo"].(map[string]any)["ES=F|4h"] = htfITBars(104, 4*htfITHour, now, "")
 			doc["yahoo"].(map[string]any)["BTC-USD|1h"] = htfITBars(416, htfITHour, now, "")
 			raw, err = json.Marshal(doc)
 			if err != nil {
@@ -670,13 +683,13 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 				t.Fatalf("%s: cold management close was suppressed\n%s", id, log)
 			}
 		}
-		t.Logf("%s: three real check scripts and scheduler paths passed", stage)
+		t.Logf("%s: two real check scripts and scheduler paths passed", stage)
 	}
 }
 
 func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := regimeReadinessManual("readiness-recovery", "paper")
+	sc := regimeReadinessManual("readiness-recovery", "live")
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
 	adopted := sc
 	adopted.ID += "-adopted"
@@ -800,12 +813,13 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	}
 	regimeReadinessLimitIntegration(t, bundles, rc)
 	regimeReadinessCarryIntegration(t, bundles, rc)
+	regimeReadinessPendingIntegration(t, bundles, rc)
 }
 
 func regimeReadinessStopBackfillIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
 	stop := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2.5}, "trending_down": {ATR: 9}, "ranging": {ATR: 9}}}
-	base := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop}
+	base := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop}
 	ids := []string{"backfill-ready", "backfill-warming", "backfill-limit"}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60}
 	for _, id := range ids {
@@ -1010,7 +1024,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		route.publish(&fresh)
 	}
 	calls := 0
-	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	withStubbedLimitOpen(t, func(hlWriteAuth, string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 		calls++
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})
@@ -1117,7 +1131,7 @@ func regimeReadinessCarryIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		return addAs(deps, sc)
 	}
 	calls := 0
-	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	withStubbedLimitOpen(t, func(hlWriteAuth, string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 		calls++
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})

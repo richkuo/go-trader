@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -11,6 +12,7 @@ NAME = "cumulative_volume_delta_divergence"
 REFUSED = "is production_refused"
 STEP = 300_000
 T0 = 1_791_000_000_000 // STEP * STEP
+CHILD_WORKERS = min(4, os.cpu_count() or 1)
 
 
 def _env():
@@ -81,61 +83,80 @@ def _assert_admitted(proc, name):
     assert "Fetching" not in proc.stderr
 
 
+def _spawn_name_checks(pool, name):
+    NAME = name
+    quote = _quote_capability(NAME)
+    envelope = {"v": 2, "market": _market()}
+    paper = [
+        [NAME, "BTC", "5m", "--mode=paper", "--market-stdin"],
+        [NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"],
+        ["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
+         "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})],
+        [NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
+         "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": [{"name": NAME}]})],
+    ]
+    refused = [
+        ([NAME, "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin"], "open"),
+        ([NAME, "BTC", "5m", "--mode=live", "--market-stdin"], "open"),
+        ([NAME, "BTC", "5m", "--allow-no-edge", "--market-stdin"], "open"),
+        ([NAME, "BTC", "5m", "--market-stdin"], "open"),
+        ([NAME, "BTC", "5m", "--mode=bogus", "--market-stdin"], "open"),
+        ([NAME, "BTC", "5m", "--mode=paper", "--mode=paper", "--market-stdin"], "open"),
+        (["breakout", "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin",
+          "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
+        (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
+          "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
+    ]
+    if quote:
+        refused += [(argv, "open") for argv in paper]
+    slots = [
+        {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+        {"id": "missing", "strategy": NAME, "mode": "paper", "allow_no_edge": True},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ]
+    return {
+        "quote": quote,
+        "refused": [(pool.submit(_run, "check_hyperliquid.py", argv, envelope), role) for argv, role in refused],
+        "admitted": [pool.submit(_run, "check_hyperliquid.py", argv, envelope) for argv in ([] if quote else paper)],
+        "no_stdin": pool.submit(_run, "check_hyperliquid.py", [NAME, "BTC", "5m", "--mode=paper"]),
+        "batch": pool.submit(_run, "check_hyperliquid.py",
+                             ["--batch-check", "--symbol=BTC", "--timeframe=5m", "--market-stdin"],
+                             {"v": 2, "slots": slots, "market": _market()}),
+    }
+
+
 def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_reference_and_keeps_batch_peers(subtests):
-    for name in REFUSED_NAMES:
-        with subtests.test(name=name):
-            NAME = name
-            quote = _quote_capability(NAME)
-            envelope = {"v": 2, "market": _market()}
-            paper = [
-                [NAME, "BTC", "5m", "--mode=paper", "--market-stdin"],
-                [NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"],
-                ["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
-                 "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})],
-                [NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
-                 "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": [{"name": NAME}]})],
-            ]
-            refused = [
-                ([NAME, "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--mode=live", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--allow-no-edge", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--mode=bogus", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--mode=paper", "--mode=paper", "--market-stdin"], "open"),
-                (["breakout", "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin",
-                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
-                (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
-                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
-            ]
-            if quote:
-                refused += [(argv, "open") for argv in paper]
-            for argv, role in refused:
-                _assert_refused(_run("check_hyperliquid.py", argv, envelope), role, NAME)
-            for argv in ([] if quote else paper):
-                _assert_admitted(_run("check_hyperliquid.py", argv, envelope), NAME)
-            proc = _run("check_hyperliquid.py", [NAME, "BTC", "5m", "--mode=paper"])
-            assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:]
-            assert "Fetching" not in proc.stderr
-            slots = [
-                {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
-                {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
-                {"id": "missing", "strategy": NAME, "mode": "paper", "allow_no_edge": True},
-                {"id": "peer", "strategy": "breakout", "mode": "paper"},
-            ]
-            proc = _run("check_hyperliquid.py", ["--batch-check", "--symbol=BTC", "--timeframe=5m", "--market-stdin"],
-                        {"v": 2, "slots": slots, "market": _market()})
-            results = {r["id"]: r for r in _payload(proc)["results"]}
-            for slot in ("acked", "missing") + (("paper",) if quote else ()):
-                assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
-                assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
-            if not quote:
-                assert REFUSED not in (results["paper"].get("error") or ""), f"batch_slots_admit[{name}] paper"
-            assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"
     envelope = {"v": 2, "market": _market()}
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "inventory_quote_exit"}]})
-    for mode in (["--mode=paper"], ["--mode=live", "--allow-no-edge"], []):
-        proc = _run("check_hyperliquid.py", ["breakout", "BTC", "5m", *mode, "--market-stdin", "--strategy-refs", refs], envelope)
-        assert proc.returncode == 1, proc.stderr[-2000:]
-        error = _payload(proc)["error"]
-        assert "close strategy 'inventory_quote_exit' is quote-owned and research-only" in error, error
-        assert "Unknown close strategy" not in error, error
+    with ThreadPoolExecutor(max_workers=CHILD_WORKERS) as pool:
+        spawned = {name: _spawn_name_checks(pool, name) for name in REFUSED_NAMES}
+        tail = [pool.submit(_run, "check_hyperliquid.py",
+                            ["breakout", "BTC", "5m", *mode, "--market-stdin", "--strategy-refs", refs], envelope)
+                for mode in (["--mode=paper"], ["--mode=live", "--allow-no-edge"], [])]
+        for name in REFUSED_NAMES:
+            with subtests.test(name=name):
+                NAME = name
+                checks = spawned[name]
+                quote = checks["quote"]
+                for future, role in checks["refused"]:
+                    _assert_refused(future.result(), role, NAME)
+                for future in checks["admitted"]:
+                    _assert_admitted(future.result(), NAME)
+                proc = checks["no_stdin"].result()
+                assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:]
+                assert "Fetching" not in proc.stderr
+                proc = checks["batch"].result()
+                results = {r["id"]: r for r in _payload(proc)["results"]}
+                for slot in ("acked", "missing") + (("paper",) if quote else ()):
+                    assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
+                    assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
+                if not quote:
+                    assert REFUSED not in (results["paper"].get("error") or ""), f"batch_slots_admit[{name}] paper"
+                assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"
+        for future in tail:
+            proc = future.result()
+            assert proc.returncode == 1, proc.stderr[-2000:]
+            error = _payload(proc)["error"]
+            assert "close strategy 'inventory_quote_exit' is quote-owned and research-only" in error, error
+            assert "Unknown close strategy" not in error, error

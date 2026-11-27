@@ -376,7 +376,7 @@ func (e *quoteTestEnv) open() {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		owned.Release()
 		e.t.Fatal(err)

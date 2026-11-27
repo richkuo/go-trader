@@ -26,6 +26,7 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Discord.OwnerID,
 				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmChannels:         cfg.Discord.DMChannels,
+				service:            "discord",
 				partitionChannels:  partitionChannelValues(cfg.Discord.Channels, cfg.Strategies),
 			})
 			closers = append(closers, discord.Close)
@@ -49,6 +50,7 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Telegram.OwnerChatID,
 				dmChannels:         cfg.Telegram.DMChannels,
 				plainText:          true,
+				service:            "telegram",
 				partitionChannels:  partitionChannelValues(cfg.Telegram.Channels, cfg.Strategies),
 			})
 			closers = append(closers, tg.Close)
@@ -100,6 +102,7 @@ func buildBrokerNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Discord.OwnerID,
 				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmChannels:         cfg.Discord.DMChannels,
+				service:            "discord",
 				partitionChannels:  partitionChannelValues(cfg.Discord.Channels, cfg.Strategies),
 			})
 		}
@@ -118,6 +121,7 @@ func buildBrokerNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Telegram.OwnerChatID,
 				dmChannels:         cfg.Telegram.DMChannels,
 				plainText:          true,
+				service:            "telegram",
 				partitionChannels:  partitionChannelValues(cfg.Telegram.Channels, cfg.Strategies),
 			})
 			closers = append(closers, tg.Close)

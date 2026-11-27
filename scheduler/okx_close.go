@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,6 +40,21 @@ func defaultOKXLiveCloser(symbol string, partialSz *float64) (*OKXCloseResult, e
 
 type OKXPositionsFetcher func() ([]OKXPosition, error)
 
+func protectedOKXCloser(store *StateStore, state *AppState, roster []StrategyConfig, mu *sync.RWMutex, notifier *MultiNotifier, circuit bool, fallback OKXLiveCloser) OKXLiveCloser {
+	return func(symbol string, size *float64) (*OKXCloseResult, error) {
+		for _, sc := range okxLiveStrategiesForCoin(symbol, roster) {
+			s := state.Strategies[sc.ID]
+			if !okxStopWanted(sc) || s == nil || !s.OKXProtection.unresolved() {
+				continue
+			}
+			logger := entryRecoveryLogger(nil, sc.ID)
+			defer logger.Close()
+			return submitOKXProtectedClose(store, sc, s, mu, size, circuit, notifier, logger)
+		}
+		return fallback(symbol, size)
+	}
+}
+
 func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	result, stderr, err := RunOKXFetchPositions(okxFetchPositionsScript)
 	if stderr != "" {
@@ -65,11 +81,53 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	return positions, nil
 }
 
+type okxPositionTarget struct {
+	Account string
+}
+
+type okxStrictPositionRow struct {
+	InstID     string
+	Coin       string
+	PosSide    string
+	MarginMode string
+	Contracts  float64
+}
+
+type okxStrictPositionSnapshot struct {
+	Account string
+	Rows    []okxStrictPositionRow
+}
+
+type OKXStrictPositionReader func(ctx context.Context, target okxPositionTarget) (okxStrictPositionSnapshot, error)
+
+func defaultOKXStrictPositionReader(ctx context.Context, target okxPositionTarget) (okxStrictPositionSnapshot, error) {
+	if strings.TrimSpace(target.Account) == "" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("no OKX swap account identity (OKX_API_KEY unset)")
+	}
+	snap, stderr, err := RunOKXFetchPositionsStrict(ctx, okxFetchPositionsScript)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[okx-close] strict fetch_positions stderr: %s\n", stderr)
+	}
+	return snap, err
+}
+
+func okxSwapRouteInstID(coin string) string {
+	return coin + "-USDT-SWAP"
+}
+
 type OKXLiveCloseReport struct {
-	ClosedCoins  []string
-	AlreadyFlat  []string
-	Unconfigured []OKXPosition
-	Errors       map[string]error
+	ClosedCoins    []string
+	AlreadyFlat    []string
+	Unconfigured   []OKXPosition
+	Errors         map[string]error
+	Attempts       []okxKillSwitchCloseAttempt
+	ResolvedErrors map[string]error
+}
+
+type okxKillSwitchCloseAttempt struct {
+	Coin   string
+	Result *OKXCloseResult
+	Err    error
 }
 
 func (r OKXLiveCloseReport) ConfirmedFlat() bool {
@@ -115,6 +173,7 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 			continue
 		}
 		result, err := closer(p.Coin, nil)
+		report.Attempts = append(report.Attempts, okxKillSwitchCloseAttempt{Coin: p.Coin, Result: result, Err: err})
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -219,6 +278,7 @@ func computeOKXCircuitCloseQty(coin, strategyID string, okxPositions []OKXPositi
 
 func runPendingOKXCircuitCloses(
 	ctx context.Context,
+	store *StateStore,
 	state *AppState,
 	strategies []StrategyConfig,
 	okxHasCreds bool,
@@ -389,6 +449,11 @@ func runPendingOKXCircuitCloses(
 				failedSz = sz
 				failedErr = err
 				break
+			}
+			if ss := state.Strategies[j.stratID]; ss != nil && ss.OKXProtection.unresolved() {
+				logger := entryRecoveryLogger(nil, sc.ID)
+				reconcileOKXProtection(store, *sc, ss, mu, nil, logger)
+				logger.Close()
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}

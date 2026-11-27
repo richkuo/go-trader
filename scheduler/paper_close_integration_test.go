@@ -301,19 +301,23 @@ func pcSplitConfig(t *testing.T) *Config {
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
 			{ID: "pc-spot", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 10000},
-			{ID: "pc-fut", Type: "futures", Platform: "topstep", Args: []string{"sma", "ES", "1h", "--mode=paper"}, Capital: 50000},
 			hl,
 			src,
-			ocSC("pc-opt", "deribit", "BTC"),
+			ocSC("pc-opt", "ibkr", "BTC"),
 			hlLivePerps("pc-live", "BTC", 1000),
 			{ID: "pc-quote", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "ETH/USDT", "1h"}, Capital: 10000},
 		},
 	}
 }
 
-func pcDeribitExpiry(at time.Time) (string, time.Time) {
-	day := time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
-	return day.Format("2006-01-02"), day.Add(8 * time.Hour)
+func pcIBKRExpiry(t *testing.T, at time.Time) (string, time.Time) {
+	t.Helper()
+	expiry := at.UTC().Format("2006-01-02")
+	cutoff, _, ok, err := optionGoExpirySchedule("ibkr", expiry)
+	if err != nil || !ok {
+		t.Fatalf("ibkr expiry schedule %s: ok=%v err=%v", expiry, ok, err)
+	}
+	return expiry, cutoff
 }
 
 func pcSeed(t *testing.T, f *pcFixture, clock *paperFundingTestClock) {
@@ -324,16 +328,13 @@ func pcSeed(t *testing.T, f *pcFixture, clock *paperFundingTestClock) {
 	spot := env.strat("pc-spot")
 	spot.Cash = 5000
 	spot.Positions["BTC/USDT"] = &Position{Symbol: "BTC/USDT", TradePositionID: "pc-spot-btc", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now}
-	fut := env.strat("pc-fut")
-	fut.Cash = 50000
-	fut.Positions["ES"] = &Position{Symbol: "ES", TradePositionID: "pc-fut-es", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50, OpenedAt: now}
 	opt := env.strat("pc-opt")
 	opt.Cash = 100000
-	liveExpiry, liveCutoff := pcDeribitExpiry(now.AddDate(0, 0, 30))
-	pastExpiry, pastCutoff := pcDeribitExpiry(now.AddDate(0, 0, -1))
+	liveExpiry, liveCutoff := pcIBKRExpiry(t, now.AddDate(0, 0, 30))
+	pastExpiry, pastCutoff := pcIBKRExpiry(t, now.AddDate(0, 0, -1))
 	opt.OptionPositions["BTC-call-buy-90000-"+liveExpiry] = &OptionPosition{ID: "BTC-call-buy-90000-" + liveExpiry, TradePositionID: "pc-opt-live",
 		Underlying: "BTC", OptionType: "call", Strike: 90000, Expiry: liveExpiry, Action: "buy", Quantity: 1,
-		EntryPremiumUSD: 1000, CurrentValueUSD: 1200, OpenedAt: now.AddDate(0, 0, -2), MarkUpdatedAt: now, MarkSource: "deribit mark",
+		EntryPremiumUSD: 1000, CurrentValueUSD: 1200, OpenedAt: now.AddDate(0, 0, -2), MarkUpdatedAt: now, MarkSource: ibkrMarkSource,
 		ExpiryCutoffAt: liveCutoff, markVerifiedAt: now}
 	opt.OptionPositions["BTC-put-sell-80000-"+pastExpiry] = &OptionPosition{ID: "BTC-put-sell-80000-" + pastExpiry, TradePositionID: "pc-opt-past",
 		Underlying: "BTC", OptionType: "put", Strike: 80000, Expiry: pastExpiry, Action: "sell", Quantity: 1,
@@ -367,27 +368,8 @@ func TestPaperCloseIntegration(t *testing.T) {
 	pcSeed(t, f, clock)
 	clock.set(clock.ms + 60_000)
 	f.setMark("BTC/USDT", 55000)
-	f.setMark("ES", 5010)
 	f.setMark("ETH", 2100)
 	f.setMark("SOL", 90)
-
-	t.Run("slash command is registered as an owner DM ops command", func(t *testing.T) {
-		var found *discordgo.ApplicationCommand
-		for _, c := range slashCommands() {
-			if c.Name == commandPrefix+paperCloseCommandName {
-				found = c
-			}
-		}
-		if found == nil || found.Contexts == nil || len(*found.Contexts) != 1 || (*found.Contexts)[0] != discordgo.InteractionContextBotDM || len(found.Description) > 100 {
-			t.Fatalf("paper-close must be a bot-DM slash command with a short description: %+v", found)
-		}
-		if len(found.Options) != 2 || found.Options[0].Name != "strategy" || !found.Options[0].Required || found.Options[1].Name != "symbol" || found.Options[1].Required {
-			t.Fatalf("paper-close must take a required strategy and an optional symbol: %+v", found.Options)
-		}
-		if !opsCommandNames[paperCloseCommandName] {
-			t.Fatal("paper-close must be an owner-only ops command")
-		}
-	})
 
 	t.Run("refusals leave every state file and the book unchanged", func(t *testing.T) {
 		f.env.mu.Lock()
@@ -541,7 +523,7 @@ func TestPaperCloseIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("spot, futures, perps and options close at the mark with the operator reason", func(t *testing.T) {
+	t.Run("spot, perps and options close at the mark with the operator reason", func(t *testing.T) {
 		type want struct {
 			id      string
 			pnl     float64
@@ -552,7 +534,6 @@ func TestPaperCloseIntegration(t *testing.T) {
 		}
 		cases := []want{
 			{"pc-spot", 500, 5500, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
-			{"pc-fut", 500, 500, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 			{"pc-hl", 50, 50, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 			{"pc-opt", 200, 1200, 1, 1, "SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 		}
@@ -603,12 +584,12 @@ func TestPaperCloseDashboardAndBreakerReasonUnchanged(t *testing.T) {
 	f := newPCFixture(t, cfg)
 	clock := withPaperFundingClock(t, 1_800_000_000_000)
 	pcSeed(t, f, clock)
-	f.setMark("ES", 4990)
+	f.setMark("ETH/USDT", 1500)
 
 	tradesTotal := func() int {
-		req := httptest.NewRequest(http.MethodGet, "/api/strategies/pc-fut/trades", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/strategies/pc-quote/trades", nil)
 		w := httptest.NewRecorder()
-		f.ss.handleAPIStrategyTrades(w, req, "pc-fut")
+		f.ss.handleAPIStrategyTrades(w, req, "pc-quote")
 		var body struct {
 			Total int `json:"total"`
 		}
@@ -616,38 +597,38 @@ func TestPaperCloseDashboardAndBreakerReasonUnchanged(t *testing.T) {
 		return body.Total
 	}
 	confirm := func(params string) (int, uiConfirmResponse) {
-		w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", fmt.Sprintf(`{"action":"paper-close","strategy_id":"pc-fut","params":%s}`, params), nil)
+		w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", fmt.Sprintf(`{"action":"paper-close","strategy_id":"pc-quote","params":%s}`, params), nil)
 		var resp uiConfirmResponse
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		return w.Code, resp
 	}
 	apply := func(nonce, params string) *httptest.ResponseRecorder {
-		h := func(w http.ResponseWriter, r *http.Request) { f.ss.handleAPIStrategyPaperClose(w, r, "pc-fut") }
-		return mutationPost(f.ss, h, "/api/strategies/pc-fut/paper-close", fmt.Sprintf(`{"nonce":%q,"params":%s}`, nonce, params), nil)
+		h := func(w http.ResponseWriter, r *http.Request) { f.ss.handleAPIStrategyPaperClose(w, r, "pc-quote") }
+		return mutationPost(f.ss, h, "/api/strategies/pc-quote/paper-close", fmt.Sprintf(`{"nonce":%q,"params":%s}`, nonce, params), nil)
 	}
 
-	code, c := confirm(`{"symbol":"ES"}`)
-	if code != http.StatusOK || c.ConfirmPhrase != "pc-fut" || !strings.Contains(c.Description, "ES long 1") {
+	code, c := confirm(`{"symbol":"ETH/USDT"}`)
+	if code != http.StatusOK || c.ConfirmPhrase != "pc-quote" || !strings.Contains(c.Description, "ETH/USDT long 1") {
 		t.Fatalf("confirm = %d %+v", code, c)
 	}
 	f.env.mu.Lock()
-	f.env.strat("pc-fut").Positions["ES"].Quantity = 2
+	f.env.strat("pc-quote").Positions["ETH/USDT"].Quantity = 2
 	f.env.mu.Unlock()
-	f.requireUnchanged("book change between confirm and apply", "pc-fut", func() string {
-		w := apply(c.Nonce, `{"symbol":"ES"}`)
+	f.requireUnchanged("book change between confirm and apply", "pc-quote", func() string {
+		w := apply(c.Nonce, `{"symbol":"ETH/USDT"}`)
 		return fmt.Sprintf("%d %s", w.Code, w.Body.String())
 	}, "409", "changed while you were confirming")
 	f.env.mu.Lock()
-	f.env.strat("pc-fut").Positions["ES"].Quantity = 1
+	f.env.strat("pc-quote").Positions["ETH/USDT"].Quantity = 1
 	f.env.mu.Unlock()
 
 	before := tradesTotal()
-	_, c = confirm(`{"symbol":"ES"}`)
+	_, c = confirm(`{"symbol":"ETH/USDT"}`)
 	if w := apply(c.Nonce, `{}`); w.Code != http.StatusForbidden {
 		t.Fatalf("a nonce bound to other params must be refused: %d %s", w.Code, w.Body.String())
 	}
-	_, c = confirm(`{"symbol":"ES"}`)
-	w := apply(c.Nonce, `{"symbol":"ES"}`)
+	_, c = confirm(`{"symbol":"ETH/USDT"}`)
+	w := apply(c.Nonce, `{"symbol":"ETH/USDT"}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "realized PnL $-500.00") {
 		t.Fatalf("dashboard paper-close = %d %s", w.Code, w.Body.String())
 	}
@@ -807,7 +788,7 @@ func pcManualRemoveFixture(t *testing.T) (*pcFixture, string) {
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000, Paused: true},
 			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}, Capital: 100, Leverage: 1, Paused: true},
-			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Leverage: 1, Capital: 100, Paused: true},
+			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Args: []string{"hold", "SOL", "1h", "--mode=live"}, Leverage: 1, Capital: 100, Paused: true},
 		},
 	}
 	f := newPCFixture(t, cfg)
@@ -1000,7 +981,7 @@ func TestRemoveStrategyGuardIntegration(t *testing.T) {
 			{StrategyConfig{ID: "p", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}}, "/go-trader-paper-close p"},
 			{hlLiveManual("m", 100), "go-trader manual-close m"},
 			{hlLivePerps("h", "ETH", 100), "go-trader force-close h"},
-			{StrategyConfig{ID: "o", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC", "1h", "--mode=live"}}, "No close command exists for platform=okx type=spot"},
+			{StrategyConfig{ID: "r", Type: "spot", Platform: "robinhood", Args: []string{"sma", "BTC", "1h", "--mode=live"}}, "No close command exists for platform=robinhood type=spot"},
 		}
 		for _, c := range cases {
 			if got := removeStrategyCloseAdvice(c.sc, nil); !strings.Contains(got, c.want) {
@@ -1016,33 +997,25 @@ func TestRemoveStrategyGuardIntegration(t *testing.T) {
 func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 	var mu sync.Mutex
 	hlMids := map[string]string{"ETH": "2100", "SOL": "150"}
-	okxLast := map[string]string{"BTC-USDT": "60000"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
 		case r.URL.Path == "/info":
 			_ = json.NewEncoder(w).Encode(hlMids)
-		case r.URL.Path == "/api/v5/market/tickers" && r.URL.Query().Get("instType") == "SPOT":
-			var data []map[string]string
-			for inst, last := range okxLast {
-				data = append(data, map[string]string{"instId": inst, "last": last})
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": "0", "msg": "", "data": data})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-	origHL, origOKX := hlMainnetURL, okxMainnetURL
-	hlMainnetURL, okxMainnetURL = srv.URL, srv.URL
-	defer func() { hlMainnetURL, okxMainnetURL = origHL, origOKX }()
+	origHL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origHL }()
 
 	cfg := &Config{
 		DBFile:          filepath.Join(t.TempDir(), "state.db"),
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
-			{ID: "okx-sp", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, Capital: 10000},
 			{ID: "hl-p", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Capital: 10000, Leverage: 1},
 			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Args: []string{"hold", "SOL", "1h", "--mode=paper"}, Capital: 10000, Leverage: 1},
 		},
@@ -1051,7 +1024,6 @@ func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 	f.ss.paperCloseMarks = nil
 	now := time.Now().UTC()
 	f.env.mu.Lock()
-	f.env.strat("okx-sp").Positions["BTC"] = &Position{Symbol: "BTC", TradePositionID: "okx-btc", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now}
 	f.env.strat("hl-p").Positions["ETH"] = &Position{Symbol: "ETH", TradePositionID: "hl-eth", Quantity: 1, AvgCost: 2000, Side: "short", Multiplier: 1, OpenedAt: now}
 	f.env.strat("man-p").Positions["SOL"] = &Position{Symbol: "SOL", TradePositionID: "man-sol", Quantity: 2, AvgCost: 140, Side: "long", Multiplier: 1, OpenedAt: now}
 	f.env.mu.Unlock()
@@ -1066,22 +1038,16 @@ func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 		}, "no usable mark", "ETH")
 	}
 	mu.Lock()
-	hlMids["ETH"] = "2100"
-	delete(okxLast, "BTC-USDT")
+	delete(hlMids, "ETH")
 	mu.Unlock()
-	f.requireUnchanged("missing OKX coin", "okx-sp", func() string {
-		return f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "okx-sp"), "", nil)
-	}, "BTC: no mark")
+	f.requireUnchanged("served HL response without ETH", "hl-p", func() string {
+		return f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p"), "", nil)
+	}, "no usable mark", "ETH: no mark")
 	mu.Lock()
-	okxLast["BTC-USD"] = "59000"
-	okxLast["BTC-USDT"] = "60000"
+	hlMids["ETH"] = "2100"
 	mu.Unlock()
 
-	msg := f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "okx-sp"), "confirm", nil)
-	if !strings.Contains(msg, "@ 60000 (okx spot ticker BTC-USDT), realized PnL $1000.00") {
-		t.Fatalf("OKX spot close = %q", msg)
-	}
-	msg = f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p", "symbol", "ETH"), "confirm", nil)
+	msg := f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p", "symbol", "ETH"), "confirm", nil)
 	if !strings.Contains(msg, "@ 2100 (hyperliquid allMids), realized PnL $-100.00") {
 		t.Fatalf("HL perps close = %q", msg)
 	}

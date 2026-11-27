@@ -457,7 +457,7 @@ func (job *entryRecoveryJob) noteHold(store *StateStore, mu *sync.RWMutex, reaso
 	}
 	if _, loaded := entryRecoveryAlerted.LoadOrStore(in.IntentID, true); !loaded && notifier != nil && notifier.HasOwner() {
 		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY UNRESOLVED** [%s] %s %s entry %s (client order %s, candle %s): %s. New entries for this strategy stay held until venue evidence resolves it; exits, stops and protection continue. The owner can request a fresh check with /%s%s.",
-			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason, commandPrefix, entryOperatorCommandName))
+			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason, commandPrefix, entryOperatorCommandName) + slashCommandOffNote())
 	}
 }
 
@@ -577,6 +577,9 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, mu *sync.RWMutex, job *e
 	if committed && notifier != nil && notifier.HasOwner() {
 		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY RECOVERED** [%s] %s %s entry %s booked from venue evidence: %.8f @ $%.4f (order %s). Check protection on the next cycle.",
 			sc.ID, in.Symbol, in.TargetSide, in.IntentID, ev.FilledQty, ev.AvgPx, ev.VenueOrderID))
+	}
+	if committed && in.Provider == entryProviderOKX && okxStopWanted(sc) {
+		armOKXStopAfterEntry(store, sc, s, mu, in, &OKXFill{AvgPx: ev.AvgPx, TotalSz: ev.FilledQty, Fee: ev.Fee, OID: ev.VenueOrderID}, notifier, logger)
 	}
 	return trades
 }

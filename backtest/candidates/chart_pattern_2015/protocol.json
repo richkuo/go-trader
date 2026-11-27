@@ -1,0 +1,220 @@
+{
+  "study": "chart_pattern_2015",
+  "issue": "https://github.com/richkuo/go-trader/issues/2015",
+  "status": "frozen before selection; protocol_lock.json records the digest",
+  "suggest_only": "No command sends an order or writes a live or paper config, a registry default, a shared trading implementation or edge_status. The registry default stays htf_gate_factor=0.",
+  "question": "Does htf_gate_factor=4 improve net results against htf_gate_factor=0 for chart_pattern, on the historical audit reference and on the requested Hyperliquid perps shape, per direction?",
+  "engine_revision": {
+    "base_commit": "ab5214ca216e5923a3f8f5c104e161fca4d41033",
+    "note": "The base commit includes the issue 2016 change to shared_strategies/close/trailing_tp_ratchet.py: an explicit regime ladder that lists only ranging_directional serves ranging_directional_up and _down. The research configuration uses the default ladders (use_defaults), where ranging_directional_up and _down already map to the ranging_directional group through ratchet_close_default_group. lock records the hash of every engine, signal, close, configuration, cost, funding and label file."
+  },
+  "capital_usd": 1000.0,
+  "fee_platform": "hyperliquid",
+  "intrabar_resolution": "ohlc_walk",
+  "inputs": {
+    "pinned_end": "2026-11-10",
+    "sources": {
+      "breakout_2014": {
+        "study_manifest": "backtest/candidates/breakout_2014/study_manifest.json",
+        "use": "Binance US 30m and 1h proxy candles for BNB, BTC, ETH, HYPE and SOL, Hyperliquid funding for those coins, and the four offline manifests (venue and bridge, 30m and 1h) with the venue candles, funding, meta and L2 snapshot they name"
+      },
+      "tema_cross_2016": {
+        "study_manifest": "backtest/candidates/tema_cross_2016/study_manifest.json",
+        "use": "Binance US 4h proxy candles for BTC, ETH and SOL (acquired by tema_cross_2016)"
+      }
+    },
+    "reuse": "Every input is read in place from its source study; study_manifest.json records each path, source study, source manifest digest, source revision and sha256. No file is copied and no data is acquired: the frozen inputs of breakout_2014 and tema_cross_2016 cover every requested dataset. The configurations of those studies describe breakout and tema_cross; this study reads only their candles, funding and manifests.",
+    "acquisition": "none"
+  },
+  "windows": {
+    "is": ["2025-06-10", "2026-01-01"],
+    "oos": ["2026-01-01", "2026-11-10"],
+    "2023": ["2023-01-01", "2024-01-01"],
+    "2024": ["2024-01-01", "2025-01-01"],
+    "2025H1": ["2025-01-01", "2025-07-01"],
+    "2025H1t": ["2025-01-01", "2025-06-10"],
+    "oos_982": ["2026-01-01", "2026-07-01"],
+    "stitched": ["2025-06-10", "2026-11-10"]
+  },
+  "window_roles": {
+    "is": "selection window (protocol window); every screened factor is scored here and nowhere else before selection",
+    "oos": "judged protocol window; its end is frozen at the pinned input end 2026-11-10 (the issue 982 run read the latest bar, about 2026-07-01)",
+    "2023": "held-out audit window; the perps contracts cannot use it because Hyperliquid funding starts 2023-05-12 and pre-venue hours stay unavailable",
+    "2024": "held-out window",
+    "2025H1": "held-out audit window as issue 982 defined it; it overlaps is by 21 days, so statistics use 2025H1t",
+    "2025H1t": "2025H1 trimmed at the is start; the disjoint judged interval for statistics and the perps held-out window",
+    "oos_982": "diagnostic only: the oos dates issue 982 could read (2026-01-01 to its run date 2026-07-01), used to separate the data-range change from engine and cost changes",
+    "stitched": "one continuous run from a flat book over is and oos with its own state; reported, never formed by adding reset-window returns and never pooled into a statistic"
+  },
+  "prior_exposure": "The windows is, oos, 2023, 2024 and 2025H1 were examined by issue 982 (2026-07-01) and issue 1282 (2026-07-10) for this strategy and these factors on the spot long audit datasets. The oos window has since accrued four months. The perps datasets (30m, 1h, BNB, HYPE, short and bidirectional books, the ratchet close) were not examined for chart_pattern before this study, but their calendar windows overlap the examined ones.",
+  "frame": {
+    "length_bars": 200,
+    "derivation": "The research configuration enables the regime with the default single ADX window (period 14, no windows). The Go scheduler fetches regimeRequiredOhlcvLimit(regime) = max(regimeOhlcvBaseLimit 200, 2*14+1 + regimeOhlcvMargin 10) = 200 candles per check (scheduler/regime_multi_window.go, scheduler/hl_batch.go). build-arms re-derives the length from the Go source constants and refuses a mismatch.",
+    "decision": "closed bar: the research configuration sets closed_bar_decisions true, so the check evaluates the last 200 closed candles; the decision at the close of bar N fills at the open of bar N+1 in the backtester",
+    "alignment": "positional: the frame for bar N is the 200 source rows ending at bar N, as the venue returns them (a missing candle shortens the time span and is not filled)",
+    "warmup_bars": 400,
+    "warmup_rule": "proxy legs load 400 consecutive bars before the window start (eval_windows check_warmup_prehistory); manifest legs use the manifest warm-up of 400 bars; both exceed the 199 bars a full frame needs",
+    "decomposition": "Per decision bar the driver calls chart_pattern_core on the bounded frame once with htf_gate_factor 0 (the pattern signal before the gate) and calls _htf_gate_trend on the same frame for each factor. The gated signal is the veto rule of chart_pattern_core applied to those two values. replay-check compares this with direct chart_pattern_core calls and with the real signal-check path on frozen inputs, and lock refuses a mismatch."
+  },
+  "signal_params": {
+    "pivot_lookback": 5,
+    "tolerance": 0.03,
+    "vol_multiplier": 1.5,
+    "vol_period": 20,
+    "htf_gate_mode": "veto",
+    "htf_gate_ema_fast": 20,
+    "htf_gate_ema_slow": 40
+  },
+  "audit": {
+    "registry": "spot",
+    "direction": "long",
+    "signal_path": "full_frame",
+    "signal_path_note": "the historical eval_windows path: apply_strategy on the whole window frame with no warm-up, as issues 982 and 1282 ran it",
+    "datasets": [["BTC", "1h"], ["BTC", "4h"], ["ETH", "1h"], ["ETH", "4h"], ["SOL", "1h"], ["SOL", "4h"]],
+    "factors": [0, 4, 5, 6],
+    "warmup_bars": 0,
+    "incumbents": "eval_windows.INCUMBENTS (median of 8 per window and dataset); each memo below is its own incumbent memo instance",
+    "memos": {
+      "current": {
+        "role": "the current-default rerun: eval_windows defaults (perps accounting, Hyperliquid taker fee 0.045 percent, 0.05 percent slippage, charged funding)",
+        "commission_pct": null,
+        "slippage_pct": null,
+        "funding_mode": "charge",
+        "windows": ["is", "oos", "2023", "2024", "2025H1", "2025H1t"]
+      },
+      "current_funding_off": {
+        "role": "labeled diagnostic: current fees with funding off, so the 2023 window (unpriced before 2023-05-12) has a value; cannot support a perps opt-in",
+        "commission_pct": null,
+        "slippage_pct": null,
+        "funding_mode": "off",
+        "windows": ["is", "oos", "2023", "2024", "2025H1"]
+      },
+      "legacy_cost": {
+        "role": "labeled diagnostic: the issue 982 cost model (binanceus commission 0.1 percent, 0.05 percent slippage, no funding) on current engine and data; oos_982 isolates the data-range change",
+        "commission_pct": 0.001,
+        "slippage_pct": 0.0005,
+        "funding_mode": "off",
+        "windows": ["is", "oos", "oos_982", "2023", "2024", "2025H1"]
+      }
+    },
+    "pass_rule": "eval_windows.score_candidate: PASS when the candidate mean Sharpe and mean drawdown-adjusted return both exceed the incumbent-bar means over the scored datasets"
+  },
+  "historical": {
+    "982": {
+      "source": "docs/research/982-chart-pattern-htf-gate-m1.md",
+      "run": "2026-07-01, eval_windows, binanceus fee model, 5 bps slippage, long open-as-close, latest bar about 2026-07-01",
+      "verdicts": {
+        "0": {"is": "FAIL", "oos": "PASS", "2023": "FAIL", "2024": "PASS", "2025H1": "FAIL"},
+        "4": {"is": "PASS", "oos": "PASS", "2023": "PASS", "2024": "FAIL", "2025H1": "PASS"},
+        "5": {"is": "PASS", "oos": "FAIL", "2023": "PASS", "2024": "FAIL", "2025H1": "PASS"},
+        "6": {"is": "PASS", "oos": "FAIL", "2023": "PASS", "2024": "FAIL", "2025H1": "PASS"}
+      },
+      "mean_sharpe": {
+        "0": {"is": -0.42, "oos": -0.61, "2023": 1.33, "2024": 1.25, "2025H1": -0.53},
+        "4": {"is": 0.15, "oos": -0.67, "2023": 1.67, "2024": 0.65, "2025H1": 0.59},
+        "5": {"is": 0.23, "oos": -0.87, "2023": 1.70, "2024": 0.85, "2025H1": 0.30},
+        "6": {"is": 0.48, "oos": -1.02, "2023": 1.81, "2024": 0.74, "2025H1": -0.01}
+      },
+      "bar_sharpe": {"is": -0.12, "oos": -0.75, "2023": 1.46, "2024": 0.90, "2025H1": -0.42}
+    },
+    "1282": {
+      "source": "docs/research/1282-m5-limbo-verdicts.md",
+      "run": "2026-07-10, eval_windows and auto_suggest with Benjamini-Hochberg, post issue 1320 fees (Hyperliquid 0.045 percent), last bars 2026-07-10",
+      "verdicts": {
+        "4": {"is": "PASS", "oos": "PASS", "2023": "PASS", "2024": "FAIL", "2025H1": "PASS"},
+        "5": {"oos": "FAIL"},
+        "6": {"oos": "FAIL"}
+      },
+      "not_documented": "per-window verdicts for factors 0, 5 and 6 other than the oos failures of 5 and 6",
+      "noise_gate": {
+        "0": "p=0.0001, n=709, +1.41 percent per trade, five pooled windows, long",
+        "4": "p=0.0013, n=192, +6.48 percent per trade, five pooled windows, long"
+      },
+      "short_leg": "ungated spot short, factor 0 only: five-window pool p=0.645, n=703, -0.09 percent per trade; M1 FAIL, PASS, FAIL, FAIL, PASS. It does not test the gate on the short leg."
+    },
+    "1294": {
+      "source": "docs/research/1294-intrabar-baseline-rerun.md",
+      "note": "issue 1294 marked issue 982 current without a rerun: it arms no engine stop, so the intrabar stop race cannot reach it; it printed no fresh 982 table"
+    }
+  },
+  "perps": {
+    "registry": "futures",
+    "signal_path": "finite_frame",
+    "coins": ["BNB", "BTC", "ETH", "HYPE", "SOL"],
+    "intervals": ["30m", "1h"],
+    "factors_screened": [2, 3, 4, 5, 6],
+    "factors_mandatory": [0, 4],
+    "contracts": {
+      "ref_long": {"kind": "open_as_close", "direction": "long", "role": "open-as-close reference, long book; the pattern signal opens and its opposite signal closes; no engine stop"},
+      "ref_short": {"kind": "open_as_close", "direction": "short", "role": "open-as-close reference, short book; scored separately from ref_long"},
+      "ratchet_long": {"kind": "ratchet", "direction": "long", "role": "research configuration, long book"},
+      "ratchet_short": {"kind": "ratchet", "direction": "short", "role": "research configuration, short book"},
+      "ratchet_both": {"kind": "ratchet", "direction": "both", "role": "research configuration, one bidirectional book"}
+    },
+    "refused_contracts": {
+      "ref_both": "eval_windows.validate_candidate refuses direction both without close_strategies (the plain signal path runs one leg at a time); a sum of ref_long and ref_short is a diagnostic, never one bidirectional book"
+    },
+    "groups": {
+      "proxy_30m": {"kind": "proxy", "interval": "30m", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "Binance US spot candles as a proxy for Hyperliquid perps prices, Hyperliquid fees and charged funding"},
+      "proxy_1h": {"kind": "proxy", "interval": "1h", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "Binance US spot candles as a proxy for Hyperliquid perps prices, Hyperliquid fees and charged funding"},
+      "venue_30m": {"kind": "venue", "interval": "30m", "manifest": "venue_manifest_30m.json", "window": "tail", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "Hyperliquid venue candles, funding, meta and spread (breakout_2014 manifest)"},
+      "venue_1h": {"kind": "venue", "interval": "1h", "manifest": "venue_manifest_1h.json", "window": "tail", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "Hyperliquid venue candles, funding, meta and spread (breakout_2014 manifest)"},
+      "bridge_30m": {"kind": "bridge", "interval": "30m", "manifest": "bridge_manifest_30m.json", "window": "tail", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "proxy candles on the venue window with venue funding and execution specification; isolates the candle source"},
+      "bridge_1h": {"kind": "bridge", "interval": "1h", "manifest": "bridge_manifest_1h.json", "window": "tail", "members": ["BNB", "BTC", "ETH", "HYPE", "SOL"], "label": "proxy candles on the venue window with venue funding and execution specification; isolates the candle source"}
+    },
+    "group_rule": "Group membership is fixed here. A member enters a window only when coverage includes it for that window (complete warm-up prefix, priced funding for every scored hour, candles present); the same exclusion applies to both arms of a pair. Each interval is reported separately.",
+    "selection_window": "is",
+    "judged_windows": ["oos", "2024", "2025H1t"],
+    "coverage_windows": ["is", "oos", "2023", "2024", "2025H1t", "stitched"],
+    "stitched_window": "stitched",
+    "venue_groups": {"30m": ["venue_30m", "bridge_30m"], "1h": ["venue_1h", "bridge_1h"]}
+  },
+  "selection_rule": {
+    "text": "Per perps contract and proxy group, on is only: factor 4 is mandatory and is never replaced. An additional factor F in {2, 3, 5, 6} is shortlisted only if its mean net return and mean drawdown-adjusted return across the included datasets both exceed factor 0, it opens at least 30 positions, and an adjacent tested factor (the neighbour of F in 2, 3, 4, 5, 6) also exceeds factor 0 on both measures. At most one additional factor is selected per contract and group: the shortlisted factor with the highest mean drawdown-adjusted return, ties to the lower factor. select writes selection.json once, before any judged window runs, and refuses to replace it.",
+    "min_positions": 30
+  },
+  "statistics": {
+    "unit": "daily mark-to-market equity of each leg (last equity per UTC day from the engine equity curve), daily return per dataset, then the equal-weight mean across the group members present that day",
+    "paired": "difference of the gated and baseline group daily returns on the same days",
+    "intervals": ["oos", "2024", "2025H1t"],
+    "blocks": "seven-day calendar blocks counted from each interval start; a block holds the days of one interval only; the same calendar blocks serve every dataset of a group",
+    "method": "block bootstrap of the mean daily paired difference: resample whole blocks with replacement to the observed block count; one-sided p = (1 + count of resampled means <= 0) / (1 + resamples)",
+    "n_resamples": 10000,
+    "seed": 2015,
+    "correction": "Benjamini-Hochberg at alpha 0.05 over the predeclared family: 5 perps contracts x 2 proxy groups x 2 factor slots (factor 4 and the selected additional factor) = 20 members; an unselected or unjudged member enters with p = 1, so it cannot reduce the family size",
+    "family_size": 20,
+    "alpha": 0.05,
+    "no_pooling": "venue, bridge, proxy, stitched and audit evidence are never pooled as independent observations"
+  },
+  "verdict_rule": {
+    "per": "perps contract (one direction or the bidirectional book) and proxy group, for factor 4 and for the selected additional factor separately",
+    "opt_in": "all of: the BH-corrected paired improvement is significant and its point estimate is positive; the gated arm's net PnL summed over the judged intervals is positive and its mean daily group return is positive; at least 100 opened positions and 30 blocks in the gated arm; usable paired evidence (at least one judged interval) from at least half of the frozen group members; supported venue evidence on the same interval (the venue group of that interval has included members, every venue leg has complete funding and candles, the gated arm's venue net PnL is positive and exceeds the baseline's); no funding, coverage or replay failure in the contract",
+    "inconclusive": "any required funding, coverage or replay failure, fewer than 100 positions, fewer than 30 blocks, fewer than half the group members usable, or no venue evidence",
+    "negative": "sufficient evidence that fails the opt-in rule",
+    "deployment": "No sanitized chart_pattern deployment snapshot is available, so every deployment verdict is inconclusive; research results describe the research configuration only.",
+    "audit": "The audit reference uses the historical full-frame path. Its incumbent-relative verdicts are reported per window as a historical reference. Its paired factor 4 versus factor 0 statistic uses the same rule on oos, 2024 and 2025H1t, but a failed full-frame causality check makes the audit conclusion inconclusive; the audit cannot support a perps opt-in.",
+    "suggested_line": "A suggested per-strategy parameter line is written only for an opt-in result: {\"open_strategy\": {\"name\": \"chart_pattern\", \"params\": {\"htf_gate_factor\": F}}} for the named group, direction and interval."
+  },
+  "replay_check": {
+    "sample_per_dataset": 24,
+    "sample_rule": "per frozen source file: up to 12 bars with a nonzero pattern signal and 12 bars without, chosen by a seeded generator (seed 2015) from the bars the scored windows read",
+    "factors": [0, 4, 5],
+    "checks": [
+      "decomposition: the driver's gated signal equals chart_pattern_core on the bounded frame with that factor",
+      "signal_check_path: the driver's signal equals check_hyperliquid.evaluate_signal_slot on the same frame (prebuilt frame, no adapter, no network)",
+      "future_invariance: replacing every candle after the decision bar leaves the decision unchanged",
+      "htf_visibility: every bucket that reaches the decision is complete by the decision bar's close, and the bucket that holds an unclosed native bar is not visible",
+      "next_bar_fill: the real backtester opens each position at the open of the bar after its signal bar",
+      "full_frame_causality: on the audit datasets, a full-frame signal at bar N equals chart_pattern_core on the same frame cut at bar N (sampled)"
+    ],
+    "full_frame_sample_per_dataset_window": 30
+  },
+  "disclosures": [
+    "Binance US spot candles are a proxy for Hyperliquid perps prices. Proxy results are labeled proxy; Hyperliquid venue evidence is reported separately and covers only the venue tail windows.",
+    "No chart_pattern deployment snapshot was available. research_config.json is an explicit research assumption, not a deployment.",
+    "The frame length of 200 bars follows from the research regime block. A configuration with longer regime windows fetches more candles and changes the gate's EMA seeding and the pattern detectors' view.",
+    "Live forming-candle behavior without closed_bar_decisions is not modeled; the research configuration sets closed_bar_decisions true.",
+    "Shared-wallet sizing, leverage tiers other than 1 and margin pooling are not modeled.",
+    "The is, oos, 2023, 2024 and 2025H1 windows were examined before for this strategy (see prior_exposure)."
+  ]
+}

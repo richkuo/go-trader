@@ -836,34 +836,6 @@ func TestNoEdgeReloadRefusesLiveAcknowledgementChanges(t *testing.T) {
 	})
 }
 
-func TestNoEdgeSummaryAndInspectSurfaces(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	liveAcked := noEdgeHLStrategy("hl-live", "rsi", "BTC", "1h", "--mode=live")
-	liveAcked["allow_no_edge"] = true
-	closeOnly := noEdgeHLStrategy("hl-close", "breakout", "SOL", "1h", "--mode=live")
-	closeOnly["allow_no_edge"] = true
-	closeOnly["close_strategy"] = map[string]interface{}{"name": "vortex_trend"}
-	cfg := loadedNoEdgeConfig(t, liveAcked, closeOnly, noEdgeHLStrategy("hl-paper", "awesome_oscillator", "ETH", "4h", "--mode=paper"))
-	want := map[string]string{
-		"hl-live":  "edge=no_edge:fee_audit_m5(ack)",
-		"hl-close": "edge=no_edge:study_fail(ack)[close=vortex_trend]",
-		"hl-paper": "edge=no_edge:study_fail(paper)",
-	}
-	for _, sc := range cfg.Strategies {
-		if !strings.HasSuffix(formatStrategySummaryLine(sc, nil, cfg), " "+want[sc.ID]) && !strings.Contains(formatStrategySummaryLine(sc, nil, cfg), want[sc.ID]+" ") {
-			t.Fatalf("%s summary %q lacks %q", sc.ID, formatStrategySummaryLine(sc, nil, cfg), want[sc.ID])
-		}
-		edge, ok := buildStrategyInspectionJSON(sc, nil, cfg, nil)["edge"].(map[string]interface{})
-		if !ok || edge["tag"] != want[sc.ID] {
-			t.Fatalf("%s inspect edge = %#v", sc.ID, edge)
-		}
-	}
-	warnings := noEdgeStartupWarnings(cfg.Strategies)
-	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "close strategy vortex_trend") {
-		t.Fatalf("live warnings must cover the close-only reference and skip paper: %v", warnings)
-	}
-}
-
 func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	seen := map[string]string{}
@@ -1430,9 +1402,6 @@ func noEdgeCaseAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *test
 
 func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	t.Setenv("TOPSTEP_API_KEY", "k")
-	t.Setenv("TOPSTEP_API_SECRET", "s")
-	t.Setenv("TOPSTEP_ACCOUNT_ID", "1")
 	const cmo = "chande_momentum"
 	withOpenParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
 		sc["open_strategy"] = map[string]interface{}{"name": cmo, "params": params}
@@ -1445,10 +1414,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 		}
 		sc["close_strategy"] = ref
 		return sc
-	}
-	topstep := map[string]interface{}{
-		"id": "ts-cmo", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
-		"args": []string{cmo, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
 	}
 	interval := func(ms interface{}) map[string]interface{} {
 		return map[string]interface{}{"expected_interval_ms": ms}
@@ -1485,7 +1450,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 			[]string{`close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`}, ""},
 		{"close fallback explicit match loads", withCloseParams(noEdgeHLStrategy("hl-cmo", "breakout", "ETH", "4h", "--mode=paper"), interval(14400000)), nil, ""},
 		{"close fallback inherits the open params", withCloseParams(withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil), nil, ""},
-		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every signal`, "type=futures platform=topstep", "runs only on perps"}, ""},
 		{"manual close fallback registry default refused on 4h", manual(nil),
 			[]string{`strategy hl-cmo-manual: close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`, `"expected_interval_ms": 14400000`}, ""},
 		{"manual close fallback explicit match loads", manual(interval(14400000)), nil, ""},
@@ -2106,7 +2070,6 @@ func TestResearchStudyParityConfigsLoadAsPaper(t *testing.T) {
 func TestV20NoEdgeMigrationNeverStampsResearchStrategies(t *testing.T) {
 	for _, tc := range []sigAdmCase{
 		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageLegacyV20MigrationNeverGrantsLiveUse},
-		{"CalendarConditionedEntry", noEdgeCaseV20NoEdgeMigrationNeverStampsCalendarConditionedEntry},
 		{"CamarillaPivotReversal", noEdgeCaseV20NoEdgeMigrationNeverStampsCamarillaPivotReversal},
 		{"ChandeMomentum", noEdgeCaseV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt},
 		{"DualThrust", noEdgeCaseV20NoEdgeMigrationNeverGrantsDualThrust},

@@ -1,0 +1,9 @@
+{
+  "direction": "long",
+  "name": "tema_cross",
+  "params": {
+    "long_period": 89,
+    "mid_period": 34,
+    "short_period": 13
+  }
+}

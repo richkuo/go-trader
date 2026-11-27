@@ -8,6 +8,7 @@ import time
 
 _FIXTURE_PATH = os.environ.get("HTF_OFFLINE_FIXTURE", "")
 _NICE_DIR = os.environ.get("HTF_OFFLINE_NICE_DIR", "")
+_START_MS = os.environ.get("HTF_OFFLINE_START_MS", "")
 
 
 def _load():
@@ -102,15 +103,7 @@ def _patch_yfinance(module):
     module.Ticker.history = history
 
 
-def _patch_adapter(module):
-    cls = getattr(module, "TopStepExchangeAdapter", None)
-    data = _load()
-    if cls is not None and "topstep_market_open" in data:
-        is_open = bool(data["topstep_market_open"])
-        cls.is_market_open = lambda self: is_open
-
-
-_PATCHES = {"ccxt": _patch_ccxt, "yfinance": _patch_yfinance, "adapter": _patch_adapter}
+_PATCHES = {"ccxt": _patch_ccxt, "yfinance": _patch_yfinance}
 
 
 class _FixtureFinder(importlib.abc.MetaPathFinder):
@@ -162,6 +155,15 @@ def _start_nice_recorder():
 
     atexit.register(write)
 
+
+def _shift_clock(start_ms):
+    real_time = time.time
+    offset = start_ms / 1000.0 - real_time()
+    time.time = lambda: real_time() + offset
+
+
+if _START_MS:
+    _shift_clock(int(_START_MS))
 
 if _NICE_DIR:
     _start_nice_recorder()

@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"time"
 )
@@ -27,36 +24,18 @@ func fetchHyperliquidMidsCtx(ctx context.Context, coins []string) (map[string]fl
 	if err != nil {
 		return nil, fmt.Errorf("marshal allMids request: %w", err)
 	}
-	if err := feedBudgetAcquire(ctx, "allMids"); err != nil {
-		return nil, err
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build allMids request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := egressHTTPClient(10 * time.Second)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info allMids", resp.StatusCode, hlMainnetURL)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read allMids response: %w", err)
-	}
-
 	var raw map[string]string
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse allMids response: %w", err)
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "allMids", Body: body, Timeout: 10 * time.Second,
+		Decode: func(data []byte) (int, error) {
+			if perr := json.Unmarshal(data, &raw); perr != nil {
+				return 0, fmt.Errorf("parse allMids response: %w", perr)
+			}
+			return 0, nil
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	want := make(map[string]bool, len(coins))

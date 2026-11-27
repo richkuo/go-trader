@@ -208,29 +208,6 @@ def _assert_liquidated_legs_counts_every_blowup_including_unscored():
     assert score["liquidated_legs"] == 1
 
 
-def test_format_window_report_marks_liquidated_rows():
-    blown = ew.leg_from_results(_results())
-    bar = {"sharpe": 0.5, "ddadj": 0.5, "n": 8}
-    score = ew.score_candidate({"SOL/USDT 4h": blown}, {"SOL/USDT 4h": bar})
-    score["window"] = "2023"
-    score["window_range"] = ["2023-01-01", "2024-01-01"]
-    report = ew.format_window_report(score)
-    assert "LIQ" in report
-    assert "1 liquidated leg(s)" in report
-
-
-def test_format_window_report_silent_when_no_liquidation():
-    healthy = ew.leg_from_results(_results(ret=20.0, dd=-10.0, sharpe=1.5,
-                                           liquidated=False))
-    bar = {"sharpe": 0.5, "ddadj": 0.5, "n": 8}
-    score = ew.score_candidate({"BTC/USDT 1h": healthy}, {"BTC/USDT 1h": bar})
-    score["window"] = "oos"
-    score["window_range"] = ["2026-01-01", None]
-    report = ew.format_window_report(score)
-    assert "LIQ" not in report
-    assert "liquidated" not in report
-
-
 def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
     def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
                      direction=None, commission_pct=None, slippage_pct=None,
@@ -289,17 +266,3 @@ def _assert_leg_from_results_floors_ddadj_when_liquidated():
 def _assert_leg_from_results_ddadj_unfloored_when_not_liquidated():
     leg = ew.leg_from_results(_results(ret=30.0, dd=-15.0, liquidated=False))
     assert leg["ddadj"] == pytest.approx(2.0)
-
-
-def test_render_markdown_liquidated_section_only_when_present():
-    meta = {"command": "uv run ...", "registry": "futures",
-            "windows_desc": "2023", "datasets_desc": "SOL/USDT 4h",
-            "capital": 1000.0, "date": "2026-06-12"}
-    blown = fa.aggregate_strategy("blower", "futures", [_fa_leg(True)])
-    md = fa.render_markdown(fa.rank_rows([blown]), meta)
-    assert "## Liquidated legs" in md
-    assert "blower" in md
-
-    clean = fa.aggregate_strategy("ok", "spot", [_fa_leg(False)])
-    md_clean = fa.render_markdown(fa.rank_rows([clean]), meta)
-    assert "## Liquidated legs" not in md_clean

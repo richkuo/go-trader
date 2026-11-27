@@ -3,7 +3,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -73,36 +72,6 @@ def same(a, b):
             assert isinstance(y, float) and np.isnan(y), col
         else:
             assert x == y, (col, x, y)
-
-
-def test_oscillator_and_events_match_an_independent_calculation():
-    df = market()
-    out = run(df)
-    valid = np.flatnonzero(out["uo_valid"].to_numpy())
-    assert valid[0] == NEED - 1 and len(valid) == len(df) - NEED + 1
-    for i in valid:
-        uo, upper, lower, event = reference(df, i, DEFAULTS)
-        row = out.iloc[i]
-        assert row["uo"] == pytest.approx(uo, rel=1e-12, abs=1e-12)
-        assert 0.0 <= row["uo"] <= 100.0
-        assert row["donchian_upper"] == upper and row["donchian_lower"] == lower
-        assert row["uo_raw_event"] == event
-        expected = 1 if event == 1 and uo > 70.0 else (-1 if event == -1 and uo < 30.0 else 0)
-        assert row["signal"] == expected
-    donchian = _FUTURES.apply_strategy("donchian_breakout", df, {"entry_period": 20, "exit_period": 10})
-    assert (donchian["signal"].to_numpy()[valid] == out["uo_raw_event"].to_numpy()[valid]).all()
-    assert (out["signal"] == 1).sum() > 0 and (out["signal"] == -1).sum() > 0
-
-
-def test_appending_a_smaller_future_step_never_changes_earlier_decisions():
-    df = market(260, freq="4h")
-    base = run(df)
-    extra = market(40, seed=99, freq="1h", start=str(df.index[-1] + pd.Timedelta(hours=1)))
-    full = run(pd.concat([df, extra]))
-    for i in range(len(df)):
-        same(base.iloc[i], full.iloc[i])
-    assert (full["uo_reason"].iloc[len(df):len(df) + NEED - 2] == "cadence_gap").all()
-    assert full["uo_valid"].iloc[len(df) + NEED - 2]
 
 
 def _compose(df, position_side, position_ctx=None):

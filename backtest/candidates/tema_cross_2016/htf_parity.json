@@ -1,0 +1,82 @@
+{
+  "leg": {
+    "arm": "htf",
+    "dataset": "ETH/USDT 30m",
+    "existing_trend_vs_derived": {
+      "derived_first_bucket": "2025-04-08 04:00:00",
+      "equal": false,
+      "existing_path_cache_first_bucket": "2022-08-01 00:00:00",
+      "last_mismatch_bar": "2025-04-20 11:30:00",
+      "mismatch_bars": 251,
+      "mismatch_bars_scored": 0
+    },
+    "fetch_calls": 0,
+    "htf_block": {
+      "buckets_closed": 1607,
+      "buckets_dropped_unclosed": 0,
+      "closed_buckets_before_first_scored_bar": 377,
+      "closed_buckets_with_missing_slots": 1,
+      "dropped_bucket_opens": [],
+      "ema_period": 50,
+      "first_bucket": "2025-04-08 04:00:00",
+      "first_scored_bar": "2025-06-10 00:00:00",
+      "htf_timeframe": "4h",
+      "last_bucket": "2025-12-31 20:00:00",
+      "long_blocked": 63,
+      "long_passed": 86,
+      "long_signals": 149,
+      "min_closed_buckets": 50,
+      "short_blocked": 103,
+      "short_passed": 46,
+      "short_signals": 149,
+      "source": "derived_from_leg_candles",
+      "trend_counts_scored": {
+        "-1": 5056,
+        "1": 4784
+      }
+    },
+    "identical": true,
+    "measured_at_utc": "2026-11-11T06:30:50Z",
+    "note": "the existing path reads the cached exchange 4h history (the frozen file from its first bar), so its EMA has a longer seed than the derived input; the two legs are compared byte for byte",
+    "sha256_derived": "0f2959fbcbbc4ea04f97e02841e3c07c7cea0d07de4b67c3a7a4723ec1e22ec9",
+    "sha256_existing_path": "0f2959fbcbbc4ea04f97e02841e3c07c7cea0d07de4b67c3a7a4723ec1e22ec9",
+    "trades": 74,
+    "window": "is"
+  },
+  "signals": {
+    "bucket_closes_identical": true,
+    "cache_cut_at_first_bucket": "2025-04-08 04:00:00",
+    "dataset": "ETH/USDT 30m",
+    "derived_coverage": {
+      "buckets_closed": 1607,
+      "buckets_dropped_unclosed": 0,
+      "closed_buckets_with_missing_slots": 1,
+      "dropped_bucket_opens": [],
+      "ema_period": 50,
+      "first_bucket": "2025-04-08 04:00:00",
+      "htf_timeframe": "4h",
+      "last_bucket": "2025-12-31 20:00:00"
+    },
+    "exchange_htf_file": "proxy/ETH_4h_candles.csv.gz",
+    "exchange_htf_rows_cached": 3483,
+    "fetch_calls": 0,
+    "filtered_signal_identical": true,
+    "filtered_signal_mismatch_bars": 0,
+    "frame_bars": 12851,
+    "frame_first_bar": "2025-04-08 06:30:00",
+    "frame_last_bar": "2025-12-31 23:30:00",
+    "measured_at_utc": "2026-11-11T05:36:45Z",
+    "signals_filtered": {
+      "long": 120,
+      "short": 50
+    },
+    "signals_raw": {
+      "long": 189,
+      "short": 189
+    },
+    "trend_identical": true,
+    "trend_mismatch_bars": 0,
+    "warmup_bars": 3011,
+    "window": "is"
+  }
+}

@@ -27,10 +27,6 @@ type discordTransport interface {
 	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	InteractionRespond(interaction *discordgo.Interaction, resp *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ApplicationCommands(appID string, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
-	ApplicationCommandCreate(appID string, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error)
-	ApplicationCommandEdit(appID string, guildID string, cmdID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error)
-	ApplicationCommandDelete(appID string, guildID string, cmdID string, options ...discordgo.RequestOption) error
 }
 
 type DiscordNotifier struct {
@@ -44,13 +40,8 @@ type DiscordNotifier struct {
 	ss  *StatusServer
 	cfg *Config
 
-	syncMu          sync.Mutex
-	createTimes     []time.Time
-	legacyGuildID   string
-	legacyGuildDone bool
-	legacyGuildErr  string
-	resyncOnce      sync.Once
-	resyncCancel    context.CancelFunc
+	slashWorkerCancel context.CancelFunc
+	slashWorkerDone   chan struct{}
 }
 
 func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
@@ -78,7 +69,7 @@ func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
 
 func (d *DiscordNotifier) Close() {
 	d.mu.Lock()
-	cancel := d.resyncCancel
+	cancel := d.slashWorkerCancel
 	d.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -110,15 +101,29 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 }
 
 func (d *DiscordNotifier) SendDM(userID, content string) error {
+	_, err := d.SendDMConfirmed(userID, content)
+	return err
+}
+
+func (d *DiscordNotifier) SendDMConfirmed(userID, content string) (string, error) {
 	ch, err := d.transport.UserChannelCreate(userID)
 	if err != nil {
-		return fmt.Errorf("create DM channel: %w", err)
+		return "", fmt.Errorf("create DM channel: %w", err)
+	}
+	if ch == nil || ch.ID == "" {
+		return "", fmt.Errorf("create DM channel: no channel id returned")
 	}
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
-	_, err = d.transport.ChannelMessageSend(ch.ID, content)
-	return err
+	msg, err := d.transport.ChannelMessageSend(ch.ID, content)
+	if err != nil {
+		return "", err
+	}
+	if msg == nil {
+		return "", nil
+	}
+	return msg.ID, nil
 }
 
 func (d *DiscordNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {

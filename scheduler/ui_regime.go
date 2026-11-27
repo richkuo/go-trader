@@ -191,6 +191,9 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		env.Result = manualRegimeResultUnavailable
 	case view.Contract.Fingerprint != binding.Fingerprint || view.Contract.Key != binding.Request.Key:
 		env = manualRegimeEnvelope{Result: manualRegimeResultMismatch}
+	case view.Pending && view.Gen > 0:
+		env.Result = manualRegimeResultPending
+		env.PendingGeneration = view.Gen
 	case !view.Found || view.Err == regimeBundlePendingErr:
 		env.Result = manualRegimeResultUnavailable
 	case view.Err != "":

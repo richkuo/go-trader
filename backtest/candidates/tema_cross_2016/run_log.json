@@ -1,0 +1,19 @@
+{
+  "runs": [
+    {
+      "finished_utc": "2026-11-11T12:02:10Z",
+      "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+      "selection_sha256": "93e16d3524805c82daae5b91650a2cef75f9f34f932b28d79ae122a80612ec32",
+      "source_commit": "d5f6e9616e3b29bb325098e46185b67262886a38",
+      "started_utc": "2026-11-11T10:55:02Z",
+      "units": 116
+    }
+  ],
+  "starts": [
+    {
+      "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+      "source_commit": "d5f6e9616e3b29bb325098e46185b67262886a38",
+      "started_utc": "2026-11-11T10:55:02Z"
+    }
+  ]
+}

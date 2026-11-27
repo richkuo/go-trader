@@ -6,9 +6,9 @@ OUT=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/quote-replay-harness.XXXXXX")" && pwd -P)
 trap 'rm -rf "$OUT"' EXIT
 cd "$ROOT"
 
-GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/rec" go -C "$ROOT/scheduler" test -run '^TestQuoteReplayRecordingHarness$' -count=1 .
-GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/depth" GO_TRADER_QUOTE_REPLAY_DEPTH_ONLY=1 go -C "$ROOT/scheduler" test -run '^TestQuoteReplayRecordingHarness$' -count=1 .
-GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/gap" GO_TRADER_QUOTE_REPLAY_TRADE_GAP=1 go -C "$ROOT/scheduler" test -run '^TestQuoteReplayRecordingHarness$' -count=1 .
+GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/rec" go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^TestQuoteReplayRecordingHarness$' -count=1 .
+GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/depth" GO_TRADER_QUOTE_REPLAY_DEPTH_ONLY=1 go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^TestQuoteReplayRecordingHarness$' -count=1 .
+GO_TRADER_QUOTE_REPLAY_HARNESS_OUT="$OUT/gap" GO_TRADER_QUOTE_REPLAY_TRADE_GAP=1 go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^TestQuoteReplayRecordingHarness$' -count=1 .
 go -C "$ROOT/scheduler" build -o "$OUT/go-trader" .
 for f in rec/run.manifest.json depth/run.manifest.json gap/run.manifest.json rec-harness.json; do
     if [[ ! -s "$OUT/$f" ]]; then

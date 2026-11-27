@@ -1,0 +1,2268 @@
+{
+  "arms_sha256": {
+    "live/bar_1h.json": "e93657dca55b7c4cd3f6f6033781cadf29828433aec2656b576e37e8b9279f98",
+    "live/gate_adx_up.json": "d960a6390d5c6a1e79bfc20147af9a765094186b01a61627bad8412c63f4f30c",
+    "live/gate_cm_not_down.json": "f05befb47b2f4ba90d7fc0e257052cb02924a8b13e48f7886db309a6302d2964",
+    "live/gate_cm_up.json": "fc29d674a4dc41282af56c7a16e0324a81033105976ebb033c8ee59e3ab152ff",
+    "live/gate_p21_up_clean.json": "7891b75760aee61764321b04a9fa9e70a96718dd808836fd9de05d1163930fcb",
+    "live/live_both.json": "7ed7567131a364b1370b93d646030de4fe185b29e64a89cfa0fdde093898f6a5",
+    "live/live_both_nohtf.json": "a4771f6ffec6ca504656f7000e8c6b7e5e5ad0db3d9f1d064d7d1b085b7b320b",
+    "live/live_long.json": "9e6162276603425083c7b12031ed3f2dc1b96bbfc742d1e0b55b7908ddb97dfc",
+    "live/live_long_nohtf.json": "01f3475fdb38f8d1d9b34cb31fce075d6287d9a9b9c30a6ff8f80028b0d928a0",
+    "live/p_13_34_89.json": "4bdf09976159f462ba980a7fcde85d00bcc4f44331dd6cea544327106b8370ee",
+    "live/p_21_55_144.json": "a713257b896f40c30d37b37a45a61f08b59b5f5a54dbb23d31473ac390671485",
+    "live/p_34_89_233.json": "735073ca74825100a79e50882088414717d768a530143b520a2a0a9205176ec8",
+    "live/p_55_144_377.json": "c51228e0f2fc7a117a8862b576d220708cb81ea216c74d48e45ac6551d81bd38",
+    "live/p_8_21_55.json": "1b5593363e95377ca245570767e06e22a1d30b070025485fa04fe202275767e1",
+    "paper/control.json": "640e7fa2e52706c140c66148d8e97ee41f2d241c999c93586d207810dd361b94",
+    "paper/gate_adx_up.json": "f0d9c798eb0d382fda9d8fee32d4617cf075cdec38d80457dd1868d38f149ac1",
+    "paper/gate_cm_not_down.json": "e87e7be914cf1ae24f7954eb9696437b98bf97277dbc7e3344492754a189f0a4",
+    "paper/gate_cm_up.json": "33d48d5cb955491925d18837d6377e0d37e47b6892e16286b07e2f78123a9f19",
+    "paper/gate_p21_up_clean.json": "d28777b35414d7d63b137e8b43d70c51d044e5ba6132a14932ae429ad22ff6df",
+    "paper/htf.json": "1d6a0daf9e9b9c84ce939ed83d93598df9d88ad80d299d89f2a308f400ef8f3a",
+    "paper/p_13_34_89.json": "2744f1ea2516b928f2df98a74177af0ea8a1f6cff352026ce7fe6590ec3daa46",
+    "paper/p_21_55_144.json": "7246790ba63d9ff28223a6d006af93ac8261bc2856f034885b6af753f9b2cba1",
+    "paper/p_34_89_233.json": "8453022596b52dc5a1621a5fb24f52edb48c5df933ab347753a733756d168176",
+    "paper/p_55_144_377.json": "541f752127521e44575d12dabb6a6e644315dc7f1bcf8b102e5223887e5abcca",
+    "paper/p_8_21_55.json": "c70fbbf3d6fd12ceaa7b145a7553bedc0b60c2a99099afe145813fdbfe6309cc",
+    "spot/combo.json": "ff650aaa71158a7cb40b03fd308777a753fc67f0efa7071ff181c7d41f3a295b",
+    "spot/gate_adx_up.json": "46ec92f7daccd80b186bf063bae351741d48d35cba0b406ee6abdcd0de59efc4",
+    "spot/gate_cm_not_down.json": "b6f7c22c8b24f91d819de4feef0cf27c3be0f09e12785727d6688537a69a6a6c",
+    "spot/gate_cm_up.json": "cb03560eb25a64536d0f7f02ed44200123f86028cf8724446986b0d4c38de2a3",
+    "spot/gate_p21_up_clean.json": "0e29ac740b21109ae83b53792a4847fa87a7e5b4bfa0bfeb46c726558683c0a1",
+    "spot/htf.json": "967883674fb94dd060f1314f64c3e5af32b9e8112c2ed45675c52edcff921fcf",
+    "spot/p_13_34_89.json": "56f861a62cad071f20a2ccfc1e1175458bc8b7f3d0a2519df5a4cbd1971b07a6",
+    "spot/p_21_55_144.json": "189407fc6f98446edbed549be3986675816938d64acd65443a478ab567cc336a",
+    "spot/p_34_89_233.json": "c466f7679c9446ff91d7e87ba28d8847dce94d5f30e3fe9fa8f0f47ab33a898d",
+    "spot/p_55_144_377.json": "949737d29136bae4947231205e2eed13f0979a8791090abfbf168aa613b929ad",
+    "spot/p_8_21_55.json": "ea53df7323d91254f13496eaa2fae220ee017332d603df9d54138483910e4a8f",
+    "spot/spot_control.json": "b1c238d70832f777e73832afc334ee1fa631c8645896e5af6c9d52cfbee37fac"
+  },
+  "coverage_sha256": "358abe4ca0f31ae14062bce1033a0bc719a4bd7acc90adeb54e07d43424173cd",
+  "effective_ranges": {
+    "live proxy is ETH 1h": {
+      "frame_bars": 7811,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-02-09 13:00:00"
+    },
+    "live proxy is ETH 30m": {
+      "frame_bars": 12731,
+      "scored_bars": 9840,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:30:00",
+      "warmup_first_bar": "2025-04-10 18:30:00"
+    },
+    "paper proxy is BNB 1h": {
+      "frame_bars": 7931,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-02-04 13:00:00"
+    },
+    "paper proxy is BNB 30m": {
+      "frame_bars": 12851,
+      "scored_bars": 9840,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:30:00",
+      "warmup_first_bar": "2025-04-08 06:30:00"
+    },
+    "paper proxy is BTC 1h": {
+      "frame_bars": 7931,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-02-04 13:00:00"
+    },
+    "paper proxy is BTC 30m": {
+      "frame_bars": 12851,
+      "scored_bars": 9840,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:30:00",
+      "warmup_first_bar": "2025-04-08 06:30:00"
+    },
+    "paper proxy is ETH 1h": {
+      "frame_bars": 7931,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-02-04 13:00:00"
+    },
+    "paper proxy is ETH 30m": {
+      "frame_bars": 12851,
+      "scored_bars": 9840,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:30:00",
+      "warmup_first_bar": "2025-04-08 06:30:00"
+    },
+    "paper proxy is SOL 1h": {
+      "frame_bars": 7931,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-02-04 13:00:00"
+    },
+    "paper proxy is SOL 30m": {
+      "frame_bars": 12851,
+      "scored_bars": 9840,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:30:00",
+      "warmup_first_bar": "2025-04-08 06:30:00"
+    },
+    "spot proxy is BTC 1h": {
+      "frame_bars": 5631,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-05-11 09:00:00"
+    },
+    "spot proxy is BTC 4h": {
+      "frame_bars": 1941,
+      "scored_bars": 1230,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 20:00:00",
+      "warmup_first_bar": "2025-02-11 12:00:00"
+    },
+    "spot proxy is ETH 1h": {
+      "frame_bars": 5631,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-05-11 09:00:00"
+    },
+    "spot proxy is ETH 4h": {
+      "frame_bars": 1941,
+      "scored_bars": 1230,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 20:00:00",
+      "warmup_first_bar": "2025-02-11 12:00:00"
+    },
+    "spot proxy is SOL 1h": {
+      "frame_bars": 5631,
+      "scored_bars": 4920,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 23:00:00",
+      "warmup_first_bar": "2025-05-11 09:00:00"
+    },
+    "spot proxy is SOL 4h": {
+      "frame_bars": 1941,
+      "scored_bars": 1230,
+      "scored_first_bar": "2025-06-10 00:00:00",
+      "scored_last_bar": "2025-12-31 20:00:00",
+      "warmup_first_bar": "2025-02-11 12:00:00"
+    }
+  },
+  "engine_sha256": {
+    "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+    "backtest/eval_windows.py": "44979406e09e40cb297fe6cd604b6f5e583c90baa0647d9fade5b4c1b032391d",
+    "backtest/htf_trend.py": "e9dda3d4163b9fb1ab3ae1166f54eba40e6e8b36eb0ad5fa40371b7e802c0a5a",
+    "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+    "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+    "backtest/run_backtest.py": "40fd710f963da46374376e76bd77fb04a3372e8f8d188da56402d0ff5e208e6c",
+    "backtest/tune_live.py": "36a722b6bbfa1629a7157827cd9ecc1221dedc0af62c745f2e5e01333c7666c9",
+    "shared_strategies/close/trailing_tp_ratchet.py": "08e0151276fce1b7a79be21660a6d56d50ec7b852d3666389e3bfc8502d7f90f",
+    "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+    "shared_tools/atr.py": "496a4f41f1c0509795b1a96446e56f0da85099eafcc293f2a8045b16a3dd9283",
+    "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+    "shared_tools/htf_filter.py": "5e87e66426edf7795b3d3f1234057d55efa4a643cc417ecc8b702ac8c5640723",
+    "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae"
+  },
+  "frames": {
+    "live": {
+      "arms": {
+        "bar_1h": {
+          "clusters": 32,
+          "cost_drag_per_trade_pct": 0.201672,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 2.8846,
+          "funding_drag_pct": 0.7875,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.406562,
+          "gross_trades": 32,
+          "htf_blocked": {
+            "long": 31,
+            "short": 58
+          },
+          "liquidated_legs": 0,
+          "long_positions": 32,
+          "mean_ddadj": 0.682,
+          "mean_return_pct": 6.65,
+          "mean_sharpe": 0.738,
+          "net_per_trade_pct": 0.20489,
+          "net_pnl_usd": 65.59,
+          "positions": 32,
+          "short_positions": 0,
+          "span_days": 204.96,
+          "stress_per_trade_pct": 0.044441,
+          "stress_trades": 33,
+          "traded_datasets": 1,
+          "trades": 32,
+          "trades_per_year": 57.03,
+          "worst_max_dd_pct": -9.75
+        },
+        "gate_adx_up": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "gate_cm_not_down": {
+          "clusters": 60,
+          "cost_drag_per_trade_pct": 0.166765,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 5.4047,
+          "funding_drag_pct": 0.731,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.239831,
+          "gross_trades": 59,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 60,
+          "mean_ddadj": 0.295,
+          "mean_return_pct": 4.38,
+          "mean_sharpe": 0.532,
+          "net_per_trade_pct": 0.073066,
+          "net_pnl_usd": 43.85,
+          "positions": 60,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": 0.060874,
+          "stress_trades": 60,
+          "traded_datasets": 1,
+          "trades": 60,
+          "trades_per_year": 106.91,
+          "worst_max_dd_pct": -14.86
+        },
+        "gate_cm_up": {
+          "clusters": 49,
+          "cost_drag_per_trade_pct": 0.153559,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 4.4141,
+          "funding_drag_pct": 0.6492,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.234167,
+          "gross_trades": 48,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 49,
+          "mean_ddadj": 0.343,
+          "mean_return_pct": 3.95,
+          "mean_sharpe": 0.51,
+          "net_per_trade_pct": 0.080608,
+          "net_pnl_usd": 39.5,
+          "positions": 49,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": 0.087984,
+          "stress_trades": 49,
+          "traded_datasets": 1,
+          "trades": 49,
+          "trades_per_year": 87.31,
+          "worst_max_dd_pct": -11.51
+        },
+        "gate_p21_up_clean": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "live_both": {
+          "clusters": 92,
+          "cost_drag_per_trade_pct": 0.1683,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 8.288,
+          "funding_drag_pct": 0.5576,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.186522,
+          "gross_trades": 92,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 61,
+          "mean_ddadj": 0.095,
+          "mean_return_pct": 1.68,
+          "mean_sharpe": 0.246,
+          "net_per_trade_pct": 0.018222,
+          "net_pnl_usd": 16.78,
+          "positions": 92,
+          "short_positions": 31,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.023921,
+          "stress_trades": 92,
+          "traded_datasets": 1,
+          "trades": 92,
+          "trades_per_year": 163.93,
+          "worst_max_dd_pct": -17.69
+        },
+        "live_both_nohtf": {
+          "clusters": 133,
+          "cost_drag_per_trade_pct": 0.164984,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 11.981,
+          "funding_drag_pct": 0.0799,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.232105,
+          "gross_trades": 133,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 72,
+          "mean_ddadj": 0.567,
+          "mean_return_pct": 9.02,
+          "mean_sharpe": 0.7,
+          "net_per_trade_pct": 0.067121,
+          "net_pnl_usd": 89.25,
+          "positions": 133,
+          "short_positions": 61,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.000626,
+          "stress_trades": 133,
+          "traded_datasets": 1,
+          "trades": 133,
+          "trades_per_year": 236.99,
+          "worst_max_dd_pct": -15.91
+        },
+        "live_long": {
+          "clusters": 61,
+          "cost_drag_per_trade_pct": 0.168278,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 5.4963,
+          "funding_drag_pct": 0.7408,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.297167,
+          "gross_trades": 60,
+          "htf_blocked": {
+            "long": 63,
+            "short": 103
+          },
+          "liquidated_legs": 0,
+          "long_positions": 61,
+          "mean_ddadj": 0.545,
+          "mean_return_pct": 7.86,
+          "mean_sharpe": 0.875,
+          "net_per_trade_pct": 0.128889,
+          "net_pnl_usd": 78.63,
+          "positions": 61,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": 0.115208,
+          "stress_trades": 61,
+          "traded_datasets": 1,
+          "trades": 61,
+          "trades_per_year": 108.7,
+          "worst_max_dd_pct": -14.41
+        },
+        "live_long_nohtf": {
+          "clusters": 99,
+          "cost_drag_per_trade_pct": 0.184647,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 8.9174,
+          "funding_drag_pct": 1.0329,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.250204,
+          "gross_trades": 98,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 99,
+          "mean_ddadj": 0.313,
+          "mean_return_pct": 6.49,
+          "mean_sharpe": 0.613,
+          "net_per_trade_pct": 0.065557,
+          "net_pnl_usd": 64.9,
+          "positions": 99,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": 0.020181,
+          "stress_trades": 99,
+          "traded_datasets": 1,
+          "trades": 99,
+          "trades_per_year": 176.41,
+          "worst_max_dd_pct": -20.71
+        },
+        "p_13_34_89": {
+          "clusters": 25,
+          "cost_drag_per_trade_pct": 0.206053,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 2.2519,
+          "funding_drag_pct": 0.3033,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.2688,
+          "gross_trades": 25,
+          "htf_blocked": {
+            "long": 20,
+            "short": 41
+          },
+          "liquidated_legs": 0,
+          "long_positions": 25,
+          "mean_ddadj": 0.13,
+          "mean_return_pct": 1.57,
+          "mean_sharpe": 0.288,
+          "net_per_trade_pct": 0.062747,
+          "net_pnl_usd": 15.69,
+          "positions": 25,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.023057,
+          "stress_trades": 25,
+          "traded_datasets": 1,
+          "trades": 25,
+          "trades_per_year": 44.55,
+          "worst_max_dd_pct": -12.08
+        },
+        "p_21_55_144": {
+          "clusters": 21,
+          "cost_drag_per_trade_pct": 0.158334,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 1.8877,
+          "funding_drag_pct": 0.237,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": -0.186667,
+          "gross_trades": 21,
+          "htf_blocked": {
+            "long": 5,
+            "short": 22
+          },
+          "liquidated_legs": 0,
+          "long_positions": 21,
+          "mean_ddadj": -0.7,
+          "mean_return_pct": -7.25,
+          "mean_sharpe": -1.274,
+          "net_per_trade_pct": -0.345001,
+          "net_pnl_usd": -72.47,
+          "positions": 21,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.387781,
+          "stress_trades": 21,
+          "traded_datasets": 1,
+          "trades": 21,
+          "trades_per_year": 37.42,
+          "worst_max_dd_pct": -10.35
+        },
+        "p_34_89_233": {
+          "clusters": 17,
+          "cost_drag_per_trade_pct": 0.160073,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 1.5237,
+          "funding_drag_pct": 0.2042,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": -0.767059,
+          "gross_trades": 17,
+          "htf_blocked": {
+            "long": 4,
+            "short": 21
+          },
+          "liquidated_legs": 0,
+          "long_positions": 17,
+          "mean_ddadj": -0.78,
+          "mean_return_pct": -15.76,
+          "mean_sharpe": -3.014,
+          "net_per_trade_pct": -0.927132,
+          "net_pnl_usd": -157.62,
+          "positions": 17,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.999965,
+          "stress_trades": 17,
+          "traded_datasets": 1,
+          "trades": 17,
+          "trades_per_year": 30.29,
+          "worst_max_dd_pct": -20.2
+        },
+        "p_55_144_377": {
+          "clusters": 12,
+          "cost_drag_per_trade_pct": 0.171074,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 1.0761,
+          "funding_drag_pct": 0.1919,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": -0.649167,
+          "gross_trades": 12,
+          "htf_blocked": {
+            "long": 0,
+            "short": 9
+          },
+          "liquidated_legs": 0,
+          "long_positions": 12,
+          "mean_ddadj": -0.775,
+          "mean_return_pct": -9.84,
+          "mean_sharpe": -2.564,
+          "net_per_trade_pct": -0.820241,
+          "net_pnl_usd": -98.43,
+          "positions": 12,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.917834,
+          "stress_trades": 12,
+          "traded_datasets": 1,
+          "trades": 12,
+          "trades_per_year": 21.38,
+          "worst_max_dd_pct": -12.69
+        },
+        "p_8_21_55": {
+          "clusters": 41,
+          "cost_drag_per_trade_pct": 0.187866,
+          "coverage_complete": true,
+          "datasets": 1,
+          "datasets_requested": 1,
+          "fee_drag_pct": 3.6933,
+          "funding_drag_pct": 0.4385,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.267805,
+          "gross_trades": 41,
+          "htf_blocked": {
+            "long": 38,
+            "short": 67
+          },
+          "liquidated_legs": 0,
+          "long_positions": 41,
+          "mean_ddadj": 0.233,
+          "mean_return_pct": 3.28,
+          "mean_sharpe": 0.487,
+          "net_per_trade_pct": 0.079939,
+          "net_pnl_usd": 32.78,
+          "positions": 41,
+          "short_positions": 0,
+          "span_days": 204.98,
+          "stress_per_trade_pct": -0.223676,
+          "stress_trades": 42,
+          "traded_datasets": 1,
+          "trades": 41,
+          "trades_per_year": 73.06,
+          "worst_max_dd_pct": -14.07
+        }
+      },
+      "checks": {
+        "bar_1h": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "gate_adx_up": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "gate_cm_not_down": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "gate_cm_up": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "gate_p21_up_clean": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "live_long": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_both",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.095
+        },
+        "p_13_34_89": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "p_21_55_144": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "p_34_89_233": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "p_55_144_377": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        },
+        "p_8_21_55": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "live_long",
+          "control_datasets": [
+            "ETH 30m"
+          ],
+          "control_mean_ddadj": 0.545
+        }
+      },
+      "combo": null,
+      "judged_arms": [
+        "bar_1h",
+        "live_long"
+      ],
+      "picks": {
+        "bar": "bar_1h",
+        "direction": "live_long",
+        "gate": null,
+        "period": null
+      },
+      "picks_before_combo": {
+        "bar": "bar_1h",
+        "direction": "live_long",
+        "gate": null,
+        "period": null
+      },
+      "shortlist": [
+        "bar_1h",
+        "live_long"
+      ]
+    },
+    "paper": {
+      "arms": {
+        "bar_1h": {
+          "clusters": 105,
+          "cost_drag_per_trade_pct": 0.174152,
+          "coverage_complete": true,
+          "datasets": 4,
+          "datasets_requested": 4,
+          "fee_drag_pct": 5.1228,
+          "funding_drag_pct": 0.8468,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.45796,
+          "gross_trades": 299,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 223,
+          "mean_ddadj": 0.1435,
+          "mean_return_pct": 0.4375,
+          "mean_sharpe": 0.0955,
+          "net_per_trade_pct": 0.283808,
+          "net_pnl_usd": 16.62,
+          "positions": 223,
+          "short_positions": 0,
+          "span_days": 819.83,
+          "stress_per_trade_pct": 0.18701,
+          "stress_trades": 296,
+          "traded_datasets": 4,
+          "trades": 298,
+          "trades_per_year": 132.76,
+          "worst_max_dd_pct": -19.53
+        },
+        "control": {
+          "clusters": 177,
+          "cost_drag_per_trade_pct": 0.178152,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 7.737,
+          "funding_drag_pct": 0.9426,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.341672,
+          "gross_trades": 909,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 675,
+          "mean_ddadj": -0.0465,
+          "mean_return_pct": -4.0125,
+          "mean_sharpe": -0.4471,
+          "net_per_trade_pct": 0.16352,
+          "net_pnl_usd": -322.6,
+          "positions": 675,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.065368,
+          "stress_trades": 881,
+          "traded_datasets": 8,
+          "trades": 893,
+          "trades_per_year": 198.91,
+          "worst_max_dd_pct": -31.01
+        },
+        "gate_adx_up": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "gate_cm_not_down": {
+          "clusters": 158,
+          "cost_drag_per_trade_pct": 0.167921,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 6.1721,
+          "funding_drag_pct": 0.8183,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.378048,
+          "gross_trades": 784,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 543,
+          "mean_ddadj": -0.1684,
+          "mean_return_pct": -3.2862,
+          "mean_sharpe": -0.325,
+          "net_per_trade_pct": 0.210127,
+          "net_pnl_usd": -264.58,
+          "positions": 543,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.120265,
+          "stress_trades": 757,
+          "traded_datasets": 8,
+          "trades": 771,
+          "trades_per_year": 171.74,
+          "worst_max_dd_pct": -23.23
+        },
+        "gate_cm_up": {
+          "clusters": 97,
+          "cost_drag_per_trade_pct": 0.17327,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 2.964,
+          "funding_drag_pct": 0.606,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.348893,
+          "gross_trades": 253,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 254,
+          "mean_ddadj": 0.8004,
+          "mean_return_pct": 5.3163,
+          "mean_sharpe": 0.6761,
+          "net_per_trade_pct": 0.175623,
+          "net_pnl_usd": 424.35,
+          "positions": 254,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.073026,
+          "stress_trades": 255,
+          "traded_datasets": 8,
+          "trades": 254,
+          "trades_per_year": 56.58,
+          "worst_max_dd_pct": -14.02
+        },
+        "gate_p21_up_clean": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "htf": {
+          "clusters": 127,
+          "cost_drag_per_trade_pct": 0.163757,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 5.0591,
+          "funding_drag_pct": 0.7458,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.310034,
+          "gross_trades": 595,
+          "htf_blocked": {
+            "long": 335,
+            "short": 730
+          },
+          "liquidated_legs": 0,
+          "long_positions": 448,
+          "mean_ddadj": -0.149,
+          "mean_return_pct": -2.61,
+          "mean_sharpe": -0.2432,
+          "net_per_trade_pct": 0.146277,
+          "net_pnl_usd": -210.65,
+          "positions": 448,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.053482,
+          "stress_trades": 581,
+          "traded_datasets": 8,
+          "trades": 591,
+          "trades_per_year": 131.64,
+          "worst_max_dd_pct": -17.64
+        },
+        "p_13_34_89": {
+          "clusters": 108,
+          "cost_drag_per_trade_pct": 0.191093,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 2.9119,
+          "funding_drag_pct": 0.3651,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.339741,
+          "gross_trades": 347,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 261,
+          "mean_ddadj": -0.1471,
+          "mean_return_pct": -3.2313,
+          "mean_sharpe": -0.4507,
+          "net_per_trade_pct": 0.148648,
+          "net_pnl_usd": -259.48,
+          "positions": 261,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.071449,
+          "stress_trades": 347,
+          "traded_datasets": 8,
+          "trades": 344,
+          "trades_per_year": 76.63,
+          "worst_max_dd_pct": -20.76
+        },
+        "p_21_55_144": {
+          "clusters": 94,
+          "cost_drag_per_trade_pct": 0.215758,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 1.8995,
+          "funding_drag_pct": 0.2502,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.181872,
+          "gross_trades": 219,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 172,
+          "mean_ddadj": -0.4521,
+          "mean_return_pct": -6.065,
+          "mean_sharpe": -0.9796,
+          "net_per_trade_pct": -0.033886,
+          "net_pnl_usd": -485.21,
+          "positions": 172,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": -0.095902,
+          "stress_trades": 219,
+          "traded_datasets": 8,
+          "trades": 218,
+          "trades_per_year": 48.56,
+          "worst_max_dd_pct": -22.89
+        },
+        "p_34_89_233": {
+          "clusters": 61,
+          "cost_drag_per_trade_pct": 0.174399,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 1.3123,
+          "funding_drag_pct": 0.1558,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.088533,
+          "gross_trades": 150,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 119,
+          "mean_ddadj": -0.0635,
+          "mean_return_pct": -4.9313,
+          "mean_sharpe": -1.1322,
+          "net_per_trade_pct": -0.085866,
+          "net_pnl_usd": -394.44,
+          "positions": 119,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": -0.158094,
+          "stress_trades": 151,
+          "traded_datasets": 8,
+          "trades": 151,
+          "trades_per_year": 33.63,
+          "worst_max_dd_pct": -22.08
+        },
+        "p_55_144_377": {
+          "clusters": 52,
+          "cost_drag_per_trade_pct": 0.232389,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 0.8602,
+          "funding_drag_pct": 0.1221,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.318879,
+          "gross_trades": 107,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 77,
+          "mean_ddadj": 0.3288,
+          "mean_return_pct": -1.515,
+          "mean_sharpe": -0.5016,
+          "net_per_trade_pct": 0.08649,
+          "net_pnl_usd": -121.17,
+          "positions": 77,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": -0.032454,
+          "stress_trades": 101,
+          "traded_datasets": 8,
+          "trades": 105,
+          "trades_per_year": 23.39,
+          "worst_max_dd_pct": -11.6
+        },
+        "p_8_21_55": {
+          "clusters": 146,
+          "cost_drag_per_trade_pct": 0.17789,
+          "coverage_complete": true,
+          "datasets": 8,
+          "datasets_requested": 8,
+          "fee_drag_pct": 4.889,
+          "funding_drag_pct": 0.5372,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.420801,
+          "gross_trades": 587,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 423,
+          "mean_ddadj": 0.1226,
+          "mean_return_pct": -0.3588,
+          "mean_sharpe": -0.1423,
+          "net_per_trade_pct": 0.242911,
+          "net_pnl_usd": -29.29,
+          "positions": 423,
+          "short_positions": 0,
+          "span_days": 1639.75,
+          "stress_per_trade_pct": 0.123775,
+          "stress_trades": 576,
+          "traded_datasets": 8,
+          "trades": 580,
+          "trades_per_year": 129.19,
+          "worst_max_dd_pct": -26.04
+        }
+      },
+      "checks": {
+        "bar_1h": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BTC 30m",
+            "ETH 30m",
+            "SOL 30m"
+          ],
+          "control_mean_ddadj": -0.2365
+        },
+        "gate_adx_up": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "gate_cm_not_down": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "gate_cm_up": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "gate_p21_up_clean": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "htf": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "p_13_34_89": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "p_21_55_144": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "p_34_89_233": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "p_55_144_377": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        },
+        "p_8_21_55": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": false,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "control",
+          "control_datasets": [
+            "BNB 30m",
+            "BNB 1h",
+            "BTC 30m",
+            "BTC 1h",
+            "ETH 30m",
+            "ETH 1h",
+            "SOL 30m",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.0465
+        }
+      },
+      "combo": null,
+      "judged_arms": [
+        "bar_1h",
+        "gate_cm_up"
+      ],
+      "picks": {
+        "bar": "bar_1h",
+        "gate": "gate_cm_up",
+        "htf": null,
+        "period": null
+      },
+      "picks_before_combo": {
+        "bar": "bar_1h",
+        "gate": "gate_cm_up",
+        "htf": null,
+        "period": null
+      },
+      "shortlist": [
+        "bar_1h",
+        "gate_cm_up"
+      ]
+    },
+    "spot": {
+      "arms": {
+        "bar_4h": {
+          "clusters": 25,
+          "cost_drag_per_trade_pct": 0.297351,
+          "coverage_complete": true,
+          "datasets": 3,
+          "datasets_requested": 3,
+          "fee_drag_pct": 1.5467,
+          "funding_drag_pct": 1.8657,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.032653,
+          "gross_trades": 49,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 49,
+          "mean_ddadj": -0.158,
+          "mean_return_pct": -5.23,
+          "mean_sharpe": -0.7253,
+          "net_per_trade_pct": -0.264698,
+          "net_pnl_usd": -159.6,
+          "positions": 49,
+          "short_positions": 0,
+          "span_days": 614.5,
+          "stress_per_trade_pct": -0.364432,
+          "stress_trades": 49,
+          "traded_datasets": 3,
+          "trades": 49,
+          "trades_per_year": 29.12,
+          "worst_max_dd_pct": -31.36
+        },
+        "combo": {
+          "clusters": 13,
+          "cost_drag_per_trade_pct": 0.346831,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.7139,
+          "funding_drag_pct": 1.1761,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.8975,
+          "gross_trades": 44,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 44,
+          "mean_ddadj": 0.1855,
+          "mean_return_pct": 3.1917,
+          "mean_sharpe": 0.2182,
+          "net_per_trade_pct": 0.550669,
+          "net_pnl_usd": 191.61,
+          "positions": 44,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": 0.450028,
+          "stress_trades": 44,
+          "traded_datasets": 6,
+          "trades": 44,
+          "trades_per_year": 13.07,
+          "worst_max_dd_pct": -21.67
+        },
+        "gate_adx_up": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "gate_cm_not_down": {
+          "clusters": 61,
+          "cost_drag_per_trade_pct": 0.238412,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 3.0027,
+          "funding_drag_pct": 1.5873,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.301414,
+          "gross_trades": 191,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 191,
+          "mean_ddadj": 0.0415,
+          "mean_return_pct": 0.8333,
+          "mean_sharpe": -0.1173,
+          "net_per_trade_pct": 0.063002,
+          "net_pnl_usd": 49.96,
+          "positions": 191,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -0.037075,
+          "stress_trades": 191,
+          "traded_datasets": 6,
+          "trades": 191,
+          "trades_per_year": 56.75,
+          "worst_max_dd_pct": -23.59
+        },
+        "gate_cm_up": {
+          "clusters": 36,
+          "cost_drag_per_trade_pct": 0.25134,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 1.3084,
+          "funding_drag_pct": 0.8646,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.183571,
+          "gross_trades": 84,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 84,
+          "mean_ddadj": 0.0683,
+          "mean_return_pct": -1.3533,
+          "mean_sharpe": -0.4478,
+          "net_per_trade_pct": -0.067769,
+          "net_pnl_usd": -81.26,
+          "positions": 84,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -0.167735,
+          "stress_trades": 84,
+          "traded_datasets": 6,
+          "trades": 84,
+          "trades_per_year": 24.96,
+          "worst_max_dd_pct": -23.59
+        },
+        "gate_p21_up_clean": {
+          "clusters": 0,
+          "cost_drag_per_trade_pct": null,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.0,
+          "funding_drag_pct": 0.0,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": null,
+          "gross_trades": 0,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 0,
+          "mean_ddadj": 0.0,
+          "mean_return_pct": 0.0,
+          "mean_sharpe": 0.0,
+          "net_per_trade_pct": null,
+          "net_pnl_usd": 0.0,
+          "positions": 0,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": null,
+          "stress_trades": 0,
+          "traded_datasets": 0,
+          "trades": 0,
+          "trades_per_year": 0.0,
+          "worst_max_dd_pct": 0.0
+        },
+        "htf": {
+          "clusters": 1,
+          "cost_drag_per_trade_pct": 1.524901,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.3543,
+          "funding_drag_pct": 5.1479,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": -2.281304,
+          "gross_trades": 23,
+          "htf_blocked": {
+            "long": 91,
+            "short": 213
+          },
+          "liquidated_legs": 0,
+          "long_positions": 23,
+          "mean_ddadj": -0.3773,
+          "mean_return_pct": -16.6183,
+          "mean_sharpe": -0.4243,
+          "net_per_trade_pct": -3.806205,
+          "net_pnl_usd": -999.95,
+          "positions": 23,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -3.903114,
+          "stress_trades": 23,
+          "traded_datasets": 6,
+          "trades": 23,
+          "trades_per_year": 6.83,
+          "worst_max_dd_pct": -58.1
+        },
+        "p_13_34_89": {
+          "clusters": 28,
+          "cost_drag_per_trade_pct": 0.31649,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 1.317,
+          "funding_drag_pct": 1.759,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.723544,
+          "gross_trades": 79,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 79,
+          "mean_ddadj": 0.2327,
+          "mean_return_pct": 4.5433,
+          "mean_sharpe": 0.0547,
+          "net_per_trade_pct": 0.407054,
+          "net_pnl_usd": 270.47,
+          "positions": 79,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": 0.306611,
+          "stress_trades": 79,
+          "traded_datasets": 6,
+          "trades": 79,
+          "trades_per_year": 23.47,
+          "worst_max_dd_pct": -27.19
+        },
+        "p_21_55_144": {
+          "clusters": 15,
+          "cost_drag_per_trade_pct": 0.352809,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.7966,
+          "funding_drag_pct": 1.3747,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.2754,
+          "gross_trades": 50,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 50,
+          "mean_ddadj": -0.1715,
+          "mean_return_pct": -2.145,
+          "mean_sharpe": -0.4707,
+          "net_per_trade_pct": -0.077409,
+          "net_pnl_usd": -130.75,
+          "positions": 50,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -0.177376,
+          "stress_trades": 50,
+          "traded_datasets": 6,
+          "trades": 50,
+          "trades_per_year": 14.86,
+          "worst_max_dd_pct": -32.17
+        },
+        "p_34_89_233": {
+          "clusters": 6,
+          "cost_drag_per_trade_pct": 0.563753,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.6348,
+          "funding_drag_pct": 2.4172,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 1.8725,
+          "gross_trades": 40,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 40,
+          "mean_ddadj": 0.2643,
+          "mean_return_pct": 5.4017,
+          "mean_sharpe": 0.1948,
+          "net_per_trade_pct": 1.308747,
+          "net_pnl_usd": 324.16,
+          "positions": 40,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": 1.20722,
+          "stress_trades": 40,
+          "traded_datasets": 6,
+          "trades": 40,
+          "trades_per_year": 11.88,
+          "worst_max_dd_pct": -31.04
+        },
+        "p_55_144_377": {
+          "clusters": 3,
+          "cost_drag_per_trade_pct": 0.869828,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 0.3576,
+          "funding_drag_pct": 2.5165,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 2.697727,
+          "gross_trades": 22,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 22,
+          "mean_ddadj": 0.1932,
+          "mean_return_pct": 4.6683,
+          "mean_sharpe": 0.161,
+          "net_per_trade_pct": 1.827899,
+          "net_pnl_usd": 280.28,
+          "positions": 22,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": 1.725766,
+          "stress_trades": 22,
+          "traded_datasets": 6,
+          "trades": 22,
+          "trades_per_year": 6.54,
+          "worst_max_dd_pct": -38.91
+        },
+        "p_8_21_55": {
+          "clusters": 50,
+          "cost_drag_per_trade_pct": 0.258208,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 2.4219,
+          "funding_drag_pct": 1.7885,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.311974,
+          "gross_trades": 152,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 152,
+          "mean_ddadj": 0.168,
+          "mean_return_pct": 0.455,
+          "mean_sharpe": -0.261,
+          "net_per_trade_pct": 0.053766,
+          "net_pnl_usd": 27.28,
+          "positions": 152,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -0.046312,
+          "stress_trades": 152,
+          "traded_datasets": 6,
+          "trades": 152,
+          "trades_per_year": 45.16,
+          "worst_max_dd_pct": -26.85
+        },
+        "spot_control": {
+          "clusters": 83,
+          "cost_drag_per_trade_pct": 0.229014,
+          "coverage_complete": true,
+          "datasets": 6,
+          "datasets_requested": 6,
+          "fee_drag_pct": 4.0755,
+          "funding_drag_pct": 1.7514,
+          "funding_fetched_legs": 0,
+          "funding_incomplete_legs": 0,
+          "gross_per_trade_pct": 0.14092,
+          "gross_trades": 261,
+          "htf_blocked": {
+            "long": 0,
+            "short": 0
+          },
+          "liquidated_legs": 0,
+          "long_positions": 261,
+          "mean_ddadj": -0.2208,
+          "mean_return_pct": -5.09,
+          "mean_sharpe": -0.5383,
+          "net_per_trade_pct": -0.088094,
+          "net_pnl_usd": -308.12,
+          "positions": 261,
+          "short_positions": 0,
+          "span_days": 1229.37,
+          "stress_per_trade_pct": -0.188063,
+          "stress_trades": 261,
+          "traded_datasets": 6,
+          "trades": 261,
+          "trades_per_year": 77.54,
+          "worst_max_dd_pct": -31.36
+        }
+      },
+      "checks": {
+        "bar_4h": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "ETH 1h",
+            "SOL 1h"
+          ],
+          "control_mean_ddadj": -0.2837
+        },
+        "combo": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "gate_adx_up": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "gate_cm_not_down": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "gate_cm_up": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "gate_p21_up_clean": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": false
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "htf": {
+          "checks": {
+            "beats_control_ddadj": false,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "p_13_34_89": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "p_21_55_144": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "p_34_89_233": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "p_55_144_377": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": false,
+            "min_trades": false,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        },
+        "p_8_21_55": {
+          "checks": {
+            "beats_control_ddadj": true,
+            "min_clusters": true,
+            "min_trades": true,
+            "no_funding_incomplete": true,
+            "plateau_neighbours_beat_control": true,
+            "trades_on_half_the_datasets": true
+          },
+          "control": "spot_control",
+          "control_datasets": [
+            "BTC 1h",
+            "BTC 4h",
+            "ETH 1h",
+            "ETH 4h",
+            "SOL 1h",
+            "SOL 4h"
+          ],
+          "control_mean_ddadj": -0.2208
+        }
+      },
+      "combo": {
+        "members": [
+          "gate_cm_up",
+          "p_13_34_89"
+        ],
+        "path": "arms/spot/combo.json",
+        "sha256": "ff650aaa71158a7cb40b03fd308777a753fc67f0efa7071ff181c7d41f3a295b"
+      },
+      "judged_arms": [
+        "bar_4h",
+        "combo",
+        "gate_cm_up",
+        "p_13_34_89"
+      ],
+      "picks": {
+        "bar": "bar_4h",
+        "gate": "gate_cm_up",
+        "htf": null,
+        "period": "p_13_34_89"
+      },
+      "picks_before_combo": {
+        "bar": "bar_4h",
+        "gate": "gate_cm_up",
+        "htf": null,
+        "period": "p_13_34_89"
+      },
+      "shortlist": [
+        "bar_4h",
+        "combo",
+        "gate_cm_not_down",
+        "gate_cm_up",
+        "p_13_34_89",
+        "p_21_55_144",
+        "p_8_21_55"
+      ]
+    }
+  },
+  "leg_seconds": 60947.4,
+  "network_blocked_while_scoring": true,
+  "network_probe": {
+    "socket_connect": "refused: frozen study run: network access is blocked",
+    "unfrozen_symbol_load": "refused: frozen study run: network access is blocked"
+  },
+  "protocol_lock": {
+    "arms_sha256": {
+      "live/bar_1h.json": "e93657dca55b7c4cd3f6f6033781cadf29828433aec2656b576e37e8b9279f98",
+      "live/gate_adx_up.json": "d960a6390d5c6a1e79bfc20147af9a765094186b01a61627bad8412c63f4f30c",
+      "live/gate_cm_not_down.json": "f05befb47b2f4ba90d7fc0e257052cb02924a8b13e48f7886db309a6302d2964",
+      "live/gate_cm_up.json": "fc29d674a4dc41282af56c7a16e0324a81033105976ebb033c8ee59e3ab152ff",
+      "live/gate_p21_up_clean.json": "7891b75760aee61764321b04a9fa9e70a96718dd808836fd9de05d1163930fcb",
+      "live/live_both.json": "7ed7567131a364b1370b93d646030de4fe185b29e64a89cfa0fdde093898f6a5",
+      "live/live_both_nohtf.json": "a4771f6ffec6ca504656f7000e8c6b7e5e5ad0db3d9f1d064d7d1b085b7b320b",
+      "live/live_long.json": "9e6162276603425083c7b12031ed3f2dc1b96bbfc742d1e0b55b7908ddb97dfc",
+      "live/live_long_nohtf.json": "01f3475fdb38f8d1d9b34cb31fce075d6287d9a9b9c30a6ff8f80028b0d928a0",
+      "live/p_13_34_89.json": "4bdf09976159f462ba980a7fcde85d00bcc4f44331dd6cea544327106b8370ee",
+      "live/p_21_55_144.json": "a713257b896f40c30d37b37a45a61f08b59b5f5a54dbb23d31473ac390671485",
+      "live/p_34_89_233.json": "735073ca74825100a79e50882088414717d768a530143b520a2a0a9205176ec8",
+      "live/p_55_144_377.json": "c51228e0f2fc7a117a8862b576d220708cb81ea216c74d48e45ac6551d81bd38",
+      "live/p_8_21_55.json": "1b5593363e95377ca245570767e06e22a1d30b070025485fa04fe202275767e1",
+      "paper/control.json": "640e7fa2e52706c140c66148d8e97ee41f2d241c999c93586d207810dd361b94",
+      "paper/gate_adx_up.json": "f0d9c798eb0d382fda9d8fee32d4617cf075cdec38d80457dd1868d38f149ac1",
+      "paper/gate_cm_not_down.json": "e87e7be914cf1ae24f7954eb9696437b98bf97277dbc7e3344492754a189f0a4",
+      "paper/gate_cm_up.json": "33d48d5cb955491925d18837d6377e0d37e47b6892e16286b07e2f78123a9f19",
+      "paper/gate_p21_up_clean.json": "d28777b35414d7d63b137e8b43d70c51d044e5ba6132a14932ae429ad22ff6df",
+      "paper/htf.json": "1d6a0daf9e9b9c84ce939ed83d93598df9d88ad80d299d89f2a308f400ef8f3a",
+      "paper/p_13_34_89.json": "2744f1ea2516b928f2df98a74177af0ea8a1f6cff352026ce7fe6590ec3daa46",
+      "paper/p_21_55_144.json": "7246790ba63d9ff28223a6d006af93ac8261bc2856f034885b6af753f9b2cba1",
+      "paper/p_34_89_233.json": "8453022596b52dc5a1621a5fb24f52edb48c5df933ab347753a733756d168176",
+      "paper/p_55_144_377.json": "541f752127521e44575d12dabb6a6e644315dc7f1bcf8b102e5223887e5abcca",
+      "paper/p_8_21_55.json": "c70fbbf3d6fd12ceaa7b145a7553bedc0b60c2a99099afe145813fdbfe6309cc",
+      "spot/gate_adx_up.json": "46ec92f7daccd80b186bf063bae351741d48d35cba0b406ee6abdcd0de59efc4",
+      "spot/gate_cm_not_down.json": "b6f7c22c8b24f91d819de4feef0cf27c3be0f09e12785727d6688537a69a6a6c",
+      "spot/gate_cm_up.json": "cb03560eb25a64536d0f7f02ed44200123f86028cf8724446986b0d4c38de2a3",
+      "spot/gate_p21_up_clean.json": "0e29ac740b21109ae83b53792a4847fa87a7e5b4bfa0bfeb46c726558683c0a1",
+      "spot/htf.json": "967883674fb94dd060f1314f64c3e5af32b9e8112c2ed45675c52edcff921fcf",
+      "spot/p_13_34_89.json": "56f861a62cad071f20a2ccfc1e1175458bc8b7f3d0a2519df5a4cbd1971b07a6",
+      "spot/p_21_55_144.json": "189407fc6f98446edbed549be3986675816938d64acd65443a478ab567cc336a",
+      "spot/p_34_89_233.json": "c466f7679c9446ff91d7e87ba28d8847dce94d5f30e3fe9fa8f0f47ab33a898d",
+      "spot/p_55_144_377.json": "949737d29136bae4947231205e2eed13f0979a8791090abfbf168aa613b929ad",
+      "spot/p_8_21_55.json": "ea53df7323d91254f13496eaa2fae220ee017332d603df9d54138483910e4a8f",
+      "spot/spot_control.json": "b1c238d70832f777e73832afc334ee1fa631c8645896e5af6c9d52cfbee37fac"
+    },
+    "coverage_sha256": "358abe4ca0f31ae14062bce1033a0bc719a4bd7acc90adeb54e07d43424173cd",
+    "htf_parity_signals": {
+      "bucket_closes_identical": true,
+      "cache_cut_at_first_bucket": "2025-04-08 04:00:00",
+      "dataset": "ETH/USDT 30m",
+      "derived_coverage": {
+        "buckets_closed": 1607,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "ema_period": 50,
+        "first_bucket": "2025-04-08 04:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2025-12-31 20:00:00"
+      },
+      "exchange_htf_file": "proxy/ETH_4h_candles.csv.gz",
+      "exchange_htf_rows_cached": 3483,
+      "fetch_calls": 0,
+      "filtered_signal_identical": true,
+      "filtered_signal_mismatch_bars": 0,
+      "frame_bars": 12851,
+      "frame_first_bar": "2025-04-08 06:30:00",
+      "frame_last_bar": "2025-12-31 23:30:00",
+      "measured_at_utc": "2026-11-11T05:36:45Z",
+      "signals_filtered": {
+        "long": 120,
+        "short": 50
+      },
+      "signals_raw": {
+        "long": 189,
+        "short": 189
+      },
+      "trend_identical": true,
+      "trend_mismatch_bars": 0,
+      "warmup_bars": 3011,
+      "window": "is"
+    },
+    "locked_at_utc": "2026-11-11T06:15:09Z",
+    "note": "written by run_study.py lock before any window was scored",
+    "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+    "smoke_sha256": "da6ec4c7b434f2c43c05875626dc72ab521d2533ce1f5f84c6eb4faaedf0ab4d",
+    "source_commit": "296ea9cc845ad1d2bf13eb3f212fd0017f64c760+uncommitted-changes"
+  },
+  "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+  "source_commit": "ab79a8ffb471fcd8dc6a78b6b6edcaf1eb76d956+uncommitted-changes",
+  "window": "is",
+  "written_at_utc": "2026-11-11T08:38:18Z"
+}

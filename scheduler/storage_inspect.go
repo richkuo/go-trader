@@ -46,6 +46,8 @@ type storageFileInspection struct {
 	RobinhoodRows   int                  `json:"robinhood_order_attempt_rows"`
 	RobinhoodHeld   []string             `json:"unresolved_robinhood_order_attempts"`
 	RobinhoodBooks  []string             `json:"robinhood_account_bindings"`
+	OKXStopRows     int                  `json:"okx_protection_rows"`
+	OKXStopHeld     []string             `json:"unresolved_okx_stops"`
 	QuoteReplayRuns []string             `json:"quote_replay_runs,omitempty"`
 	QuoteOwners     int                  `json:"quote_owner_contracts"`
 	QuotePending    []string             `json:"pending_quote_recovery"`
@@ -71,6 +73,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	liveRH := map[string]bool{}
 	liveRHCoin := map[string]string{}
 	admittedQuote := map[string]bool{}
+	okxStops := map[string]bool{}
 	if cfg != nil && cfg.quoteLoad != nil {
 		admittedQuote[cfg.quoteLoad.ownerID] = true
 	}
@@ -81,6 +84,9 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 			if isRobinhoodLiveSpot(sc) {
 				liveRH[sc.ID] = true
 				liveRHCoin[sc.ID] = robinhoodSymbol(sc.Args)
+			}
+			if okxPerpsStrategy(sc) && okxIsLive(sc.Args) && okxStopWanted(sc) {
+				okxStops[effectiveStorageStrategyID(sc)] = true
 			}
 		}
 	}
@@ -113,7 +119,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 		if err != nil {
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}
-		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH, admittedQuote)
+		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH, admittedQuote, okxStops)
 		if err == nil {
 			var heldRej []string
 			heldRej, err = inspectEngineHeldRows(db, &fi, held)
@@ -133,7 +139,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	return out, nil
 }
 
-func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool, liveRH map[string]bool, admittedQuote map[string]bool) ([]string, error) {
+func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool, liveRH map[string]bool, admittedQuote map[string]bool, okxStops map[string]bool) ([]string, error) {
 	var rejections []string
 	owned := make(map[PortfolioScope]bool, len(fi.ScopesOwned))
 	for _, scope := range fi.ScopesOwned {
@@ -296,6 +302,11 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 		return nil, err
 	}
 	rejections = append(rejections, entryRejections...)
+	okxRejections, err := inspectOKXProtectionRows(db, fi, okxStops)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, okxRejections...)
 
 	rhRejections, err := inspectRobinhoodOrderRows(db, fi, ident, owned, liveRH)
 	if err != nil {
@@ -437,6 +448,10 @@ func formatStorageInspection(si storageInspection) string {
 		for _, line := range fi.RobinhoodBooks {
 			fmt.Fprintf(&b, "    ROBINHOOD BOOK %s\n", line)
 		}
+		fmt.Fprintf(&b, "  okx protection rows: %d\n", fi.OKXStopRows)
+		for _, line := range fi.OKXStopHeld {
+			fmt.Fprintf(&b, "    UNRESOLVED OKX STOP %s\n", line)
+		}
 		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
 		for _, line := range fi.QuotePending {
 			fmt.Fprintf(&b, "    PENDING QUOTE RECOVERY %s\n", line)
@@ -464,6 +479,37 @@ func partitionTextList(parts []RiskPartition) []string {
 		out = append(out, p.String())
 	}
 	return out
+}
+
+func inspectOKXProtectionRows(db *StateDB, fi *storageFileInspection, owners map[string]bool) ([]string, error) {
+	ok, err := tableExists(db, "okx_protection")
+	if err != nil || !ok {
+		return nil, err
+	}
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM okx_protection").Scan(&fi.OKXStopRows); err != nil {
+		return nil, fmt.Errorf("count OKX protection rows in the %s state file: %w", fi.Role, err)
+	}
+	rows, err := db.db.Query(`SELECT scope, strategy_id, symbol, status, algo_client_id FROM okx_protection
+		WHERE status != 'retired' ORDER BY strategy_id, algo_client_id`)
+	if err != nil {
+		return nil, fmt.Errorf("read OKX protection rows in the %s state file: %w", fi.Role, err)
+	}
+	defer rows.Close()
+	var rejections []string
+	for rows.Next() {
+		var scope, sid, symbol, status, algo string
+		if err := rows.Scan(&scope, &sid, &symbol, &status, &algo); err != nil {
+			return nil, err
+		}
+		fi.OKXStopHeld = append(fi.OKXStopHeld, sid+": "+symbol+" "+status+" "+algo)
+		if scope != "live" || !owners[sid] {
+			rejections = append(rejections, fmt.Sprintf("%s state file: unresolved OKX stop %s for stored strategy %q is not owned by a configured live OKX perps stop", fi.Role, algo, sid))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return rejections, nil
 }
 
 func inspectEntryDecisionRows(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, owned map[PortfolioScope]bool) ([]string, error) {

@@ -254,7 +254,7 @@ func TestPaperChildPriorityIntegration(t *testing.T) {
 		if err := os.WriteFile(cfgPath, blob, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		fixture := htfITWriteFixture(t, filepath.Join(dir, "offline.json"), htfITFixture{HTF: "neutral", Spot: "up", Fut: "up"})
+		fixture := htfITWriteFixture(t, filepath.Join(dir, "offline.json"), htfITFixture{HTF: "neutral", Spot: "up"})
 		run := func(value string) (string, []pcpRecord) {
 			t.Helper()
 			recDir := t.TempDir()

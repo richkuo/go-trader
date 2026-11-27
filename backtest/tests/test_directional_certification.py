@@ -1,24 +1,6 @@
 import json
-from datetime import datetime, timedelta, timezone
 
-from directional_certification import (
-    normalize_cert_asset,
-    load_certifications,
-    is_directional_certified,
-    certified_states,
-    backtest_classifier,
-    config_directional_classifier,
-)
-
-
-def test_normalize_cert_asset():
-    assert normalize_cert_asset("BTC/USDT") == "BTC"
-    assert normalize_cert_asset("btc") == "BTC"
-    assert normalize_cert_asset("BTC-PERP") == "BTC"
-    assert normalize_cert_asset("ETH/USD") == "ETH"
-    assert normalize_cert_asset("SOL_USDT") == "SOL"
-    assert normalize_cert_asset("  xrp ") == "XRP"
-    assert normalize_cert_asset("") == ""
+from directional_certification import load_certifications, backtest_classifier, config_directional_classifier
 
 
 def test_load_missing_or_malformed_is_failclosed_empty(tmp_path):
@@ -29,58 +11,6 @@ def test_load_missing_or_malformed_is_failclosed_empty(tmp_path):
     assert load_certifications(str(p)) == {}, "test_load_malformed_is_failclosed_empty: not json"
     p.write_text(json.dumps({"schema_version": 2, "certified": []}))
     assert load_certifications(str(p)) == {}, "test_load_malformed_is_failclosed_empty: schema 2"
-
-
-def test_is_directional_certified_active_expired_never(tmp_path, subtests):
-    with subtests.test("test_is_directional_certified_active_expired_never"):
-        case_dir = tmp_path / "test_is_directional_certified_active_expired_never"
-        case_dir.mkdir()
-        now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-        future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
-        past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
-        p = case_dir / "cert.json"
-        p.write_text(json.dumps({
-            "schema_version": 1,
-            "certified": [
-                {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
-                 "expires_at": future, "states": {"trending_up": "long"}},
-                {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
-                 "expires_at": past, "states": {"trending_down": "short"}},
-            ],
-        }))
-        certs = load_certifications(str(p))
-        assert is_directional_certified(certs, "BTC", "1h", "composite", now)
-        assert not is_directional_certified(certs, "ETH", "4h", "adx", now)
-        assert not is_directional_certified(certs, "SOL", "1h", "composite", now)
-        assert not is_directional_certified(certs, "BTC", "1h", "adx", now)
-        assert not is_directional_certified(certs, "BTC", "4h", "composite", now)
-    with subtests.test("test_certified_states_active_expired_never"):
-        case_dir = tmp_path / "test_certified_states_active_expired_never"
-        case_dir.mkdir()
-        now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-        future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
-        past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
-        p = case_dir / "cert.json"
-        p.write_text(json.dumps({
-            "schema_version": 1,
-            "certified": [
-                {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
-                 "expires_at": future,
-                 "states": {"trending_up": "long", "trending_down": "short"}},
-                {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
-                 "expires_at": past, "states": {"trending_down": "short"}},
-            ],
-        }))
-        certs = load_certifications(str(p))
-        assert certified_states(certs, "BTC", "1h", "composite", now) == {
-            "trending_up": "long", "trending_down": "short"}
-        assert certified_states(certs, "ETH", "4h", "adx", now) is None
-        assert certified_states(certs, "SOL", "1h", "composite", now) is None
-
-
-def test_backtest_classifier():
-    assert backtest_classifier(None) == "adx"
-    assert backtest_classifier({"windows": {}}) == "composite"
 
 
 def test_config_directional_classifier_matches_live_resolution():

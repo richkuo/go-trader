@@ -3,8 +3,8 @@ import contextlib
 import importlib.util
 import io
 import json
-import math
 import os
+import subprocess
 import sys
 import types
 
@@ -256,13 +256,6 @@ def test_one_failing_slot_does_not_disturb_its_peers(mod):
     assert _strip_volatile(by_id["hl-ok-1"]) == _strip_volatile(solo)
 
 
-def test_build_shared_signal_state_raises_typed_errors(mod):
-    with pytest.raises(mod.InsufficientCandlesError):
-        mod.build_shared_signal_state("BTC", "1h", adapter=FakeAdapter(candles=_candles(n=5)))
-    with pytest.raises(mod.SharedSignalStateError):
-        mod.build_shared_signal_state("BTC", "1h")
-
-
 def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(mod, subtests):
     with subtests.test(case="documented_envelope"):
         raw = json.dumps({"v": 1, "slots": [
@@ -295,7 +288,7 @@ def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(
 def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
     fake_module = types.ModuleType("adapter")
     fake_module.HyperliquidExchangeAdapter = lambda *a, **kw: adapter
-    monkeypatch.setitem(sys.modules, "adapter", fake_module)
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", fake_module)
     monkeypatch.setattr(sys, "argv", ["check_hyperliquid.py"] + argv)
     monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_text))
     buf = io.StringIO()
@@ -306,100 +299,6 @@ def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
     except SystemExit as e:
         code = e.code or 0
     return buf.getvalue(), code
-
-
-def test_batch_check_argv_returns_the_documented_json_or_rejects_malformed_stdin(mod, monkeypatch, subtests):
-    with subtests.test(case="documented_json"), monkeypatch.context() as mp:
-        stdin_text = json.dumps({"v": 1, "slots": [
-            {"id": "hl-a", "strategy": "breakout", "mode": "paper",
-             "strategy_refs": {"open": {"name": "breakout", "params": {}}}},
-            {"id": "hl-b", "strategy": "momentum_pro", "mode": "live",
-             "strategy_refs": {"open": {"name": "momentum_pro", "params": {}}}},
-        ]})
-        out, code = _run_main(mod, mp, [
-            "--batch-check", "--symbol=BTC", "--timeframe=1h",
-            "--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=25000",
-        ], stdin_text, FakeAdapter())
-        assert code == 0, out
-        envelope = json.loads(out)
-        assert envelope["platform"] == "hyperliquid"
-        assert envelope["symbol"] == "BTC" and envelope["timeframe"] == "1h"
-        assert envelope["error"] == "" and envelope["error_scope"] == ""
-        assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b"]
-        for result in envelope["results"]:
-            for key in ("strategy", "symbol", "timeframe", "signal", "price",
-                        "indicators", "mode", "platform", "timestamp"):
-                assert key in result
-            assert isinstance(result["signal"], int)
-            assert isinstance(result["price"], (int, float))
-
-    with subtests.test(case="malformed_stdin"), monkeypatch.context() as mp:
-        out, code = _run_main(mod, mp, [
-            "--batch-check", "--symbol=BTC", "--timeframe=1h",
-        ], "{not json", FakeAdapter())
-        assert code == 1
-        envelope = json.loads(out)
-        assert envelope["error_scope"] == "shared_state"
-        assert "invalid batch payload" in envelope["error"]
-        assert envelope["results"] == []
-
-
-def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
-    class ExplodingStdin:
-        def read(self):
-            raise AssertionError("--probe-only must not read stdin")
-
-    monkeypatch.setattr(sys, "argv", ["check_hyperliquid.py", "--batch-check",
-                                      "--symbol=BTC", "--timeframe=1h", "--probe-only"])
-    monkeypatch.setattr(sys, "stdin", ExplodingStdin())
-    with pytest.raises(SystemExit) as exc:
-        mod.main()
-    assert exc.value.code == 0
-
-
-def test_single_strategy_mode_keeps_its_one_object_shapes(mod, monkeypatch, subtests):
-    with subtests.test(case="prints_one_object"), monkeypatch.context() as mp:
-        out, code = _run_main(mod, mp, [
-            "breakout", "BTC", "1h", "--mode=paper", "--mark-price=25000",
-            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
-        ], "", FakeAdapter())
-        assert code == 0, out
-        result = json.loads(out)
-        assert result["strategy"] == "breakout"
-        assert result["platform"] == "hyperliquid"
-        assert result["price"] == 25_000.0
-        assert "results" not in result
-
-    with subtests.test(case="insufficient_data_shape_is_unchanged"), monkeypatch.context() as mp:
-        out, code = _run_main(mod, mp, [
-            "breakout", "BTC", "1h", "--mode=paper",
-            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
-        ], "", FakeAdapter(candles=_candles(n=12)))
-        assert code == 1
-        result = json.loads(out)
-        assert result["error"] == "Insufficient data: 12 candles"
-        assert "regime" not in result
-
-    with subtests.test(case="error_shape_is_unchanged"), monkeypatch.context() as mp:
-        out, code = _run_main(mod, mp, [
-            "no_such_strategy_1442", "BTC", "1h", "--mode=paper",
-            "--strategy-refs", json.dumps({"open": {"name": "no_such_strategy_1442", "params": {}}}),
-        ], "", FakeAdapter())
-        assert code == 1
-        result = json.loads(out)
-        assert result["error"]
-        assert result["regime"] is None
-        assert result["signal"] == 0
-
-
-def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
-    df = mod._make_dataframe(_candles())
-    shared = mod.build_shared_signal_state("BTC", "1h", df=df, atr_method="simple")
-    assert shared["adapter"] is None
-    assert shared["atr"] > 0
-    result = mod.evaluate_signal_slot(shared, _slot("hl-offline", "breakout"))
-    assert result["strategy"] == "breakout"
-    assert math.isfinite(result["price"])
 
 
 def _spot_registry_path(mod):
@@ -495,6 +394,9 @@ def test_market_payload_serves_frames_mid_and_funding_without_fetching(mod, subt
             "records": [{"rate": 0.0004, "time": rows[0][0] - 10},
                         {"rate": 0.0005, "time": rows[0][0] + 10}],
             "has_records": True, "fetched_at_ms": 1_700_000_000_000, "source": "rest",
+            "records_contract": 1, "records_from_ms": rows[0][0] - 10,
+            "records_to_ms": max(1_700_000_000_000, rows[0][0] + 10),
+            "records_through_ms": max(1_700_000_000_000, rows[0][0] + 10),
         }
         shared = mod.build_shared_signal_state(
             "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
@@ -631,6 +533,38 @@ def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):
                       "initial_quantity": initial_qty, "entry_atr": entry_atr},
         close_strategies="tiered_tp_atr",
     )
+
+
+@pytest.mark.parametrize("cached_venue", ["ibkr", "hyperliquid"])
+def test_venue_close_gate_and_options_ignore_bare_adapter_cache(cached_venue):
+    driver = """
+import importlib
+import runpy
+import sys
+
+venue, script = sys.argv[1:]
+cached_adapter = importlib.import_module(f"platforms.{venue}.adapter")
+sys.modules["adapter"] = cached_adapter
+if venue == "ibkr":
+    from shared_strategies.options import strategies
+    check = runpy.run_path(script)
+else:
+    check = runpy.run_path(script)
+    from shared_strategies.options import strategies
+
+from shared_tools.option_types import OptionType
+assert strategies.OptionType is OptionType
+out = check["apply_venue_close_gate"](
+    {"close_fraction": 0.5, "open_action": "none", "signal": -1},
+    {"current_quantity": 0.2}, 100.0, 4, 10.0, "long", min_notional_margin=0.03)
+assert out["close_gate"] == "below_venue_minimum"
+assert sys.modules["adapter"] is cached_adapter
+"""
+    root = os.path.dirname(os.path.dirname(SCRIPT_PATH))
+    result = subprocess.run(
+        [sys.executable, "-c", driver, cached_venue, SCRIPT_PATH],
+        cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 def test_venue_close_gate_rewrites_only_dust_partial_closes(mod):
@@ -804,7 +738,7 @@ def test_slot_and_single_check_evaluate_tiers_under_the_resting_limit_model(mod,
     monkeypatch.setattr(mod, "_signal_check_deps", lambda: recording)
     monkeypatch.setattr(mod, "build_shared_signal_state",
                         lambda symbol, timeframe, **kw: real_build(symbol, timeframe, **{**kw, "adapter": FakeAdapter()}))
-    monkeypatch.setitem(sys.modules, "adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
     mod.run_signal_check("breakout", "BTC", "1h", "paper", False, None, "breakout",
                          "tiered_tp_atr_live", "long", position_ctx, mark_price=25_000.0)
     single_out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])

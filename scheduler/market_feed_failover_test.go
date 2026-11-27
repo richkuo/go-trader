@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +23,7 @@ func TestSharedFeedFailover(t *testing.T) {
 	var candleCalls atomic.Int64
 	origCandles := fetchHyperliquidCandleSnapshotFn
 	fetchHyperliquidCandleSnapshotFn = func(ctx context.Context, coin, interval string, startMs, endMs int64) ([]hlCandleRaw, error) {
-		if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "candleSnapshot"); err != nil {
 			return nil, err
 		}
 		candleCalls.Add(1)
@@ -39,7 +42,7 @@ func TestSharedFeedFailover(t *testing.T) {
 	}
 	origMids := fetchHyperliquidMidsCtxFn
 	fetchHyperliquidMidsCtxFn = func(ctx context.Context, coins []string) (map[string]float64, error) {
-		if err := feedBudgetAcquire(ctx, "allMids"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "allMids"); err != nil {
 			return nil, err
 		}
 		return map[string]float64{"BTC": 101, "ETH": 11}, nil
@@ -309,4 +312,408 @@ func TestSharedFeedFailover(t *testing.T) {
 			t.Fatalf("websocket seal marked %s not_due: %+v", sym, rd)
 		}
 	}
+}
+
+func TestSharedFeedFailoverKeyFill(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	btc := feedKeyFor("BTC", "1m")
+	eth := feedKeyFor("ETH", "1m")
+	sol := feedKeyFor("SOL", "1m")
+	xrp := feedKeyFor("XRP", "1m")
+	avax := feedKeyFor("AVAX", "1m")
+	doge := feedKeyFor("DOGE", "1m")
+	h := newKeyFillHarness(t, ctx, 60_000,
+		map[string]bool{"XRP": true},
+		map[string]bool{"ETH": true, "DOGE": true})
+	primaryNeed := keyFillConsumer(map[marketFeedKey]int{btc: 200, eth: 150, xrp: 150, avax: 100, doge: 150})
+	backupNeed := keyFillConsumer(map[marketFeedKey]int{btc: 200, eth: 150, sol: 150, xrp: 150, avax: 150, doge: 100})
+	newLedger := func() *feedRequestLedger {
+		return newFeedRequestLedger(&feedBudgetConfig{PerMinute: 5000, Startup: 500}, true, nil)
+	}
+	primary := h.feed(feedSourceWebsocket, "inst-primary", nil, feedConsumer{Loaded: true, Req: primaryNeed, Cadences: []int{60}})
+	backup := h.feed(feedSourceREST, "inst-backup", newLedger(), feedConsumer{Loaded: true, Req: backupNeed, Cadences: []int{60}})
+	healthy := h.feed(feedSourceWebsocket, "inst-healthy", newLedger(), feedConsumer{Loaded: true, Req: primaryNeed, Cadences: []int{60}})
+	pSock, bSock, hSock := h.listen("p", primary), h.listen("b", backup), h.listen("h", healthy)
+
+	k := time.Now().UTC().Unix() / 60 * 60
+	k1, k2 := k-60, k
+	for _, s := range []*feedSealer{primary, backup, healthy} {
+		h.seal(s, k1, k2)
+	}
+	ring := func() map[string][]byte {
+		out := map[string][]byte{}
+		for name, s := range map[string]*feedSealer{"primary": primary, "backup": backup} {
+			for _, key := range []int64{k1, k2} {
+				out[fmt.Sprintf("%s/%d", name, key)] = append([]byte(nil), s.sealBytes(key)...)
+			}
+		}
+		return out
+	}
+	before := ring()
+	for name, b := range before {
+		if len(b) == 0 {
+			t.Fatalf("seal %s is empty", name)
+		}
+	}
+	if doc, err := decodeFeedSeal(primary.sealBytes(k2), k2); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, sk := range doc.Keys {
+			want := sk.Symbol != "ETH" && sk.Symbol != "XRP" && sk.Symbol != "DOGE"
+			if sk.Readiness.Ready != want {
+				t.Fatalf("primary %s sealed ready=%v status %q, want ready=%v", sk.Symbol, sk.Readiness.Ready, sk.Readiness.Status, want)
+			}
+		}
+	}
+	alertCount := func(r sharedFeedFetchReport, marker string) int {
+		n := 0
+		for _, a := range r.Alerts {
+			if strings.Contains(a, marker) {
+				n++
+			}
+		}
+		return n
+	}
+	consumerOf := func(need map[marketFeedKey]int) (feedRequirements, cycleMarketRequirements) {
+		r := keyFillConsumer(need)
+		return r, keyFillCycle(r)
+	}
+
+	t.Run("fills_unready_key", func(t *testing.T) {
+		c, dials := keyFillClient(pSock, bSock)
+		req, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if rep.Status != feedFetchSealed || rep.Endpoint != "primary" || rep.Hash != feedSealHash(before[fmt.Sprintf("primary/%d", k2)]) {
+			t.Fatalf("report %+v, want the primary seal", rep)
+		}
+		if !reflect.DeepEqual(rep.Filled, []string{"ETH|1m"}) || rep.BackupHash != feedSealHash(before[fmt.Sprintf("backup/%d", k2)]) || rep.BackupInstance != "inst-backup" {
+			t.Fatalf("filled %v backup %s/%s, want ETH|1m from the backup seal", rep.Filled, rep.BackupInstance, rep.BackupHash)
+		}
+		if len(rep.Unready) != 0 || len(rep.Gaps) != 0 || dials(bSock) != 1 {
+			t.Fatalf("unready %v gaps %v backup dials %d, want none, none and 1", rep.Unready, rep.Gaps, dials(bSock))
+		}
+		if snap.keys[btc].FilledFrom != "" || snap.keys[eth].FilledFrom != "backup" || !snap.keys[eth].Readiness.Ready {
+			t.Fatalf("BTC from %q, ETH from %q ready=%v; want BTC primary and ETH backup", snap.keys[btc].FilledFrom, snap.keys[eth].FilledFrom, snap.keys[eth].Readiness.Ready)
+		}
+		if rep.FillDetails[0].PrimaryStatus != string(feedStatusFailed) {
+			t.Fatalf("fill details %+v, want the primary failed status", rep.FillDetails)
+		}
+		fctx := &marketFeedContext{Enabled: true, Requirements: req, Snapshot: snap}
+		if _, err := fctx.singleCheckPayload(StrategyConfig{ID: "s-ETH"}); err != nil {
+			t.Fatalf("ETH payload after the fill: %v", err)
+		}
+		only := newSharedFeedClientWithEndpoints([]sharedFeedEndpoint{{Name: "primary", Socket: pSock}})
+		only.settle, only.prepare = 0, time.Hour
+		osnap, _ := only.Fetch(ctx, k2, cycle)
+		if _, err := (&marketFeedContext{Enabled: true, Requirements: req, Snapshot: osnap}).singleCheckPayload(StrategyConfig{ID: "s-ETH"}); err == nil {
+			t.Fatal("ETH payload without a backup endpoint succeeded, want the primary hold")
+		}
+		line := sharedFeedAuditLine(rep, 2, []int{60})
+		for _, want := range []string{"status=sealed endpoint=primary ", "backup_hash=" + rep.BackupHash + " ", "filled=ETH|1m ", "unready=none ", "backup_instance=inst-backup "} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("audit line %q lacks %q", line, want)
+			}
+		}
+		if alertCount(rep, "KEY FALLBACK**") != 1 || len(rep.Alerts) != 1 {
+			t.Fatalf("alerts %v, want one KEY FALLBACK", rep.Alerts)
+		}
+		if !reflect.DeepEqual(ring(), before) {
+			t.Fatal("a fill changed seal bytes in a feed ring")
+		}
+		for name, b := range ring() {
+			if strings.HasPrefix(name, "backup/") && strings.HasSuffix(name, fmt.Sprint(k2)) && feedSealHash(b) != rep.BackupHash {
+				t.Fatalf("backup ring hash %s differs from the reported %s", feedSealHash(b), rep.BackupHash)
+			}
+		}
+	})
+
+	t.Run("missing_primary_key_filled", func(t *testing.T) {
+		c, _ := keyFillClient(pSock, bSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, sol: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if !reflect.DeepEqual(rep.Filled, []string{"SOL|1m"}) || len(rep.Gaps) != 0 || rep.FillDetails[0].PrimaryStatus != "missing" {
+			t.Fatalf("filled %v gaps %v details %+v, want SOL filled from a missing primary key", rep.Filled, rep.Gaps, rep.FillDetails)
+		}
+		if _, ok := snap.frameFor(sol, 150); !ok || alertCount(rep, "COVERAGE GAP") != 0 {
+			t.Fatalf("SOL frame missing or a coverage gap raised: %v", rep.Alerts)
+		}
+	})
+
+	t.Run("no_request_when_ready", func(t *testing.T) {
+		c, dials := keyFillClient(pSock, bSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200})
+		_, rep := c.Fetch(ctx, k2, cycle)
+		if dials(bSock) != 0 || rep.FillRequest != "none" || len(rep.Filled) != 0 || rep.BackupHash != "" {
+			t.Fatalf("backup dials %d fill %q filled %v, want no backup request", dials(bSock), rep.FillRequest, rep.Filled)
+		}
+	})
+
+	t.Run("unready_in_both", func(t *testing.T) {
+		c, dials := keyFillClient(pSock, bSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, xrp: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if dials(bSock) != 1 || len(rep.Filled) != 0 || len(rep.Unready) != 1 || rep.Unready[0].Key != "XRP|1m" || rep.Unready[0].BackupStatus == "" {
+			t.Fatalf("dials %d filled %v unready %+v, want XRP unready in both seals", dials(bSock), rep.Filled, rep.Unready)
+		}
+		if _, ok := snap.frameFor(xrp, 150); ok || alertCount(rep, "KEY FALLBACK") != 0 {
+			t.Fatalf("XRP frame present or fallback alert %v", rep.Alerts)
+		}
+		if line := sharedFeedAuditLine(rep, 2, []int{60}); !strings.Contains(line, "unready=XRP|1m ") || !strings.Contains(line, "filled=none ") {
+			t.Fatalf("audit line %q, want unready=XRP|1m and filled=none", line)
+		}
+		if st := c.status(); len(st.Fallbacks) != 0 {
+			t.Fatalf("episodes %+v opened for a key ready in neither seal", st.Fallbacks)
+		}
+	})
+
+	t.Run("short_primary_lookback_not_filled", func(t *testing.T) {
+		c, dials := keyFillClient(pSock, bSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, avax: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if dials(bSock) != 0 || len(rep.Filled) != 0 || len(rep.Gaps) != 1 || !strings.Contains(rep.Gaps[0], "AVAX|1m lookback 100 is below the 150") {
+			t.Fatalf("dials %d filled %v gaps %v, want no request and an AVAX coverage gap", dials(bSock), rep.Filled, rep.Gaps)
+		}
+		if !snap.keyFailed(avax) {
+			t.Fatal("AVAX is not held after its coverage gap")
+		}
+	})
+
+	t.Run("backup_lookback_short", func(t *testing.T) {
+		c, _ := keyFillClient(pSock, bSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, doge: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if !reflect.DeepEqual(rep.Filled, []string{"DOGE|1m"}) || len(rep.Gaps) != 1 || !strings.Contains(rep.Gaps[0], "in the backup seal") {
+			t.Fatalf("filled %v gaps %v, want DOGE filled then removed with a gap naming the backup", rep.Filled, rep.Gaps)
+		}
+		if !snap.keyFailed(doge) || alertCount(rep, "KEY FALLBACK") != 0 || len(c.status().Fallbacks) != 0 {
+			t.Fatalf("DOGE held=%v alerts %v episodes %+v, want held with no fallback", snap.keyFailed(doge), rep.Alerts, c.status().Fallbacks)
+		}
+	})
+
+	t.Run("backup_not_due", func(t *testing.T) {
+		due := k / 120 * 120
+		if due == k {
+			due -= 120
+		}
+		notDue := due - 60
+		mixed := h.feed(feedSourceREST, "inst-mixed", newLedger(),
+			feedConsumer{Loaded: true, Req: keyFillConsumer(map[marketFeedKey]int{btc: 200}), Cadences: []int{60}},
+			feedConsumer{Loaded: true, Req: keyFillConsumer(map[marketFeedKey]int{eth: 150}), Cadences: []int{120}})
+		mSock := h.listen("m", mixed)
+		h.seal(primary, notDue)
+		h.seal(mixed, notDue)
+		c, dials := keyFillClient(pSock, mSock)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		snap, rep := c.Fetch(ctx, notDue, cycle)
+		if dials(mSock) != 1 || len(rep.Filled) != 0 || len(rep.Unready) != 1 || rep.Unready[0].BackupStatus != string(feedStatusNotDue) {
+			t.Fatalf("dials %d filled %v unready %+v, want ETH held with the backup not_due", dials(mSock), rep.Filled, rep.Unready)
+		}
+		if !snap.keyFailed(eth) {
+			t.Fatal("ETH is not held when the backup entry is not_due")
+		}
+	})
+
+	t.Run("stalled_backup_socket", func(t *testing.T) {
+		stall := h.stalled("s")
+		c, dials := keyFillClient(pSock, stall)
+		c.prepare = time.Now().Add(1500*time.Millisecond).Sub(time.Unix(k2, 0)) - c.grace - feedClientSlack
+		giveUp := c.giveUpAt(k2)
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		started := time.Now()
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		elapsed := time.Since(started)
+		late := time.Since(giveUp)
+		if dials(stall) != 1 || rep.Endpoint != "primary" || len(rep.Filled) != 0 || !snap.keyFailed(eth) {
+			t.Fatalf("dials %d report %+v, want one abandoned fill request and ETH held", dials(stall), rep)
+		}
+		if elapsed > 3*time.Second || late < -100*time.Millisecond || late > time.Second {
+			t.Fatalf("fill request ended after %s, %s from the give-up time; want it abandoned at the give-up time, well under the %s I/O timeout", elapsed, late, feedClientIOTimeout)
+		}
+		if !strings.Contains(rep.FillRequest, feedErrTransport) {
+			t.Fatalf("fill request %q, want a transport error at the give-up time", rep.FillRequest)
+		}
+	})
+
+	t.Run("stalled_backup_probe_budget", func(t *testing.T) {
+		stall := h.stalled("sp")
+		c, dials := keyFillClient(pSock, stall)
+		giveUpIn := func(d time.Duration) time.Time {
+			c.prepare = time.Now().Add(d).Sub(time.Unix(k2, 0)) - c.grace - feedClientSlack
+			return c.giveUpAt(k2)
+		}
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		fetch := func() (*marketSnapshot, sharedFeedFetchReport, time.Duration) {
+			started := time.Now()
+			snap, rep := c.Fetch(ctx, k2, cycle)
+			return snap, rep, time.Since(started)
+		}
+
+		giveUp := giveUpIn(4 * time.Second)
+		snap, rep, elapsed := fetch()
+		if late := time.Since(giveUp); late < -100*time.Millisecond || late > time.Second || elapsed < 3*time.Second {
+			t.Fatalf("first fill request ended after %s, %s from the give-up time; want the full give-up bound", elapsed, late)
+		}
+		if rep.Endpoint != "primary" || len(rep.Filled) != 0 || !snap.keyFailed(eth) || !strings.Contains(rep.FillRequest, feedErrTransport) || strings.HasPrefix(rep.FillRequest, "probe") {
+			t.Fatalf("first cycle report %+v, want a full-bound transport failure and ETH held", rep)
+		}
+		for cycleNo := 2; cycleNo <= 3; cycleNo++ {
+			giveUpIn(20 * time.Second)
+			snap, rep, elapsed = fetch()
+			if elapsed > feedClientProbeFloor+time.Second {
+				t.Fatalf("cycle %d waited %s on the stalled backup, want at most the %s probe budget", cycleNo, elapsed, feedClientProbeFloor)
+			}
+			want := fmt.Sprintf("probe %s after an earlier fill request ended %s: ", feedClientProbeFloor, feedErrTransport)
+			if !strings.HasPrefix(rep.FillRequest, want) || rep.Endpoint != "primary" || len(rep.Filled) != 0 || !snap.keyFailed(eth) {
+				t.Fatalf("cycle %d report %+v, want fill_request %q... and ETH held", cycleNo, rep, want)
+			}
+			t.Logf("cycle %d waited %s: fill_request=%q", cycleNo, elapsed.Round(time.Millisecond), rep.FillRequest)
+		}
+		if dials(stall) != 3 {
+			t.Fatalf("stalled backup dials %d, want one bounded request per cycle", dials(stall))
+		}
+
+		c.endpoints[1].Socket = bSock
+		giveUpIn(20 * time.Second)
+		snap, rep, _ = fetch()
+		if rep.FillRequest != feedFetchSealed || len(rep.Filled) != 1 || rep.Filled[0] != eth.PayloadID() || snap.keyFailed(eth) || alertCount(rep, "SHARED MARKET FEED KEY FALLBACK") != 1 {
+			t.Fatalf("answering backup report %+v, want ETH filled with one KEY FALLBACK alert", rep)
+		}
+		c.mu.Lock()
+		cleared := c.fillSlow == ""
+		c.mu.Unlock()
+		if !cleared {
+			t.Fatal("a sealed fill must restore the full fill bound")
+		}
+
+		c.endpoints[1].Socket = stall
+		giveUpIn(4 * time.Second)
+		if _, rep, _ = fetch(); !strings.Contains(rep.FillRequest, feedErrTransport) {
+			t.Fatalf("re-stalled backup report %+v, want a transport failure", rep)
+		}
+		c.endpoints[0].Socket = filepath.Join(h.dir, "missing-primary.sock")
+		giveUp = giveUpIn(4 * time.Second)
+		snap, rep, elapsed = fetch()
+		if late := time.Since(giveUp); rep.Status != feedFetchDegraded || late < -100*time.Millisecond || elapsed < 3*time.Second {
+			t.Fatalf("whole-seal failover to a stalled backup ended after %s (%s from the give-up time) with %+v; want the full give-up bound", elapsed, late, rep)
+		}
+		if snap == nil || rep.FillRequest != "" {
+			t.Fatalf("failover report %+v, want a degraded snapshot and no fill request", rep)
+		}
+	})
+
+	t.Run("slow_backup_after_timeout", func(t *testing.T) {
+		stall := h.stalled("st")
+		slow := h.feed(feedSourceREST, "inst-slow", newLedger(), feedConsumer{Loaded: true, Req: backupNeed, Cadences: []int{60}})
+		slowSock := h.listen("sl", slow)
+		k3 := (time.Now().UTC().Unix()/60 + 1) * 60
+		h.seal(primary, k3)
+		c, dials := keyFillClient(pSock, stall)
+		giveUpIn := func(d time.Duration) time.Time {
+			c.prepare = time.Now().Add(d).Sub(time.Unix(k3, 0)) - c.grace - feedClientSlack
+			return c.giveUpAt(k3)
+		}
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+
+		giveUpIn(3 * time.Second)
+		if _, rep := c.Fetch(ctx, k3, cycle); !strings.Contains(rep.FillRequest, feedErrTransport) || dials(stall) != 1 {
+			t.Fatalf("timed-out fill report %+v, want a transport failure that marks the backup slow", rep)
+		}
+
+		c.endpoints[1].Socket = slowSock
+		sealedAt := make(chan time.Time, 1)
+		go func() {
+			time.Sleep(4 * time.Second)
+			h.seal(slow, k3)
+			sealedAt <- time.Now()
+		}()
+		giveUpIn(20 * time.Second)
+		started := time.Now()
+		snap, rep := c.Fetch(ctx, k3, cycle)
+		elapsed := time.Since(started)
+		t.Logf("slow backup cycle waited %s: fill_request=%q attempts=%v", elapsed.Round(time.Millisecond), rep.FillRequest, rep.Attempts)
+		if rep.FillRequest != feedFetchSealed || len(rep.Filled) != 1 || rep.Filled[0] != eth.PayloadID() || snap.keyFailed(eth) {
+			t.Fatalf("slow backup report %+v, want ETH filled after the backup answered pending and then sealed", rep)
+		}
+		if at := <-sealedAt; elapsed < feedClientProbeFloor+time.Second || time.Since(at) < 0 {
+			t.Fatalf("the fill ended after %s, want it to outlast the %s probe budget and follow the backup seal", elapsed, feedClientProbeFloor)
+		}
+		c.mu.Lock()
+		cleared := c.fillSlow == ""
+		c.mu.Unlock()
+		if !cleared {
+			t.Fatal("a backup that answers must restore the full fill bound")
+		}
+	})
+
+	t.Run("no_request_at_give_up", func(t *testing.T) {
+		c, dials := keyFillClient(pSock, bSock)
+		var passed atomic.Bool
+		inner := c.dial
+		c.dial = func(ctx context.Context, path string) (net.Conn, error) {
+			passed.Store(true)
+			return inner(ctx, path)
+		}
+		giveUp := c.giveUpAt(k2)
+		c.clock = func() time.Time {
+			if passed.Load() {
+				return giveUp.Add(time.Second)
+			}
+			return time.Now().UTC()
+		}
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		snap, rep := c.Fetch(ctx, k2, cycle)
+		if dials(pSock) != 1 || dials(bSock) != 0 || rep.Endpoint != "primary" || !snap.keyFailed(eth) {
+			t.Fatalf("primary dials %d backup dials %d report %+v, want no fill request after the give-up time", dials(pSock), dials(bSock), rep)
+		}
+		if !strings.Contains(rep.FillRequest, feedErrPendingLimit) || rep.Attempts[len(rep.Attempts)-1] != "backup(fill)="+rep.FillRequest {
+			t.Fatalf("fill request %q attempts %v, want a recorded give-up refusal", rep.FillRequest, rep.Attempts)
+		}
+	})
+
+	t.Run("episodes", func(t *testing.T) {
+		c, _ := keyFillClient(pSock, bSock)
+		both, bothCycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+		_, btcCycle := consumerOf(map[marketFeedKey]int{btc: 200})
+		_, rep := c.Fetch(ctx, k1, bothCycle)
+		st := c.status()
+		if alertCount(rep, "KEY FALLBACK**") != 1 || len(st.Fallbacks) != 1 || st.Fallbacks[0].Key != "ETH|1m" || st.Fallbacks[0].StartKey != k1 {
+			t.Fatalf("first fill: alerts %v episodes %+v, want one start", rep.Alerts, st.Fallbacks)
+		}
+		_, rep = c.Fetch(ctx, k2, bothCycle)
+		if len(rep.Alerts) != 0 || c.status().Fallbacks[0].Cycles != 2 || c.status().Fallbacks[0].LastKey != k2 {
+			t.Fatalf("second fill: alerts %v episodes %+v, want no alert and two cycles", rep.Alerts, c.status().Fallbacks)
+		}
+		_, rep = c.Fetch(ctx, k2, btcCycle)
+		if len(rep.Alerts) != 0 || len(c.status().Fallbacks) != 1 {
+			t.Fatalf("cycle without ETH: alerts %v episodes %+v, want the episode kept", rep.Alerts, c.status().Fallbacks)
+		}
+		c.endpoints[0].Socket = hSock
+		snap, rep := c.Fetch(ctx, k2, bothCycle)
+		if alertCount(rep, "KEY FALLBACK ENDED**") != 1 || len(rep.Alerts) != 1 || len(c.status().Fallbacks) != 0 || snap.keys[eth].FilledFrom != "" || len(rep.Filled) != 0 {
+			t.Fatalf("ready primary: alerts %v episodes %+v filled %v, want one end", rep.Alerts, c.status().Fallbacks, rep.Filled)
+		}
+		c.endpoints[0].Socket = pSock
+		_, rep = c.Fetch(ctx, k2, bothCycle)
+		if alertCount(rep, "KEY FALLBACK**") != 1 || len(c.status().Fallbacks) != 1 {
+			t.Fatalf("second episode: alerts %v episodes %+v", rep.Alerts, c.status().Fallbacks)
+		}
+		if st := c.status(); st.Last == nil || !reflect.DeepEqual(st.Last.Filled, []string{"ETH|1m"}) {
+			t.Fatalf("status last report %+v, want the filled set", st.Last)
+		}
+		if closed := c.closeFallbackEpisodes(both); len(closed) != 0 {
+			t.Fatalf("reload with ETH closed %v", closed)
+		}
+		btcOnly := keyFillConsumer(map[marketFeedKey]int{btc: 200})
+		if closed := c.closeFallbackEpisodes(btcOnly); !reflect.DeepEqual(closed, []string{"ETH|1m"}) || len(c.status().Fallbacks) != 0 {
+			t.Fatalf("reload without ETH closed %v, episodes %+v; want ETH closed", closed, c.status().Fallbacks)
+		}
+		for _, a := range append([]string(nil), rep.Alerts...) {
+			for _, marker := range []string{"COVERAGE GAP", "FAILOVER", "RECOVERED", "OUTAGE"} {
+				if strings.Contains(a, marker) {
+					t.Fatalf("fallback alert %q holds the %s marker", a, marker)
+				}
+			}
+		}
+	})
 }

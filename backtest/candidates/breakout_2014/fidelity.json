@@ -1,0 +1,1775 @@
+{
+  "engine_check": {
+    "rows_checked": 52,
+    "rows_with_mismatch": 0,
+    "rows_without_engine_labels": 0,
+    "sampled_bars": 13514
+  },
+  "network_blocked": true,
+  "protocol_sha256": "a68c58e20ac58392d59622152e9a3698fc06eef60dc3483daf307094c90bcdf2",
+  "rows": [
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4892,
+      "passes": true,
+      "period": 21,
+      "seconds": 911.1,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4571,
+      "passes": true,
+      "period": 350,
+      "seconds": 806.3,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7475,
+      "passes": true,
+      "period": 21,
+      "seconds": 1383.2,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 1388.8,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9995923359152059,
+      "disagreements": 4,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9812,
+      "passes": true,
+      "period": 21,
+      "seconds": 1789.4,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 2,
+        "ranging_directional_up->ranging_volatile": 2
+      },
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9491,
+      "passes": true,
+      "period": 350,
+      "seconds": 1602.2,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14978,
+      "passes": true,
+      "period": 21,
+      "seconds": 2775.0,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 2846.7,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9983646770237122,
+      "disagreements": 8,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4892,
+      "passes": true,
+      "period": 21,
+      "seconds": 849.3,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_volatile->ranging_directional_down": 2,
+        "ranging_volatile->ranging_directional_up": 6
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4571,
+      "passes": true,
+      "period": 350,
+      "seconds": 862.3,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 0.9994648829431438,
+      "disagreements": 4,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7475,
+      "passes": true,
+      "period": 21,
+      "seconds": 1388.9,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 3,
+        "ranging_directional_up->ranging_volatile": 1
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 1334.0,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9989808397880147,
+      "disagreements": 10,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9812,
+      "passes": true,
+      "period": 21,
+      "seconds": 1734.0,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 4,
+        "ranging_directional_up->ranging_volatile": 6
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9491,
+      "passes": true,
+      "period": 350,
+      "seconds": 1544.1,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 0.999866470823875,
+      "disagreements": 2,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14978,
+      "passes": true,
+      "period": 21,
+      "seconds": 2868.8,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_up->ranging_volatile": 2
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 2609.1,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9979558462796402,
+      "disagreements": 10,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4892,
+      "passes": true,
+      "period": 21,
+      "seconds": 884.3,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_volatile->ranging_directional_down": 5,
+        "ranging_volatile->ranging_directional_up": 4,
+        "trending_down_choppy->trending_down_clean": 1
+      },
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4571,
+      "passes": true,
+      "period": 350,
+      "seconds": 906.5,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 0.9994648829431438,
+      "disagreements": 4,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7475,
+      "passes": true,
+      "period": 21,
+      "seconds": 1460.2,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 3,
+        "ranging_directional_up->ranging_volatile": 1
+      },
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 1322.9,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9998980839788014,
+      "disagreements": 1,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9812,
+      "passes": true,
+      "period": 21,
+      "seconds": 1582.9,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_volatile->ranging_directional_up": 1
+      },
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9491,
+      "passes": true,
+      "period": 350,
+      "seconds": 1726.8,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14978,
+      "passes": true,
+      "period": 21,
+      "seconds": 2652.4,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 2616.5,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4892,
+      "passes": true,
+      "period": 21,
+      "seconds": 911.5,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 197,
+        "mismatches": [],
+        "sampled": 197
+      },
+      "eval_bars": 4920,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4571,
+      "passes": true,
+      "period": 350,
+      "seconds": 908.7,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 0.9997324414715719,
+      "disagreements": 2,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7475,
+      "passes": true,
+      "period": 21,
+      "seconds": 1433.2,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 1,
+        "ranging_directional_up->ranging_volatile": 1
+      },
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 1444.7,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9993885038728088,
+      "disagreements": 6,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9812,
+      "passes": true,
+      "period": 21,
+      "seconds": 1734.1,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 3,
+        "ranging_directional_up->ranging_volatile": 3
+      },
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 394,
+        "mismatches": [],
+        "sampled": 394
+      },
+      "eval_bars": 9840,
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2025-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 9491,
+      "passes": true,
+      "period": 350,
+      "seconds": 1756.7,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "is"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14978,
+      "passes": true,
+      "period": 21,
+      "seconds": 2528.7,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 2270.5,
+      "shortest_bounded_slice": 3011,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "proxy",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.9995610184372257,
+      "disagreements": 2,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4556,
+      "passes": true,
+      "period": 21,
+      "seconds": 594.8,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 1,
+        "ranging_directional_up->ranging_volatile": 1
+      },
+      "unit": {
+        "coin": "BNB",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 617.3,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4532,
+      "passes": true,
+      "period": 21,
+      "seconds": 691.2,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 710.0,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BNB",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 0.9989025460930641,
+      "disagreements": 5,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4556,
+      "passes": true,
+      "period": 21,
+      "seconds": 536.6,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_volatile->ranging_directional_down": 3,
+        "ranging_volatile->ranging_directional_up": 2
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 436.9,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 0.9984554280670785,
+      "disagreements": 7,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4532,
+      "passes": true,
+      "period": 21,
+      "seconds": 696.9,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 4,
+        "ranging_directional_up->ranging_volatile": 3
+      },
+      "unit": {
+        "coin": "BTC",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 598.0,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "BTC",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4556,
+      "passes": true,
+      "period": 21,
+      "seconds": 520.1,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 510.3,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 0.999558693733451,
+      "disagreements": 2,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4532,
+      "passes": true,
+      "period": 21,
+      "seconds": 644.2,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional_down->ranging_volatile": 1,
+        "ranging_directional_up->ranging_volatile": 1
+      },
+      "unit": {
+        "coin": "ETH",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 647.2,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "ETH",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4556,
+      "passes": true,
+      "period": 21,
+      "seconds": 512.2,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "HYPE",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 504.7,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "HYPE",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4532,
+      "passes": true,
+      "period": 21,
+      "seconds": 640.0,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "HYPE",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 635.8,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "HYPE",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4556,
+      "passes": true,
+      "period": 21,
+      "seconds": 499.6,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 459.6,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "venue",
+        "interval": "1h",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 0.999117387466902,
+      "disagreements": 4,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4532,
+      "passes": true,
+      "period": 21,
+      "seconds": 628.9,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 25.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.05
+      },
+      "transitions": {
+        "ranging_directional->ranging_volatile": 1,
+        "ranging_directional_down->ranging_volatile": 1,
+        "ranging_directional_up->ranging_volatile": 2
+      },
+      "unit": {
+        "coin": "SOL",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "comp_p21",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 500.9,
+      "shortest_bounded_slice": 401,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "coin": "SOL",
+        "group": "venue",
+        "interval": "30m",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    }
+  ],
+  "selection_sha256": "4fa050c6f4b28924375f1dad2e6d9bd0aeded5882030017f3aea5ad1671478c9",
+  "source_commit": "6cd373e58149a5e313b0c7b5753da251d4421bb9"
+}

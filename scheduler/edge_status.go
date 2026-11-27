@@ -78,6 +78,8 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"triple_ema_bidir":             {"fee_audit_m5", noEdgeRefLimbo},
 	"trix_momentum":                {"study_fail", "backtest/candidates/trix_momentum_1659/REPORT.md"},
 	"true_strength_index":          {"study_fail", "backtest/candidates/true_strength_index_1667/REPORT.md"},
+	"volume_spike_breakout":        {"study_fail", "backtest/candidates/volume_spike_breakout_2008/REPORT.md"},
+	"inversion_fvg":                {"study_fail", "backtest/candidates/inversion_fvg_2012/REPORT.md"},
 	"ultimate_oscillator":          {"study_inconclusive", "backtest/candidates/ultimate_oscillator_1664/REPORT.md"},
 	"vol_momentum":                 {"study_fail", "docs/research/vol_momentum_1021.md"},
 	"volume_weighted":              {"fee_audit_m5", noEdgeRefFeeAudit},
@@ -92,6 +94,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"perpetual_premium_reversion":        {"study_inconclusive", "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"},
 	"order_book_imbalance":               {"study_fail", "backtest/candidates/order_book_imbalance_1635/REPORT.md"},
 	"inventory_market_making":            {"study_inconclusive", "backtest/candidates/inventory_market_making_1636/REPORT.md"},
+	"sweep_absorption_ifvg":              {"study_inconclusive", "backtest/candidates/sweep_absorption_ifvg_2010/REPORT.md"},
 }
 
 func noEdgeEvidenceFor(name string) (noEdgeEvidence, bool) {

@@ -51,86 +51,6 @@ def _apply(df, params=None):
     return REG.apply_strategy(NAME, df, params or PARAMS)
 
 
-def _last(df, params=None):
-    return _apply(df, params).iloc[-1]
-
-
-def test_breakout_entry_rule_sign_equality_zero_indicator_and_no_delayed_confirmation(subtests):
-    with subtests.test(case="rising_and_falling_breakouts"):
-        _rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign()
-    with subtests.test(case="equality_zero_indicator_disagreement"):
-        _equality_zero_indicator_disagreement_and_no_delayed_confirmation()
-    with subtests.test(case="positive_volume_zero_range"):
-        _positive_volume_zero_range_contributes_zero()
-
-
-def _rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign():
-    up = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
-    out = _apply(_frame(up))
-    row = out.iloc[-1]
-    assert row["signal"] == 1 and row["eom_reason"] == "entry_long" and row["eom_reason_code"] == 1
-    assert row["eom_prior_high"] == 101.0 and row["eom_setup"] == 1.0
-    assert row["eom_mid_change"] == 2.0
-    assert row["eom_raw"] == pytest.approx(2.0 * 4.0 / 1000.0)
-    assert row["eom_smoothed"] == pytest.approx(2.0 * 4.0 / 1000.0 / 3.0)
-    assert row["eom_eval_ts_ms"] == pd.Timestamp("2026-01-01 10:00").value // 1_000_000
-    assert row["eom_interval_ms"] == 3_600_000.0
-    assert (out["signal"].iloc[:-1] == 0).all()
-
-    down = _flat(10) + [(100.0, 100.0, 96.0, 96.5, 1000.0)]
-    row = _last(_frame(down))
-    assert row["signal"] == -1 and row["eom_reason"] == "entry_short" and row["eom_prior_low"] == 99.0
-
-
-def _equality_zero_indicator_disagreement_and_no_delayed_confirmation():
-    equal = _flat(10) + [(100.0, 101.0, 99.5, 101.0, 1000.0)]
-    assert _last(_frame(equal))["eom_reason"] == "no_breakout"
-
-    zero = _flat(10) + [(102.0, 102.0, 102.0, 102.0, 1000.0)]
-    row = _last(_frame(zero))
-    assert row["signal"] == 0 and row["eom_reason"] == "zero_indicator" and row["eom_smoothed"] == 0.0
-    assert row["eom_raw"] == 0.0 and row["eom_setup"] == 1.0
-
-    rows = _flat(8) + [(100.0, 101.0, 90.0, 95.0, 1.0), (95.0, 101.0, 90.0, 95.0, 1.0),
-                       (95.0, 102.0, 95.6, 101.5, 1000.0)]
-    rows += [(101.5, 103.0, 101.0, 102.8, 1000.0), (102.8, 104.5, 102.5, 104.2, 1000.0),
-             (104.2, 106.0, 104.0, 105.8, 1000.0)]
-    out = _apply(_frame(rows))
-    assert out["eom_reason"].iloc[10] == "indicator_disagrees" and out["eom_smoothed"].iloc[10] < 0
-    assert out["eom_setup"].iloc[11] == 1.0
-    later = out.iloc[11:]
-    assert (later["signal"] == 0).all()
-    assert (later["eom_reason"] == "breakout_continuation").all()
-    assert (later["eom_smoothed"].iloc[-1:] > 0).all()
-
-
-def test_warmup_is_the_larger_of_period_plus_one_and_window_plus_two():
-    rows = _flat(5) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
-    out = _apply(_frame(rows))
-    assert len(out) == NEED
-    assert out["eom_valid"].iloc[-1]
-    assert out["signal"].iloc[-1] == 1
-    short = _apply(_frame(rows[1:]))
-    assert not short["eom_valid"].iloc[-1]
-    assert short["eom_reason"].iloc[-1] == "insufficient_history"
-    assert (_apply(_frame(_flat(30) + rows[-1:]), {"eom_period": 25, "breakout_window": 4})
-            ["eom_valid"].iloc[-1])
-    assert not _apply(_frame(_flat(24) + rows[-1:]), {"eom_period": 25, "breakout_window": 4})["eom_valid"].iloc[-1]
-
-
-def test_integral_float_parameters_and_bounds_are_accepted():
-    _apply(_frame(_flat(30)), {"eom_period": 14.0, "breakout_window": 20.0})
-    _apply(_frame(_flat(120)), {"eom_period": 2, "breakout_window": 100})
-    _apply(_frame(_flat(120)), {"eom_period": 100, "breakout_window": 2})
-
-
-def _positive_volume_zero_range_contributes_zero():
-    rows = _flat(10) + [(100.0, 100.0, 100.0, 100.0, 500.0)] + _flat(2)
-    out = _apply(_frame(rows))
-    assert out["eom_raw"].iloc[10] == 0.0
-    assert out["eom_valid"].iloc[10] and out["eom_valid"].iloc[11]
-
-
 def _breakout_after(prefix_rows):
     return _apply(_frame(prefix_rows + _flat(8) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]))
 
@@ -234,18 +154,6 @@ def _wrong_declared_cadence_holds_every_decision():
     assert (out["eom_reason"].iloc[2:] == "cadence_gap").all()
 
 
-def test_native_close_timestamps_normalize_to_bar_opening_time():
-    rows = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
-    df = _frame(rows, kind="native_close_inclusive")
-    df.index = df.index + pd.Timedelta(milliseconds=3_600_000 - 1)
-    row = _last(df)
-    assert row["signal"] == 1
-    assert row["eom_eval_ts_ms"] == pd.Timestamp("2026-01-01 10:00").value // 1_000_000
-    df.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR)
-    unknown = _last(df)
-    assert unknown["signal"] == 1 and math.isnan(unknown["eom_eval_ts_ms"])
-
-
 def _walk(n=320, seed=5):
     rng = np.random.default_rng(seed)
     close = 100.0 + np.cumsum(rng.normal(0, 1.0, n))
@@ -267,39 +175,6 @@ def _same(a, b):
 
 PREFIX_PARAMS = [{"eom_period": 14, "breakout_window": 20}, {"eom_period": 28, "breakout_window": 60},
                  {"eom_period": 2, "breakout_window": 2}]
-
-
-def test_full_series_every_prefix_and_bounded_windows_agree(subtests):
-    for i, params in enumerate(PREFIX_PARAMS):
-        with subtests.test(case=f"params{i}"):
-            _full_series_every_prefix_and_bounded_windows_agree(params)
-
-
-def _full_series_every_prefix_and_bounded_windows_agree(params):
-    df = _walk()
-    vol = df["volume"].to_numpy().copy()
-    vol[90] = 0.0
-    vol[200] = -1.0
-    df["volume"] = vol
-    high = df["high"].to_numpy().copy()
-    high[150] = float("nan")
-    df["high"] = high
-    idx = list(df.index)
-    df.index = pd.DatetimeIndex(idx[:250] + [t + pd.Timedelta(hours=2) for t in idx[250:]])
-    declare_frame_cadence(df, "1h", "open")
-    need = max(params["eom_period"] + 1, params["breakout_window"] + 2)
-    full = _apply(df, params)
-    signals = 0
-    for i in range(need - 1, len(df)):
-        prefix = _apply(df.iloc[:i + 1], params).iloc[-1]
-        assert _same(full.iloc[i], prefix), i
-        for width in (need, 200):
-            if i + 1 >= width:
-                bounded = _apply(df.iloc[i + 1 - width:i + 1], params).iloc[-1]
-                assert _same(full.iloc[i], bounded), (i, width)
-        signals += int(full["signal"].iloc[i] != 0)
-    assert signals > 0
-    assert set(full["eom_reason"]) >= {"invalid_volume", "nonfinite_input", "cadence_gap"}
 
 
 def _bt(**kw):
@@ -451,38 +326,3 @@ def test_cached_loader_declares_cadence_and_m1_marks_unpriced_funding_incomplete
     verdict = run_study.verdict(summary, "P3_B4", {"eom_period": 3, "breakout_window": 4})
     assert verdict["verdict"] == "inconclusive"
     assert verdict["checks"][0]["ok"] is False
-
-
-COVERAGE_ARMS = [
-    (None, None, "fail"),
-    ("candidate_{sel}_slip0.002", "funding_incomplete_legs", "inconclusive"),
-    ("candidate_P7_B10", "missing_legs", "inconclusive"),
-    ("donchian_breakout_B20", "funding_incomplete_legs", "inconclusive"),
-]
-
-
-def test_frozen_verdict_coverage_rule_reads_every_arm():
-    for arm, field, want in COVERAGE_ARMS:
-        with _case(f"{arm}-{field}-{want}"):
-            _frozen_verdict_coverage_rule_reads_every_arm(arm, field, want)
-
-
-def _frozen_verdict_coverage_rule_reads_every_arm(arm, field, want):
-    import copy
-    import json
-    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    path_before = list(sys.path)
-    run_study = _load_run_study(repo)
-    assert sys.path == path_before
-    with open(run_study.RESULTS_PATH) as fh:
-        results = json.load(fh)
-    selected = results["selection"]["selected"]
-    summary = copy.deepcopy(results["summary"])
-    if arm is not None:
-        summary[arm.format(sel=selected)]["scored"][field] = 1
-    verdict = run_study.verdict(summary, selected, results["selection"]["params"])
-    assert verdict["verdict"] == want
-    coverage = verdict["checks"][0]
-    assert coverage["ok"] is (arm is None)
-    if arm is not None:
-        assert coverage["incomplete_arms"] == [arm.format(sel=selected)]

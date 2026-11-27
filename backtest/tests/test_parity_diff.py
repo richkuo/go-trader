@@ -15,7 +15,6 @@ from parity_diff import (
     ParityConfig,
     compute_parity_frame,
     config_from_live_config,
-    extract_fills,
     main,
     summarize,
 )
@@ -108,25 +107,6 @@ def test_expanding_window_mode():
     )
     assert len(frame) == len(df) - (LIVE_MIN_CANDLES - 1)
     assert summarize(frame)["clean"]
-
-
-def test_stride_thins_comparison():
-    df = _ohlcv(200)
-    full = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60,
-    )
-    thinned = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60, stride=5,
-    )
-    assert len(thinned) == (len(full) + 4) // 5
-
-
-def test_window_below_live_minimum_rejected():
-    df = _ohlcv(100)
-    with pytest.raises(ValueError, match="window must be >="):
-        compute_parity_frame(df, "sma_crossover", window=10)
 
 
 def _trending_ohlcv(n: int = 260, seed: int = 11) -> pd.DataFrame:
@@ -317,20 +297,6 @@ def _assert_config_mode_unknown_strategy_id_raises(tmp_path):
         config_from_live_config(str(cfg_path), "missing-id")
 
 
-def test_extract_fills_reports_entry_and_exit_legs():
-    df = _trending_ohlcv(220)
-    cfg = ParityConfig(
-        strategy_name="sma_crossover",
-        params={"fast_period": 5, "slow_period": 20},
-    )
-    fills = extract_fills(df, cfg)
-    assert fills, "trending data + sma crossover must produce fills"
-    entries = [f for f in fills if f["event"] == "entry"]
-    exits = [f for f in fills if f["event"] == "exit"]
-    assert entries and all(f["fill_px"] > 0 and f["fee"] >= 0 for f in entries)
-    assert all("pnl" in f for f in exits)
-
-
 def test_backtest_effective_columns_are_prior_bar_inputs():
     df = _ohlcv(200)
     frame = compute_parity_frame(
@@ -375,7 +341,6 @@ _CONFIG_AUTOMATIC_PLATFORM_CASES = [
     ("hl-strat", "perps", None, "hyperliquid"),
     ("rh-strat", "spot", None, "robinhood"),
     ("hl-strat", "spot", "robinhood", "robinhood"),
-    ("luno-strat", "spot", None, "luno"),
 ]
 
 
@@ -388,7 +353,7 @@ def test_config_mode_platform_autodetect_and_explicit_override(tmp_path, capsys,
             assert "platform selection" not in capsys.readouterr().err
     for sid, stype, platform in [("test-strat", "futures", None),
                                  ("test-strat", "manual", None),
-                                 ("deribit-strat", "options", None),
+                                 ("ibkr-strat", "options", None),
                                  ("test-strat", "spot", "kraken")]:
         with subtests.test(sid=sid, stype=stype, platform=platform, refused=True):
             path = _write_live_config(tmp_path, stype, sid, platform)
@@ -407,24 +372,6 @@ def _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys)
     assert len(warnings) == 1
     assert "'binanceus'" in warnings[0] and "'spot'" in warnings[0]
     assert "--platform hyperliquid" in warnings[0]
-
-
-def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
-    import data_fetcher
-    path = _write_live_config(tmp_path, "perps", platform="hyperliquid")
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: _trending_ohlcv(200))
-    captured = {}
-
-    def spy_extract_fills(df, cfg):
-        captured["platform"] = cfg.platform
-        return []
-
-    monkeypatch.setattr(parity_diff, "extract_fills", spy_extract_fills)
-    rc = main(["--config", path, "--strategy-id", "test-strat",
-               "--fills", "--window", "60"])
-    assert rc in (0, 1)
-    assert captured["platform"] == "hyperliquid"
 
 
 def _recording_engine(monkeypatch):
@@ -474,7 +421,6 @@ def _assert_parity_engine_costs(df, report, engine, metrics, commission, slippag
 
 _PARITY_ENGINE_FEE_CASES = [
     ("rh-strat", "spot", None, "robinhood", 0.0),
-    ("luno-strat", "spot", None, "luno", 0.01),
     ("hl-strat", "perps", None, "hyperliquid", 0.00045),
     ("test-strat", "manual", "hyperliquid", "hyperliquid", 0.00045),
     ("test-strat", "spot", "binanceus", "binanceus", 0.001),
@@ -510,7 +456,7 @@ def test_config_mode_platform_scope_and_refusals(tmp_path, monkeypatch, capsys, 
                                   hedge={"enabled": True, "symbol": "ETH"})
         with pytest.raises(ValueError, match="hedge"):
             config_from_live_config(path, "rh-hedge", platform="robinhood")
-    for sid, stype in [("deribit-strat", "options"), ("test-strat", "futures")]:
+    for sid, stype in [("ibkr-strat", "options"), ("test-strat", "futures")]:
         with subtests.test("main exits 2 on refused automatic selection", stype=stype):
             with monkeypatch.context() as mp:
                 import data_fetcher

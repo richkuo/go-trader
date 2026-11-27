@@ -29,7 +29,9 @@ class SafeEncoder(json.JSONEncoder):
             return [self._sanitize(v) for v in obj]
         return obj
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'hyperliquid'))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
@@ -54,6 +56,7 @@ from closed_bar import (
 )
 from hl_user_fills import apply_user_fills_lookup
 from market_payload import (
+    TRADE_FLOW_STRATEGIES,
     MarketPayloadError as MarketPayloadBaseError,
     market_decision_cutoff_ms,
     market_frame_rows,
@@ -124,12 +127,12 @@ def _position_ctx_from_args(args):
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
 FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc_", "rcr_", "trix_", "cpr_", "mir_",
-                                     "cce_", "smi_", "efp_", "tsi_", "klinger_")
+                                     "cce_", "smi_", "efp_", "tsi_", "klinger_", "vsb_", "sai_", "invfvg_")
 
 TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason",
                           "trix_reason", "cpr_reason", "mir_reason", "cce_reason", "smi_reason", "efp_reason",
                           "tsi_reason", "klinger_reason", "cvd_reason", "meb_reason", "bll_reason", "vpr_reason",
-                          "ppr_reason", "obi_reason")
+                          "ppr_reason", "obi_reason", "vsb_reason", "sai_reason", "invfvg_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -223,14 +226,14 @@ def _signal_check_deps():
 
 
 def _offline_sz_decimals(symbol):
-    from adapter import sz_decimals_from_meta_cache
+    from platforms.hyperliquid.adapter import sz_decimals_from_meta_cache
 
     return sz_decimals_from_meta_cache(symbol)
 
 
 def _venue_min_order_notional_usd():
     try:
-        from adapter import MIN_ORDER_NOTIONAL_USD
+        from platforms.hyperliquid.adapter import MIN_ORDER_NOTIONAL_USD
 
         return float(MIN_ORDER_NOTIONAL_USD)
     except Exception:
@@ -239,7 +242,7 @@ def _venue_min_order_notional_usd():
 
 def _venue_min_order_notional_margin():
     try:
-        from adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
+        from platforms.hyperliquid.adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
 
         return max(float(MIN_ORDER_NOTIONAL_SAFETY_MARGIN), 0.0)
     except Exception:
@@ -280,7 +283,7 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
         return decision
     if current_qty <= 0:
         return decision
-    from adapter import floor_lot_size
+    from platforms.hyperliquid.adapter import floor_lot_size
 
     requested_qty = current_qty * close_fraction
     floored_qty = floor_lot_size(requested_qty, lot_decimals)
@@ -513,16 +516,45 @@ def _shared_open_interest(shared, symbol):
     return market_observation(market, symbol, "open_interest", MarketPayloadError)
 
 
-TRADE_FLOW_STRATEGY = "cumulative_volume_delta_divergence"
-
-
 def _shared_trade_flow(shared, symbol):
     market = shared.get("market")
     if market is None:
         return {"available": False, "kind": "trade_flow", "coin": symbol,
-                "reason": "cumulative_volume_delta_divergence reads trade flow only from the sealed market "
+                "reason": "trade-flow strategies read trade flow only from the sealed market "
                           "feed payload; this check has none and never fetches it"}
     return market_trade_flow(market, symbol, MarketPayloadError)
+
+
+SWEEP_ABSORPTION_STRATEGY = "sweep_absorption_ifvg"
+SWEEP_ABSORPTION_HTF = "1h"
+SWEEP_ABSORPTION_HTF_MS = 3_600_000
+
+
+def _shared_htf_candles(shared, symbol, boundary_ms=None):
+    def unavailable_htf(reason):
+        return {"available": False, "kind": "htf_candles", "interval_ms": SWEEP_ABSORPTION_HTF_MS, "reason": reason}
+
+    market = shared.get("market")
+    if market is None:
+        return unavailable_htf("sweep_absorption_ifvg reads one-hour candles only from the sealed market feed "
+                               "payload; this check has none and never fetches them")
+    cutoff = int(boundary_ms or shared["closed"].get("cutoff_ms") or market_decision_cutoff_ms(market, MarketPayloadError))
+    cache = shared["decision_cache"]
+    key = ("sai_htf", symbol, cutoff)
+    if key not in cache:
+        try:
+            rows, timing = market_frame_rows_with_timing(market, symbol, SWEEP_ABSORPTION_HTF, MarketPayloadError)
+            timings = sealed_frame_timings(rows, timing, SWEEP_ABSORPTION_HTF)
+            sel = select_closed(rows, timings, timeframe=SWEEP_ABSORPTION_HTF, cutoff_ms=cutoff,
+                                rule=RULE_HYPERLIQUID_NATIVE, min_rows=1)
+            cache[key] = {"available": True, "kind": "htf_candles", "interval_ms": SWEEP_ABSORPTION_HTF_MS,
+                          "timestamp_kind": "open", "boundary_ms": int(sel.boundary_ms),
+                          "input_sha256": sel.input_sha256,
+                          "rows": [[int(t.open_ms)] + [float(x) for x in row[1:6]]
+                                   for row, t in zip(sel.rows, sel.timings)]}
+        except (MarketPayloadError, ClosedBarHold) as e:
+            cache[key] = unavailable_htf(f"higher timeframe {SWEEP_ABSORPTION_HTF}: {e}")
+    return cache[key]
 
 
 VOLUME_PROFILE_STRATEGY = "volume_profile_reclaim"
@@ -579,7 +611,10 @@ def _shared_macro_inputs(shared, symbol, params):
 
 
 def _sealed_protection_inputs(shared, symbol, name, params):
-    if name == TRADE_FLOW_STRATEGY:
+    if name == SWEEP_ABSORPTION_STRATEGY:
+        return {"trade_flow_observations": _shared_trade_flow(shared, symbol),
+                "htf_candles": _shared_htf_candles(shared, symbol)}
+    if name in TRADE_FLOW_STRATEGIES:
         return {"trade_flow_observations": _shared_trade_flow(shared, symbol)}
     if name == VOLUME_PROFILE_STRATEGY:
         return {"volume_profile_observations": _shared_volume_profile(shared, symbol)}
@@ -725,7 +760,8 @@ def _shared_decision_funding_records(shared, symbol, start_ms, boundary_ms):
     try:
         if market is not None:
             try:
-                records = market_funding_records(market, symbol, start_ms, MarketPayloadError)
+                records = market_funding_records(market, symbol, start_ms, MarketPayloadError,
+                                                 boundary_ms=boundary_ms)
             except MarketPayloadError as e:
                 raise ClosedBarHold(str(e))
         else:
@@ -1008,6 +1044,9 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 decision_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
             if funding_aware_name == PREMIUM_STRATEGY:
                 decision_params["premium_observations"] = _shared_premium(shared, symbol)
+            if funding_aware_name == SWEEP_ABSORPTION_STRATEGY:
+                decision_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+                decision_params["htf_candles"] = _shared_htf_candles(shared, symbol, boundary)
         if not hold:
             regime_view = _shared_decision_regime(shared, selection)
             hold = regime_view["hold"]
@@ -1053,8 +1092,10 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 strategy_params["funding_records"] = records
         if funding_aware_name == OPEN_INTEREST_STRATEGY:
             strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
-        if funding_aware_name == TRADE_FLOW_STRATEGY:
+        if funding_aware_name in TRADE_FLOW_STRATEGIES:
             strategy_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+        if funding_aware_name == SWEEP_ABSORPTION_STRATEGY:
+            strategy_params["htf_candles"] = _shared_htf_candles(shared, symbol)
         if funding_aware_name == VOLUME_PROFILE_STRATEGY:
             strategy_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
         if funding_aware_name == PREMIUM_STRATEGY:
@@ -1246,7 +1287,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = None
         if market is None:
-            from adapter import HyperliquidExchangeAdapter
+            from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
 
             adapter = HyperliquidExchangeAdapter()
 
@@ -1455,7 +1496,7 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
             adapter = None
             df = None
         elif adapter is None and df is None:
-            from adapter import HyperliquidExchangeAdapter
+            from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
             adapter = HyperliquidExchangeAdapter()
         shared = build_shared_signal_state(
             symbol, timeframe,
@@ -1801,7 +1842,7 @@ def run_sync_protection(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         fill_hints = None
@@ -2217,7 +2258,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
     cancel_failed_oids = []
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         is_buy = side.lower() == "buy"
@@ -2479,21 +2520,28 @@ def _recovery_float(value, label):
     return out
 
 
-def _order_status_evidence(resp):
+def _order_status_parts(resp):
     if not isinstance(resp, dict):
         raise ValueError(f"orderStatus returned no object: {resp!r}")
     top = resp.get("status")
     if top == "unknownOid":
-        return {"found": False}
+        return None
     if top != "order":
         raise ValueError(f"orderStatus returned an unexpected status {top!r}")
     wrapper = resp.get("order")
     if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
         raise ValueError("orderStatus returned no order body")
-    order = wrapper["order"]
     status = str(wrapper.get("status") or "")
     if not status:
         raise ValueError("orderStatus returned no order state")
+    return wrapper, wrapper["order"], status
+
+
+def _order_status_evidence(resp):
+    parts = _order_status_parts(resp)
+    if parts is None:
+        return {"found": False}
+    wrapper, order, status = parts
     oid = int(order.get("oid"))
     orig_sz = _recovery_float(order.get("origSz", order.get("sz")), "origSz")
     remaining_sz = _recovery_float(order.get("sz"), "sz")
@@ -2580,10 +2628,10 @@ def scan_recovery_fills(adapter, since_ms, until_ms=0):
     start = int(since_ms)
     until = int(until_ms or 0)
     fills = []
-    seen = set()
+    seen = {}
     pages = 0
     max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_MIN_PAGE + 1
-    scan = {"fills": fills, "window": [], "later": [], "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0}
+    scan = {"fills": fills, "window": [], "later": [], "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0, "conflicts": []}
     while True:
         if pages >= max_pages:
             scan["reason"] = f"the fill history needs more than {max_pages} pages"
@@ -2606,8 +2654,10 @@ def scan_recovery_fills(adapter, since_ms, until_ms=0):
             times.append(t)
             key = _recovery_fill_key(f)
             if key in seen:
+                if seen[key] != f:
+                    scan["conflicts"].append(key)
                 continue
-            seen.add(key)
+            seen[key] = f
             fills.append(f)
             added += 1
         if len(fills) >= HL_FILLS_RECENT_LIMIT:
@@ -2751,7 +2801,7 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode, until_ms=0):
         print(json.dumps(out, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         scan = _RecoveryFillScan(adapter, since_ms, until_ms)
@@ -2770,7 +2820,7 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode, until_ms=0):
 
 def run_list_open_order_oids(symbol=None):
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         listed = []
         decimals = {}
@@ -2924,7 +2974,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     open_order_check_error = ""
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         side = side.lower()
@@ -3107,7 +3157,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
 
 def run_fetch_atr(symbol: str, timeframe: str, period: int, atr_method: str = "simple"):
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
         if not candles or len(candles) < period + 1:
@@ -3138,7 +3188,7 @@ def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
         sys.exit(1)
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         side = side.lower()
@@ -3241,39 +3291,13 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
         print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         if since_ms <= 0:
             since_ms = int(time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
 
-        open_oids = None
-        open_orders_error = ""
-        try:
-            open_oids = adapter.open_order_oids(symbol)
-        except Exception as oe:
-            open_orders_error = str(oe)
-            print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
-
-        results = []
-        for oid in oids:
-            oid = int(oid)
-            entry = {"oid": oid}
-            if open_oids is not None:
-                entry["resting"] = oid in open_oids
-            else:
-                entry["resting"] = None
-            summary = {}
-            try:
-                summary = adapter.fills_summary_by_oid(oid, since_ms)
-            except Exception as fe:
-                print(f"[WARN] fills_summary_by_oid({oid}) failed: {fe}", file=sys.stderr)
-                entry["fills_error"] = str(fe)
-            entry["filled_size"] = float(summary.get("filled_size", 0) or 0)
-            entry["avg_px"] = float(summary.get("avg_px", 0) or 0)
-            entry["fee"] = float(summary.get("fee", 0) or 0)
-            entry["count"] = int(summary.get("count", 0) or 0)
-            results.append(entry)
+        results, open_orders_error = limit_status_orders(adapter, symbol, [int(oid) for oid in oids], since_ms)
 
         out = {
             "platform": "hyperliquid",
@@ -3298,7 +3322,7 @@ def run_cancel_order(symbol, oid, mode):
         print(json.dumps({"error": "--cancel-order requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out = {
             "platform": "hyperliquid",
@@ -3331,6 +3355,286 @@ QUOTE_REJECTED_STATUSES = ("rejected", "perpMarginRejected", "reduceOnlyRejected
                            "badTriggerPxRejected", "marketOrderNoLiquidityRejected", "positionIncreaseAtOpenInterestCapRejected",
                            "positionFlipAtOpenInterestCapRejected", "tooAggressiveAtOpenInterestCapRejected",
                            "openInterestIncreaseRejected", "insufficientSpotBalanceRejected", "oracleRejected", "perpMaxPositionRejected")
+
+
+def venue_order_state(status):
+    if status in QUOTE_LIVE_STATUSES:
+        return "live"
+    if status == "triggered":
+        return "triggered"
+    if status == "filled":
+        return "filled"
+    if status in QUOTE_CANCELLED_STATUSES:
+        return "cancelled"
+    if status in QUOTE_REJECTED_STATUSES:
+        return "rejected"
+    return "unknown"
+
+
+LIMIT_TERMINAL_STATES = ("filled", "cancelled", "rejected")
+
+
+def lot_quantity_equal(a, b, lot_decimals):
+    if lot_decimals is None or isinstance(lot_decimals, bool) or not isinstance(lot_decimals, int) or lot_decimals < 0:
+        raise ValueError(f"lot metadata is unknown ({lot_decimals!r}), so quantities cannot be compared in venue lots")
+    half_lot = Decimal(1).scaleb(-lot_decimals) / 2
+    return abs(Decimal(a) - Decimal(b)) < half_lot
+
+
+def _limit_exact_size(order, key, label):
+    raw = order.get(key)
+    if raw is None or isinstance(raw, bool) or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError(f"orderStatus carries no {label}")
+    out = _quote_exact_decimal(raw, label)
+    if out < 0:
+        raise ValueError(f"{label} is negative: {raw!r}")
+    return out
+
+
+def _limit_positive_ms(raw):
+    if raw is None or isinstance(raw, bool):
+        return 0
+    try:
+        out = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return out if out > 0 else 0
+
+
+def limit_order_status_evidence(adapter, symbol, oid):
+    ev = {"order_status": "", "order_state": "unknown", "orig_size": None, "executed_size": None,
+          "placed_ms": 0, "status_ms": 0, "status_error": ""}
+    try:
+        parts = _order_status_parts(adapter.query_order_by_oid(oid))
+    except Exception as e:
+        ev["status_error"] = f"order status unreadable: {e}"
+        return ev
+    if parts is None:
+        ev["status_error"] = "the venue does not know this order id"
+        return ev
+    wrapper, order, status = parts
+    ev["order_status"] = status
+    try:
+        raw_oid = order.get("oid")
+        if raw_oid is None or isinstance(raw_oid, bool) or int(raw_oid) != int(oid) or str(int(raw_oid)) != str(raw_oid).strip():
+            raise ValueError(f"orderStatus answered for order {raw_oid!r}, not the requested {oid}")
+        coin = order.get("coin")
+        if coin != symbol:
+            raise ValueError(f"orderStatus names coin {coin!r}, not the requested {symbol!r}")
+        state = venue_order_state(status)
+        if state == "triggered":
+            state = "live"
+        if state == "unknown":
+            raise ValueError(f"unfamiliar order state {status!r}")
+        orig = _limit_exact_size(order, "origSz", "original size")
+        if orig <= 0:
+            raise ValueError(f"original size is not positive: {order.get('origSz')!r}")
+        remaining = None
+        if state != "filled" or order.get("sz") not in (None, ""):
+            remaining = _limit_exact_size(order, "sz", "remaining size")
+            if remaining > orig:
+                raise ValueError(f"remaining size {remaining} exceeds the original size {orig}")
+        if state == "filled":
+            if remaining is not None and remaining != 0:
+                raise ValueError(f"a filled order reports a remaining size of {remaining}")
+            executed = orig
+        else:
+            executed = orig - remaining
+    except (TypeError, ValueError) as e:
+        ev["status_error"] = f"order status is not usable evidence: {e}"
+        return ev
+    ev.update({
+        "order_state": state,
+        "orig_size": orig,
+        "executed_size": executed,
+        "placed_ms": _limit_positive_ms(order.get("timestamp")),
+        "status_ms": _limit_positive_ms(wrapper.get("statusTimestamp")),
+    })
+    return ev
+
+
+def _limit_fill_oid(f):
+    raw = f.get("oid")
+    if raw is None or isinstance(raw, bool):
+        raise ValueError(f"a fill carries no order id: {f!r}")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"a fill carries an invalid order id: {f!r}")
+
+
+def _limit_fill_totals(fills, symbol, oid, through_ms):
+    qty = Decimal(0)
+    notional = Decimal(0)
+    fee = Decimal(0)
+    count = 0
+    for f in fills:
+        if _limit_fill_oid(f) != oid:
+            continue
+        if f.get("coin") != symbol:
+            raise ValueError(f"a fill of order {oid} names coin {f.get('coin')!r}, not {symbol!r}")
+        sz = _limit_exact_size(f, "sz", "fill size")
+        px = _limit_exact_size(f, "px", "fill price")
+        if sz <= 0 or px <= 0:
+            raise ValueError(f"a fill of order {oid} carries a non-positive size or price (sz={sz}, px={px})")
+        raw_fee = f.get("fee")
+        if raw_fee is None or isinstance(raw_fee, bool) or (isinstance(raw_fee, str) and not raw_fee.strip()):
+            raise ValueError(f"a fill of order {oid} carries no fee")
+        t = _recovery_fill_time(f)
+        if t is None or (through_ms > 0 and t > through_ms):
+            raise ValueError(f"a fill of order {oid} carries a time outside the scanned window: {f.get('time')!r}")
+        qty += sz
+        notional += sz * px
+        fee += _quote_exact_decimal(raw_fee, "fill fee")
+        count += 1
+    return qty, notional, fee, count
+
+
+def _limit_retention_lost(scan, ev):
+    if len(scan.get("fills") or []) < HL_FILLS_RECENT_LIMIT:
+        return False
+    if ev.get("order_state") not in LIMIT_TERMINAL_STATES or not ev.get("executed_size"):
+        return False
+    horizon = ev.get("status_ms") or 0
+    if horizon <= 0:
+        return False
+    times = [_recovery_fill_time(f) for f in scan["fills"]]
+    if not times or None in times:
+        return False
+    return min(times) > horizon
+
+
+def _limit_resting(ev, open_oids, oid):
+    state = ev["order_state"]
+    if open_oids is None:
+        return True if state == "live" else None, ""
+    listed = oid in open_oids
+    if state == "live":
+        if not listed:
+            return True, "the order status reports the order live but the open-order list omits it"
+        return True, ""
+    if state in LIMIT_TERMINAL_STATES:
+        if listed:
+            return None, f"the order status reports {ev['order_status']!r} but the open-order list still carries it"
+        return False, ""
+    return (True if listed else None), ""
+
+
+def limit_status_orders(adapter, symbol, oids, since_ms):
+    lot = None
+    lot_error = ""
+    try:
+        lot = adapter.lot_size_decimals(symbol)
+    except Exception as e:
+        lot_error = f"lot metadata unreadable: {e}"
+    if lot is None and not lot_error:
+        lot_error = f"lot metadata for {symbol} is unknown"
+    evidence = {oid: limit_order_status_evidence(adapter, symbol, oid) for oid in oids}
+    observed_ms = int(time.time() * 1000)
+    open_oids = None
+    open_orders_error = ""
+    try:
+        open_oids = adapter.open_order_oids(symbol)
+    except Exception as oe:
+        open_orders_error = str(oe)
+        print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
+
+    results = []
+    need_scan = []
+    for oid in oids:
+        ev = evidence[oid]
+        entry = {
+            "oid": oid,
+            "coin": symbol,
+            "order_status": ev["order_status"],
+            "order_state": ev["order_state"],
+            "orig_size": None if ev["orig_size"] is None else float(ev["orig_size"]),
+            "executed_size": None if ev["executed_size"] is None else float(ev["executed_size"]),
+            "placed_ms": ev["placed_ms"],
+            "status_ms": ev["status_ms"],
+            "status_error": ev["status_error"],
+            "sz_decimals": lot,
+            "filled_size": 0.0,
+            "avg_px": 0.0,
+            "fee": 0.0,
+            "count": 0,
+            "fills_proven": False,
+            "fills_error": "",
+            "fills_reason": "",
+        }
+        resting = None
+        if not ev["status_error"]:
+            resting, conflict = _limit_resting(ev, open_oids, oid)
+            if conflict:
+                entry["status_error"] = conflict
+        entry["resting"] = resting
+        if entry["status_error"]:
+            entry["fills_error"] = f"the order status is unproven ({entry['status_error']}), so its fills cannot be proven"
+            entry["fills_reason"] = "retryable"
+        elif ev["order_state"] == "live" and ev["executed_size"] == 0:
+            entry["fills_proven"] = True
+        elif lot_error:
+            entry["fills_error"] = lot_error
+            entry["fills_reason"] = "retryable"
+        elif ev["placed_ms"] <= 0:
+            entry["fills_error"] = "the order status carries no placement time, so the fill window cannot be bounded"
+            entry["fills_reason"] = "retryable"
+        else:
+            need_scan.append(entry)
+        results.append(entry)
+
+    if need_scan:
+        start = min([int(since_ms)] + [evidence[e["oid"]]["placed_ms"] for e in need_scan])
+        scan = None
+        scan_error = ""
+        try:
+            scan = scan_recovery_fills(adapter, start)
+        except Exception as e:
+            scan_error = f"fill history unreadable: {e}"
+        for entry in need_scan:
+            _prove_limit_fills(entry, evidence[entry["oid"]], scan, scan_error, symbol, lot, observed_ms)
+    return results, open_orders_error
+
+
+def _prove_limit_fills(entry, ev, scan, scan_error, symbol, lot, observed_ms):
+    oid = entry["oid"]
+    if scan_error:
+        entry["fills_error"] = scan_error
+        entry["fills_reason"] = "retryable"
+        return
+    if not scan["complete"]:
+        if _limit_retention_lost(scan, ev):
+            entry["fills_error"] = (f"the venue retains only its most recent {HL_FILLS_RECENT_LIMIT} fills and the retained history "
+                                    f"starts after this order ended, so its executed size can never be matched to fills")
+            entry["fills_reason"] = "permanent"
+            return
+        entry["fills_error"] = f"the fill history is incomplete: {scan['reason'] or 'unknown reason'}"
+        entry["fills_reason"] = "retryable"
+        return
+    if scan["through_ms"] < observed_ms:
+        entry["fills_error"] = "the fill history does not reach the order status read"
+        entry["fills_reason"] = "retryable"
+        return
+    if scan["conflicts"]:
+        entry["fills_error"] = f"the fill history returned {len(scan['conflicts'])} conflicting duplicate fill row(s)"
+        entry["fills_reason"] = "retryable"
+        return
+    try:
+        qty, notional, fee, count = _limit_fill_totals(scan["fills"], symbol, oid, scan["through_ms"])
+        executed = ev["executed_size"]
+        if not lot_quantity_equal(qty, executed, lot):
+            if qty < executed:
+                raise ValueError(f"the fill history shows {qty} of the {executed} the order executed (fill index lag or a missing fill)")
+            raise ValueError(f"the fill history shows {qty}, more than the {executed} the order executed")
+    except ValueError as e:
+        entry["fills_error"] = str(e)
+        entry["fills_reason"] = "retryable"
+        return
+    entry["fills_proven"] = True
+    entry["filled_size"] = float(executed)
+    entry["avg_px"] = float(notional / qty) if qty > 0 else 0.0
+    entry["fee"] = float(fee)
+    entry["count"] = count
 
 
 def _quote_exact_decimal(value, label):
@@ -3388,16 +3692,15 @@ def quote_status_outcome(resp, now_ms):
     except (TypeError, ValueError):
         accepted = 0
     out = {"venue_order_id": str(order.get("oid", "")), "venue_time_ms": ts, "filled_qty": filled_text}
-    if status in QUOTE_LIVE_STATUSES:
+    state = venue_order_state(status)
+    if state == "live":
         out.update({"status": "resting", "accepted_at_ms": accepted})
-    elif status == "triggered":
+    elif state == "triggered":
         out.update({"status": "triggered", "accepted_at_ms": accepted})
-    elif status == "filled":
+    elif state == "filled":
         out.update({"status": "filled"})
-    elif status in QUOTE_CANCELLED_STATUSES:
-        out.update({"status": "cancelled", "detail": status})
-    elif status in QUOTE_REJECTED_STATUSES:
-        out.update({"status": "rejected", "detail": status})
+    elif state in ("cancelled", "rejected"):
+        out.update({"status": state, "detail": status})
     else:
         out.update({"status": "unknown", "detail": f"unfamiliar order state {status!r}"})
     return out
@@ -3437,7 +3740,7 @@ def run_quote_place(symbol, side, size, limit_price, trigger_px, tif, cloid, rol
         _quote_print(out)
         return
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         adapter.set_order_expiry(int(expires_at_ms))
@@ -3475,7 +3778,7 @@ def run_quote_cancel(symbol, cloid, oid, mode):
         out["error"] = "--quote-cancel requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
     except Exception as e:
@@ -3507,7 +3810,7 @@ def run_quote_status(symbol, cloid, mode):
         out["error"] = "--quote-status requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         out["outcome"] = quote_status_outcome(adapter.query_order_by_cloid(cloid), int(time.time() * 1000))
@@ -3626,7 +3929,7 @@ def run_quote_recover(symbol, since_ms, until_ms, mode):
         out["error"] = "--quote-recover requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         account = hyperliquid_account_key(adapter.account_address)
         out["account"] = account
@@ -3646,7 +3949,7 @@ def run_quote_position(symbol, mode):
         out["error"] = "--quote-position requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         account = hyperliquid_account_key(adapter.account_address)
         read_at = int(time.time() * 1000)

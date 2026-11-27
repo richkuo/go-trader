@@ -183,30 +183,6 @@ func noEdgeCaseCalendarConditionedEntryStudyParityConfigsLoadAsExplicitPaper(t *
 	}
 }
 
-func noEdgeCaseV20NoEdgeMigrationNeverStampsCalendarConditionedEntry(t *testing.T) {
-	open := noEdgeHLStrategy("hl-cce-open", calendarEntryName, "ETH", "1h", "--mode=live")
-	fallback := noEdgeHLStrategy("hl-cce-close", "breakout", "ETH", "1h", "--mode=live")
-	fallback["close_strategy"] = map[string]interface{}{"name": calendarEntryName}
-	control := noEdgeHLStrategy("hl-control", "rsi", "BTC", "1h", "--mode=live")
-	raw := map[string]interface{}{"strategies": []interface{}{}}
-	for _, sc := range []map[string]interface{}{open, fallback, control} {
-		blob, _ := json.Marshal(sc)
-		var generic map[string]interface{}
-		_ = json.Unmarshal(blob, &generic)
-		raw["strategies"] = append(raw["strategies"].([]interface{}), generic)
-	}
-	report, err := migrateV20NoEdge(raw, 19)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := stampedIDs(report); !reflect.DeepEqual(got, []string{"hl-control"}) {
-		t.Fatalf("stamped = %v, want only the non-candidate control", got)
-	}
-	if want := []string{"hl-cce-close", "hl-cce-open"}; !reflect.DeepEqual(report.VetoedResearch, want) {
-		t.Fatalf("vetoed = %v, want %v", report.VetoedResearch, want)
-	}
-}
-
 func noEdgeCaseCalendarConditionedEntryOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(calendarEntryName, "hyperliquid", "eth")

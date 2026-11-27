@@ -1,0 +1,1043 @@
+{
+  "atr_method": "wilder",
+  "config_version": 20,
+  "default_stop_loss_atr_mult": 1,
+  "regime": {
+    "enabled": true,
+    "windows": {
+      "composite_long": {
+        "classifier": "composite",
+        "period": 1500,
+        "thresholds": {
+          "adx": 20,
+          "range_pct": 0.03,
+          "return_pct": 0.02
+        }
+      },
+      "composite_medium": {
+        "classifier": "composite",
+        "period": 350,
+        "thresholds": {
+          "adx": 20,
+          "range_pct": 0.03,
+          "return_pct": 0.02
+        }
+      },
+      "composite_short": {
+        "classifier": "composite",
+        "period": 150,
+        "thresholds": {
+          "adx": 20,
+          "range_pct": 0.03,
+          "return_pct": 0.02
+        }
+      },
+      "medium": {
+        "classifier": "adx",
+        "period": 350
+      }
+    }
+  },
+  "strategies": [
+    {
+      "args": [
+        "tema_cross",
+        "BNB",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-bnb-30m-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "BNB",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-bnb-1h-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "BTC",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-btc-30m-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-btc-1h-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "ETH",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-eth-30m-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "ETH",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-eth-1h-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "HYPE",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-hype-30m-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "HYPE",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-hype-1h-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "SOL",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-sol-30m-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    },
+    {
+      "args": [
+        "tema_cross",
+        "SOL",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "use_defaults": true
+        }
+      },
+      "direction": "long",
+      "id": "tema-cross-sol-1h-paper",
+      "initial_capital": 1000,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "max_drawdown_pct": 50,
+      "open_strategy": {
+        "name": "tema_cross",
+        "params": {
+          "long_period": 377,
+          "mid_period": 144,
+          "short_period": 55
+        }
+      },
+      "platform": "hyperliquid",
+      "regime_atr_window": "composite_medium",
+      "regime_directional_policy": {
+        "trend_regime": {
+          "ranging_directional": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_quiet": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "ranging_volatile": {
+            "direction": "both",
+            "invert_signal": false
+          },
+          "trending_down_choppy": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_down_clean": {
+            "direction": "short",
+            "invert_signal": true
+          },
+          "trending_up_choppy": {
+            "direction": "long",
+            "invert_signal": false
+          },
+          "trending_up_clean": {
+            "direction": "long",
+            "invert_signal": false
+          }
+        }
+      },
+      "regime_directional_window": "composite_medium",
+      "regime_gate_window": "composite_medium",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 2.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 2.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 2.5
+          },
+          "ranging_volatile": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "trailing_stop_min_move_pct": 0.2,
+      "type": "perps"
+    }
+  ]
+}

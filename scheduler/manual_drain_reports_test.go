@@ -286,7 +286,7 @@ func TestManualStepWindowAlerts(t *testing.T) {
 		hlStepNoRecorder(t)
 		orig := runHyperliquidUpdateStopLossFunc
 		t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = orig })
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: trigger, StopLossSize: size}, "", nil
 		}
 		sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0))

@@ -1,0 +1,25 @@
+{
+  "name": "volume_spike_breakout",
+  "params": {
+    "lookback": 20,
+    "vol_period": 20,
+    "vol_multiplier": 2.0,
+    "min_body_frac": 0.0
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.02,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict"
+}

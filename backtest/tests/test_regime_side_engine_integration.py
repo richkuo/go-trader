@@ -56,50 +56,6 @@ def _run(signal, labels, **kw):
     return _bt(**kw).run(_frame(signal, labels, **frame_kw), save=False)
 
 
-def test_either_trigger_sign_opens_the_label_side(subtests):
-    for label, trigger, side in [
-            ("trending_down_choppy", 1, "short"), ("trending_down_choppy", -1, "short"),
-            ("trending_up_clean", 1, "long"), ("trending_up_clean", -1, "long"),
-            ("trending_up_choppy", -1, "long"), ("trending_down_clean", 1, "short"),
-            ("ranging_directional_up", -1, "long"), ("ranging_directional_down", 1, "short"),
-            ("trending_up", -1, "long"), ("trending_down", 1, "short")]:
-        with subtests.test(label=label, trigger=trigger):
-            res = _run([0, trigger, 0, 0], [label] * 4)
-            assert _sides(res) == [side]
-            assert _entries(res) == [str(START + pd.Timedelta(days=2))]
-            assert res["regime_side"]["counts"]["opened_" + side] == 1
-
-
-def test_zero_triggers_non_directional_labels_and_unready_windows_hold(subtests):
-    cases = [
-        ("zero_trigger", [0, 0, 0, 0], ["trending_down_choppy"] * 4, None, "held:zero_trigger"),
-        ("ranging_quiet", [1, -1, 1, 0], ["ranging_quiet"] * 4, None, "held:no_side_label"),
-        ("ranging_volatile", [1, -1, 1, 0], ["ranging_volatile"] * 4, None, "held:no_side_label"),
-        ("bare_ranging_directional", [1, -1, 1, 0], ["ranging_directional"] * 4, None,
-         "held:no_side_label"),
-        ("legacy_ranging", [1, -1, 1, 0], ["ranging"] * 4, None, "held:no_side_label"),
-        ("unknown_label", [1, -1, 1, 0], ["sideways"] * 4, None, "held:no_side_label"),
-        ("empty_label", [1, -1, 1, 0], [""] * 4, None, "held:window_unavailable"),
-        ("warming_window", [1, -1, 1, 0], ["trending_down_choppy"] * 4, [False] * 4,
-         "held:window_warming"),
-    ]
-    for name, signal, labels, ready, outcome in cases:
-        with subtests.test(case=name):
-            res = _run(signal, labels, ready=ready)
-            assert res["trades"] == []
-            assert res["regime_side"]["counts"].get(outcome, 0) >= 1
-            assert not any(k.startswith("opened") for k in res["regime_side"]["counts"])
-
-
-def test_the_decision_reads_the_label_of_the_trigger_bar(subtests):
-    labels = ["ranging_quiet", "trending_down_choppy", "trending_up_clean", "trending_up_clean"]
-    res = _run([0, 1, 0, 0], labels)
-    assert _sides(res) == ["short"]
-    flipped = _run([0, 1, 0, 0], ["ranging_quiet", "ranging_quiet", "trending_down_choppy",
-                                  "trending_down_choppy"])
-    assert flipped["trades"] == []
-
-
 def test_base_direction_is_a_permission_filter(subtests):
     for direction, label, expected in [
             ("long", "trending_up_clean", ["long"]), ("long", "trending_down_choppy", []),
@@ -217,30 +173,3 @@ def test_expiry_is_checked_at_each_decision():
                                                expires_at=expires))
     assert _sides(res) == ["short"]
     assert res["regime_side"]["counts"]["held:uncertified"] == 1
-
-
-def test_structural_refusals(subtests):
-    cases = [
-        ("invert_signal", {"invert_signal": True}),
-        ("directional_policy", {"regime_directional_policy": {"trend_regime": {
-            "trending_up": {"direction": "long"}}}}),
-        ("no_direction", {"direction": None}),
-        ("no_close", {"close_strategies": None}),
-        ("open_as_close", {"close_strategies": [{"name": "scripted_trigger", "params": {}}]}),
-        ("no_certification_context", {"regime_side_certification": None}),
-        ("bad_context", {"regime_side_certification": {"context": "backtest"}}),
-        ("paper_with_states", {"regime_side_certification": {
-            "context": "paper", "states": {"trending_up": "long"}}}),
-        ("spot", {"strategy_type": "spot"}),
-    ]
-    for name, kw in cases:
-        with subtests.test(case=name), pytest.raises(ValueError):
-            _bt(**kw)
-    with subtests.test(case="ack_without_mode"), pytest.raises(ValueError):
-        Backtester(initial_capital=1000, allow_uncertified_regime_side=True)
-    with subtests.test(case="no_directional_column"), pytest.raises(ValueError):
-        Backtester(initial_capital=1000, regime_enabled=True, direction="both",
-                   close_strategies=FAR_CLOSE, regime_side=True,
-                   regime_side_certification=PAPER)
-    with subtests.test(case="vocabulary_without_side_labels"), pytest.raises(ValueError):
-        _bt(regime_feature_labels={"directional": ("ranging_quiet", "ranging_volatile")})

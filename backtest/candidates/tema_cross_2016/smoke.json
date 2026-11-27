@@ -1,0 +1,4372 @@
+{
+  "checks": {
+    "entry_atr_is_wilder": true,
+    "entry_atr_rows": 10,
+    "every_arm_ran": true,
+    "live_both_opened_a_short": true,
+    "network_calls": 0
+  },
+  "frames": {
+    "live": {
+      "bar_1h ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 873,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 723,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-06 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 141.2,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 143.2,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "live_both ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-27 23:00:00",
+            "entry_atr": 1.119948,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 1,
+        "trades": 1
+      },
+      "live_both_nohtf ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-27 17:00:00",
+            "entry_atr": 1.125732,
+            "matches_simple": false,
+            "matches_wilder": true
+          },
+          {
+            "entry": "2021-05-27 23:00:00",
+            "entry_atr": 1.119948,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 1,
+        "trades": 2
+      },
+      "live_long ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "live_long_nohtf ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-27 17:00:00",
+            "entry_atr": 1.125732,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "p_13_34_89 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 437,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 362,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-20 04:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 20.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": 50.0,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      }
+    },
+    "paper": {
+      "bar_1h": {
+        "alias_of": "control"
+      },
+      "control BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 158.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-25 05:00:00",
+            "entry_atr": 1.306111,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 153.9,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "control BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 151.6,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 150.3,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-18 12:00:00",
+            "entry_atr": 1.449227,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 144.3,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "control ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 145.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-11 02:00:00",
+            "entry_atr": 2.578388,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 147.4,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "control HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 143.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 143.7,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "control SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-19 17:30:00",
+            "entry_atr": 2.240539,
+            "matches_simple": false,
+            "matches_wilder": true
+          },
+          {
+            "entry": "2021-05-28 21:30:00",
+            "entry_atr": 1.369767,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 2,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 144.3,
+        "short_positions": 0,
+        "trades": 2
+      },
+      "gate_adx_up BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 87.2,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.7,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 85.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.3,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.5,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 85.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.7,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.6,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.6,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 86.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 903,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 753,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-01 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 452,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 377,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-17 16:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 903,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 753,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-01 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 452,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 377,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-17 16:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 903,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 753,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-01 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 452,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 377,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-17 16:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 903,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 753,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-01 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 1,
+          "long_passed": 0,
+          "long_signals": 1,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 452,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 377,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-17 16:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 1,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 903,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 753,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-01-01 12:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 0,
+          "short_signals": 0,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 452,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 377,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-03-17 16:00:00",
+          "first_scored_bar": "2021-05-19 12:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 2,
+          "long_passed": 0,
+          "long_signals": 2,
+          "min_closed_buckets": 50,
+          "short_blocked": 0,
+          "short_passed": 2,
+          "short_signals": 2,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 600
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 BNB 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 BNB 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 BTC 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 BTC 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [
+          {
+            "entry": "2021-05-26 14:30:00",
+            "entry_atr": 1.691107,
+            "matches_simple": false,
+            "matches_wilder": true
+          }
+        ],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "p_8_21_55 ETH 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 ETH 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 HYPE 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 HYPE 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 SOL 1h": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 SOL 30m": {
+        "engine_atr_method": "wilder",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "ran": true,
+        "seconds": 0.1,
+        "short_positions": 0,
+        "trades": 0
+      }
+    },
+    "spot": {
+      "bar_4h": {
+        "alias_of": "spot_control"
+      },
+      "gate_adx_up BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.5,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_adx_up BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 4,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.5,
+        "short_positions": 0,
+        "trades": 4
+      },
+      "gate_adx_up ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_adx_up SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.5,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_adx_up SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 1.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 10.1,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_cm_not_down BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 7.7,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 4,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 10.0,
+        "short_positions": 0,
+        "trades": 4
+      },
+      "gate_cm_not_down ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 7.8,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_not_down SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 10.0,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_cm_not_down SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 7.7,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_cm_up BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 4,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 4
+      },
+      "gate_cm_up ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_cm_up SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "gate_cm_up SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 11.3,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 8.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 11.2,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 8.9,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 11.2,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "gate_p21_up_clean SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 9.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 328,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 178,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-04-07 08:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 6,
+          "long_signals": 6,
+          "min_closed_buckets": 50,
+          "short_blocked": 7,
+          "short_passed": 0,
+          "short_signals": 7,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 292,
+            "1": 308
+          }
+        },
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "htf BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 186,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 119,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2020-11-27 00:00:00",
+          "first_scored_bar": "2021-03-26 08:00:00",
+          "htf_timeframe": "1d",
+          "last_bucket": "2021-05-31 00:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 1,
+          "short_passed": 0,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 294,
+            "1": 106
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 328,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 178,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-04-07 08:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 4,
+          "long_signals": 4,
+          "min_closed_buckets": 50,
+          "short_blocked": 4,
+          "short_passed": 0,
+          "short_signals": 4,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 364,
+            "1": 236
+          }
+        },
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "htf ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 186,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 119,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2020-11-27 00:00:00",
+          "first_scored_bar": "2021-03-26 08:00:00",
+          "htf_timeframe": "1d",
+          "last_bucket": "2021-05-31 00:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 1,
+          "short_passed": 0,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 252,
+            "1": 148
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "htf SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 328,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 178,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2021-04-07 08:00:00",
+          "first_scored_bar": "2021-05-07 00:00:00",
+          "htf_timeframe": "4h",
+          "last_bucket": "2021-05-31 20:00:00",
+          "long_blocked": 0,
+          "long_passed": 6,
+          "long_signals": 6,
+          "min_closed_buckets": 50,
+          "short_blocked": 7,
+          "short_passed": 0,
+          "short_signals": 7,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 336,
+            "1": 264
+          }
+        },
+        "liquidated": false,
+        "long_positions": 1,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 1
+      },
+      "htf SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": {
+          "buckets_closed": 186,
+          "buckets_dropped_unclosed": 0,
+          "closed_buckets_before_first_scored_bar": 119,
+          "closed_buckets_with_missing_slots": 1,
+          "dropped_bucket_opens": [],
+          "ema_period": 50,
+          "first_bucket": "2020-11-27 00:00:00",
+          "first_scored_bar": "2021-03-26 08:00:00",
+          "htf_timeframe": "1d",
+          "last_bucket": "2021-05-31 00:00:00",
+          "long_blocked": 0,
+          "long_passed": 0,
+          "long_signals": 0,
+          "min_closed_buckets": 50,
+          "short_blocked": 1,
+          "short_passed": 0,
+          "short_signals": 1,
+          "source": "derived_from_leg_candles",
+          "trend_counts_scored": {
+            "-1": 270,
+            "1": 130
+          }
+        },
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_13_34_89 SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_21_55_144 SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_34_89_233 SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_55_144_377 SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 2,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 2
+      },
+      "p_8_21_55 BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 3,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 3
+      },
+      "p_8_21_55 ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "p_8_21_55 SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 3,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 3
+      },
+      "p_8_21_55 SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "spot_control BTC 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "spot_control BTC 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "spot_control ETH 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 4,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 4
+      },
+      "spot_control ETH 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      },
+      "spot_control SOL 1h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 6,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 6
+      },
+      "spot_control SOL 4h": {
+        "engine_atr_method": "simple",
+        "entry_atr_checks": [],
+        "htf_filter": null,
+        "liquidated": false,
+        "long_positions": 0,
+        "perps_sizing": null,
+        "ran": true,
+        "seconds": 0.0,
+        "short_positions": 0,
+        "trades": 0
+      }
+    }
+  },
+  "live_sizing": {
+    "budget_source": "strategy_cash",
+    "exchange_leverage": 20.0,
+    "margin_mode": "isolated",
+    "margin_per_trade_usd": 50.0,
+    "pool_available_margin": null,
+    "pool_evidence": "verified",
+    "provenance": {
+      "source": "load_strategy_config"
+    },
+    "sizing_leverage": 1.0
+  },
+  "measured_at_utc": "2026-11-11T06:14:57Z",
+  "network_calls": 0,
+  "note": "synthetic candles in a throwaway cache, network blocked, funding off; reads no frozen window"
+}

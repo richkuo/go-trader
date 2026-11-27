@@ -106,6 +106,7 @@ type StrategyState struct {
 
 	EntryGuard                    *entryGuardState     `json:"-"`
 	RobinhoodOrders               *robinhoodOrderGuard `json:"-"`
+	OKXProtection                 *okxProtection       `json:"-"`
 	Quote                         *quoteOwnerState     `json:"-"`
 	deferTradePersist             bool
 	robinhoodPartitionSavePending bool
@@ -586,6 +587,7 @@ func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRis
 			if legacy.KillSwitchActive && !existing.KillSwitchActive {
 				existing.KillSwitchActive = true
 				existing.KillSwitchAt = legacy.KillSwitchAt
+				existing.cancelPeakRebaseline()
 			}
 			addKillSwitchEvent(existing, "migration_conflict", "",
 				existing.CurrentDrawdownPct, 0, existing.PeakValue,

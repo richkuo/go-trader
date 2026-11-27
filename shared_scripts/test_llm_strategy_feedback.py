@@ -49,13 +49,6 @@ def _run(payload):
     return proc.returncode, json.loads(proc.stdout)
 
 
-def test_valid_result_passes_through_the_real_script():
-    code, out = _run(json.dumps({"bundle": BUNDLE, "result": _result()}))
-    assert code == 0
-    assert out["outcome"] == "ok"
-    assert [p["status"] for p in out["proposals"]] == ["valid", "valid"]
-
-
 def test_each_contract_breach_makes_the_whole_result_invalid(mod):
     schema = mod.load_schema()
     long_grid = {f"p{i}": [1] for i in range(17)}

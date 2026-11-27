@@ -25,7 +25,7 @@ func TestOpenArmTrailingStop(t *testing.T) {
 		var called bool
 		var gotSize, gotTrigger float64
 		var gotCancelOID int64
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			called = true
 			gotSize, gotTrigger, gotCancelOID = size, triggerPx, cancelStopLossOID
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
@@ -92,7 +92,7 @@ func TestOpenArmTrailingStop(t *testing.T) {
 			t.Errorf("capped: SL OID set (%d) despite deferral", st.Positions["ETH"].StopLossOID)
 		}
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx}, "", nil
 		}
 		st = mkState(0, 0)
@@ -119,7 +119,7 @@ func TestOpenArmTrailingStop(t *testing.T) {
 		var got float64
 		old := runHyperliquidUpdateStopLossFunc
 		t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			got = size
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 5, StopLossTriggerPx: 90}, "", nil
 		}

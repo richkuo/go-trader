@@ -97,9 +97,19 @@ func TestQuoteStorageRevisionsRowOwnershipAndIsolation(t *testing.T) {
 	})
 	t.Run("rows_are_invisible_to_every_legacy_pending_limit_path", func(t *testing.T) {
 		e := quoteSettledEnv(t, quoteTestOptions{})
-		var quoteID int64
-		if err := e.db().db.QueryRow(`SELECT id FROM pending_limit_orders WHERE owner_kind = 'quote' ORDER BY id LIMIT 1`).Scan(&quoteID); err != nil {
+		quoteRow := PendingLimitOrder{StrategyID: quoteTestOwner}
+		if err := e.db().db.QueryRow(`SELECT id, order_oid, strategy_id, symbol, side, limit_price, order_size, filled_size, avg_fill_price, fill_fee, fill_proof_version, fill_proof_binding, operator_evidence_json
+			FROM pending_limit_orders WHERE owner_kind = 'quote' ORDER BY id LIMIT 1`).Scan(
+			&quoteRow.ID, &quoteRow.OrderOID, &quoteRow.storedOwner, &quoteRow.Symbol, &quoteRow.Side, &quoteRow.LimitPrice, &quoteRow.OrderSize,
+			&quoteRow.FilledSize, &quoteRow.AvgFillPrice, &quoteRow.FillFee, &quoteRow.FillProofVersion, &quoteRow.FillProofBinding, &quoteRow.OperatorEvidenceJSON); err != nil {
 			t.Fatal(err)
+		}
+		quoteID := quoteRow.ID
+		if n := e.count(`SELECT COUNT(*) FROM pending_limit_orders WHERE id = ? AND order_oid = ? AND strategy_id = ? AND symbol = ? AND side = ?
+			AND filled_size = ? AND avg_fill_price = ? AND fill_fee = ? AND fill_proof_version = ? AND fill_proof_binding = ? AND operator_evidence_json = ?`,
+			quoteRow.ID, quoteRow.OrderOID, quoteRow.storedOwner, quoteRow.Symbol, quoteRow.Side,
+			quoteRow.FilledSize, quoteRow.AvgFillPrice, quoteRow.FillFee, quoteRow.FillProofVersion, quoteRow.FillProofBinding, quoteRow.OperatorEvidenceJSON); n != 1 {
+			t.Fatalf("the manual-writer arguments must match the quote row on every column but owner_kind, matched %d", n)
 		}
 		manualID, err := e.store.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: quoteTestOwner, Symbol: "ETH", Side: "buy", OrderOID: 7, LimitPrice: 1, OrderSize: 1, TIF: "Alo", CreatedAt: e.clock.Now()})
 		if err != nil {
@@ -114,8 +124,13 @@ func TestQuoteStorageRevisionsRowOwnershipAndIsolation(t *testing.T) {
 		}
 		before := e.quoteRowSignature(t)
 		_ = e.store.UpdatePendingLimitOrderFill(quoteID, 9, 9, 9)
-		_ = e.store.MarkPendingLimitOrderOperatorRequired(quoteID, e.clock.Now())
-		_ = e.store.ClearPendingLimitOrderOperatorRequired(quoteID)
+		if err := e.store.MarkPendingLimitOrderOperatorRequired(quoteRow, e.clock.Now(), `{"oid":1}`); err == nil || !strings.Contains(err.Error(), "changed or vanished") {
+			t.Fatalf("the manual marker writer must not select a quote row, got %v", err)
+		}
+		if err := e.store.DeletePendingLimitOrderIfUnchanged(quoteRow); err == nil || !strings.Contains(err.Error(), "changed or vanished") {
+			t.Fatalf("the manual guarded delete must not select a quote row, got %v", err)
+		}
+		_ = e.store.ClearPendingLimitOrderOperatorRequired(quoteRow)
 		_ = e.store.DeletePendingLimitOrder(quoteID)
 		if _, err := e.store.MarkPendingLimitOrderCancelRequested(quoteTestOwner, "BTC"); err != nil {
 			t.Fatal(err)

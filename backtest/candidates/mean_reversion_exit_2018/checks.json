@@ -1,0 +1,486 @@
+{
+  "cases": {
+    "b2_unified_equals_historical BTC 1h": {
+      "historical x1": "d77a08c1aa8dff304444d2fcfd25d5a914a78c06360080b60176c0f80b1c7ae4",
+      "historical x1 trades": 208,
+      "historical x2": "362130871888082f10db1d6b32e8afe21f648db71ea54afccff4a7e921c8698c",
+      "historical x2 trades": 207,
+      "ok": true,
+      "unified x1": "d77a08c1aa8dff304444d2fcfd25d5a914a78c06360080b60176c0f80b1c7ae4",
+      "unified x1 trades": 208,
+      "unified x2": "362130871888082f10db1d6b32e8afe21f648db71ea54afccff4a7e921c8698c",
+      "unified x2 trades": 207
+    },
+    "b2_unified_equals_historical ETH 4h": {
+      "historical x1": "f145aed37b5d6a3e3e9f320df2037f3e9bbaedb03b0943a6841fe3f2542e59a6",
+      "historical x1 trades": 53,
+      "historical x2": "bdf6eefa225464e68efa3dd17564335f93f47ffa4b16bd183f280680166706e2",
+      "historical x2 trades": 62,
+      "ok": true,
+      "unified x1": "f145aed37b5d6a3e3e9f320df2037f3e9bbaedb03b0943a6841fe3f2542e59a6",
+      "unified x1 trades": 53,
+      "unified x2": "bdf6eefa225464e68efa3dd17564335f93f47ffa4b16bd183f280680166706e2",
+      "unified x2 trades": 62
+    },
+    "equity_reconciliation b2/cont_incumbent ETH 4h": {
+      "engine_total_return_pct": -13.31,
+      "from_engine_path": {
+        "days": 181,
+        "net_pnl_usd": -133.30679278769207,
+        "return_pct": -13.330679278769209,
+        "sharpe_daily": -0.8523579899141587,
+        "worst_drawdown_pct": -27.765563929962095
+      },
+      "from_persisted_path": {
+        "days": 181,
+        "net_pnl_usd": -133.30679278769207,
+        "return_pct": -13.330679278769209,
+        "sharpe_daily": -0.8523579451612432,
+        "worst_drawdown_pct": -27.76556026375357
+      },
+      "ok": true,
+      "reconciliation": {
+        "engine_final_capital_minus_study": -0.003207,
+        "ok": true
+      },
+      "terminal_close": true,
+      "terminal_settlement": -0.17172356224796204
+    },
+    "equity_reconciliation b2/paired_incumbent BTC 1h": {
+      "engine_total_return_pct": -21.13,
+      "from_engine_path": {
+        "days": 181,
+        "net_pnl_usd": -211.26941269319627,
+        "return_pct": -21.126941269319627,
+        "sharpe_daily": -5.651471867152265,
+        "worst_drawdown_pct": -21.584981523076312
+      },
+      "from_persisted_path": {
+        "days": 181,
+        "net_pnl_usd": -211.26941269319627,
+        "return_pct": -21.126941269319627,
+        "sharpe_daily": -5.651467881362445,
+        "worst_drawdown_pct": -21.58498246777522
+      },
+      "ok": true,
+      "reconciliation": {
+        "engine_final_capital_minus_study": -0.000587,
+        "ok": true
+      },
+      "terminal_close": false,
+      "terminal_settlement": 1.0231815394945443e-12
+    },
+    "equity_reconciliation ratchet/cont_incumbent BTC 30m": {
+      "engine_total_return_pct": -15.95,
+      "from_engine_path": {
+        "days": 181,
+        "net_pnl_usd": -160.3252817199741,
+        "return_pct": -16.03252817199741,
+        "sharpe_daily": -1.0245923750271602,
+        "worst_drawdown_pct": -29.333950877221437
+      },
+      "from_persisted_path": {
+        "days": 181,
+        "net_pnl_usd": -160.3252817199741,
+        "return_pct": -16.03252817199741,
+        "sharpe_daily": -1.0245918762825725,
+        "worst_drawdown_pct": -29.333950383015946
+      },
+      "ok": true,
+      "reconciliation": {
+        "engine_final_capital_minus_study": -0.004718,
+        "ok": true
+      },
+      "terminal_close": true,
+      "terminal_settlement": -0.8045372610210961
+    },
+    "equity_reconciliation ratchet/paired_r_w150 SOL 1h": {
+      "engine_total_return_pct": -7.94,
+      "from_engine_path": {
+        "days": 181,
+        "net_pnl_usd": -79.40334661691486,
+        "return_pct": -7.9403346616914865,
+        "sharpe_daily": -1.8825138270098072,
+        "worst_drawdown_pct": -10.279854411262694
+      },
+      "from_persisted_path": {
+        "days": 181,
+        "net_pnl_usd": -79.40334661691486,
+        "return_pct": -7.9403346616914865,
+        "sharpe_daily": -1.8825156223938146,
+        "worst_drawdown_pct": -10.279852853782034
+      },
+      "ok": true,
+      "reconciliation": {
+        "engine_final_capital_minus_study": 0.003347,
+        "ok": true
+      },
+      "terminal_close": false,
+      "terminal_settlement": -3.410605131648481e-13
+    },
+    "isolation": {
+      "guarded_unchanged": true,
+      "network_calls_refused": 3,
+      "ok": true
+    },
+    "minimum_size": {
+      "ok": true,
+      "partial_close_skipped_or_whole_at_25_usd": true,
+      "replays": [
+        {
+          "capital_usd": 25.0,
+          "legs": 2,
+          "matched": true,
+          "rejected_entries": 0,
+          "skipped_partial_closes": 1,
+          "why": null
+        },
+        {
+          "capital_usd": 5.0,
+          "legs": null,
+          "matched": false,
+          "rejected_entries": 1,
+          "skipped_partial_closes": 0,
+          "why": "0 positions"
+        }
+      ],
+      "unmatched_below_minimum": true
+    },
+    "missing_or_changed_input": {
+      "changed_file": "refused: BTC 1h.candles: sha256 mismatch for data/proxy/BTC_1h_candles.csv.gz (manifest 1daa22186a43784be032391c0e954b055902c37fad38edfa6e135a395f4b7be4, file 6610bc3d90bd0e1d480d831bbb6a30c26826be194d6fa9a2ac019495f8c0873c)",
+      "missing_file": "refused: ETH 1h.candles: frozen input data/proxy/ETH_1h_candles.csv.gz is missing",
+      "ok": true
+    },
+    "replay b2 BTC 1h": {
+      "candidate_stress_cases": {
+        "censored": 0,
+        "funding_charged_positions": 20,
+        "matched": 83,
+        "partial_close_positions": 32,
+        "replays": 83,
+        "stop_exits": 52
+      },
+      "identical_candidate_zero_delta": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "long_entries": 24,
+      "max_abs_net_pct_diff_vs_free_run": 0.0002534287674487157,
+      "ok": true,
+      "replay_exit_and_reason_equal_free_run": true,
+      "schedule": {
+        "close_records": 116,
+        "exit_reasons": {
+          "sl": 45,
+          "tiered_tp_atr_regime:ranging_volatile:1": 38
+        },
+        "long_positions": 24,
+        "positions": 83,
+        "rejected_entries": 0,
+        "short_positions": 59,
+        "skipped_partial_closes": 23,
+        "stop_warmup_skipped": 0
+      },
+      "scheduled": 83,
+      "short_entries": 59,
+      "sliced_equals_full_frame": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "replay b2 SOL 4h": {
+      "candidate_stress_cases": {
+        "censored": 0,
+        "funding_charged_positions": 5,
+        "matched": 20,
+        "partial_close_positions": 8,
+        "replays": 20,
+        "stop_exits": 9
+      },
+      "identical_candidate_zero_delta": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "long_entries": 5,
+      "max_abs_net_pct_diff_vs_free_run": 2.0650148258027912e-14,
+      "ok": true,
+      "replay_exit_and_reason_equal_free_run": true,
+      "schedule": {
+        "close_records": 27,
+        "exit_reasons": {
+          "sl": 9,
+          "tiered_tp_atr_regime:ranging_volatile:1": 11
+        },
+        "long_positions": 5,
+        "positions": 20,
+        "rejected_entries": 0,
+        "short_positions": 15,
+        "skipped_partial_closes": 3,
+        "stop_warmup_skipped": 0
+      },
+      "scheduled": 20,
+      "short_entries": 15,
+      "sliced_equals_full_frame": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "replay ratchet ETH 30m": {
+      "candidate_stress_cases": {
+        "censored": 0,
+        "funding_charged_positions": 8,
+        "matched": 49,
+        "partial_close_positions": 11,
+        "replays": 49,
+        "stop_exits": 45
+      },
+      "identical_candidate_zero_delta": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "long_entries": 49,
+      "max_abs_net_pct_diff_vs_free_run": 0.0003307468440887362,
+      "ok": true,
+      "replay_exit_and_reason_equal_free_run": true,
+      "schedule": {
+        "close_records": 68,
+        "exit_reasons": {
+          "sl": 47,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 2
+        },
+        "long_positions": 49,
+        "positions": 49,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 32,
+        "stop_warmup_skipped": 0
+      },
+      "scheduled": 49,
+      "short_entries": 0,
+      "sliced_equals_full_frame": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "runner_parity b2/cont_incumbent ETH 4h": {
+      "entries_sides_close_records_equal": true,
+      "eval_windows_run_leg": {
+        "max_dd_pct": -27.77,
+        "return_pct": -13.31,
+        "sharpe": -0.758,
+        "trades": 53
+      },
+      "max_abs_position_pnl_diff_usd": 0.007376949128438781,
+      "note": "eval_windows sums the cent-rounded trade pnl of results['trades']; the study sums the unrounded engine trade objects, so each close record may differ by at most half a cent",
+      "ok": true,
+      "positions": 35,
+      "study_runner": {
+        "max_dd_pct": -27.77,
+        "return_pct": -13.31,
+        "sharpe": -0.758,
+        "trades": 53
+      }
+    },
+    "runner_parity b2/paired_incumbent BTC 1h": {
+      "entries_sides_close_records_equal": true,
+      "eval_windows_run_leg": {
+        "max_dd_pct": -21.58,
+        "return_pct": -21.13,
+        "sharpe": -3.89,
+        "trades": 116
+      },
+      "max_abs_position_pnl_diff_usd": 0.00853528844585405,
+      "note": "eval_windows sums the cent-rounded trade pnl of results['trades']; the study sums the unrounded engine trade objects, so each close record may differ by at most half a cent",
+      "ok": true,
+      "positions": 83,
+      "study_runner": {
+        "max_dd_pct": -21.58,
+        "return_pct": -21.13,
+        "sharpe": -3.89,
+        "trades": 116
+      }
+    },
+    "runner_parity ratchet/cont_incumbent BTC 30m": {
+      "entries_sides_close_records_equal": true,
+      "eval_windows_run_leg": {
+        "max_dd_pct": -29.33,
+        "return_pct": -15.95,
+        "sharpe": -1.004,
+        "trades": 255
+      },
+      "max_abs_position_pnl_diff_usd": 0.013772954575764551,
+      "note": "eval_windows sums the cent-rounded trade pnl of results['trades']; the study sums the unrounded engine trade objects, so each close record may differ by at most half a cent",
+      "ok": true,
+      "positions": 205,
+      "study_runner": {
+        "max_dd_pct": -29.33,
+        "return_pct": -15.95,
+        "sharpe": -1.004,
+        "trades": 255
+      }
+    },
+    "runner_parity ratchet/paired_r_w150 SOL 1h": {
+      "entries_sides_close_records_equal": true,
+      "eval_windows_run_leg": {
+        "max_dd_pct": -10.28,
+        "return_pct": -7.94,
+        "sharpe": -1.397,
+        "trades": 27
+      },
+      "max_abs_position_pnl_diff_usd": 0.004923628481170894,
+      "note": "eval_windows sums the cent-rounded trade pnl of results['trades']; the study sums the unrounded engine trade objects, so each close record may differ by at most half a cent",
+      "ok": true,
+      "positions": 21,
+      "study_runner": {
+        "max_dd_pct": -10.28,
+        "return_pct": -7.94,
+        "sharpe": -1.397,
+        "trades": 27
+      }
+    },
+    "stale_lock_and_cache": {
+      "cache_fingerprint_changes_with_arm": true,
+      "lock_mismatches_found": [
+        "not evaluated: lock inputs absent"
+      ],
+      "ok": true
+    },
+    "verdict_rules": {
+      "cases": {
+        "changed_shortlist_refused": "refused: b2: selection ['paired_b2_w150', 'paired_b2_w125', 'paired_b2_w175'] breaks the frozen rule",
+        "continuous_gate_fails": {
+          "expected": "negative",
+          "got": "negative",
+          "repeat_equal": true
+        },
+        "failed_stress": {
+          "expected": "negative",
+          "got": "negative",
+          "repeat_equal": true
+        },
+        "harmed_dataset": {
+          "expected": "negative",
+          "got": "negative",
+          "repeat_equal": true
+        },
+        "insufficient_samples": {
+          "expected": "inconclusive",
+          "got": "inconclusive",
+          "repeat_equal": true
+        },
+        "low_match_coverage": {
+          "expected": "inconclusive",
+          "got": "inconclusive",
+          "repeat_equal": true
+        },
+        "negative": {
+          "expected": "negative",
+          "got": "negative",
+          "repeat_equal": true
+        },
+        "positive": {
+          "expected": "positive",
+          "got": "positive",
+          "repeat_equal": true
+        }
+      },
+      "ok": true
+    }
+  },
+  "code_sha256": {
+    "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+    "backtest/candidates/mean_reversion_exit_2018/run_study.py": "dd81f0c59572448f4cf7a24f8b58e1b366f0fb8030aadee2be840c2c9b537ea8",
+    "backtest/eval_windows.py": "44979406e09e40cb297fe6cd604b6f5e583c90baa0647d9fade5b4c1b032391d",
+    "backtest/exit_diagnostics.py": "356816f00a97f03cf397bd8a00638b6868cebc9a8dc1462fb5620cffc0ef67b6",
+    "backtest/exit_policy_ab.py": "2e50cf54d5343ef880059bd17cca8d9159774aedb6086ae03bce28475a4c1297",
+    "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+    "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+    "backtest/run_backtest.py": "40fd710f963da46374376e76bd77fb04a3372e8f8d188da56402d0ff5e208e6c",
+    "backtest/tune_live.py": "36a722b6bbfa1629a7157827cd9ecc1221dedc0af62c745f2e5e01333c7666c9",
+    "shared_strategies/close/_helpers.py": "cb71161b610d3fb556c7cb3b929b3c69f8cd8051b8430c900a7abd91a0bda111",
+    "shared_strategies/close/post_tp_sl.py": "bbe65eb979cfbca6e25910acc27a769f911169bdf7ede33c4ccfa78608441dbd",
+    "shared_strategies/close/regime_atr.py": "de7253b6e5634477337543894124f61e3d39154db6e4ac1a11be34cd13175c58",
+    "shared_strategies/close/registry.py": "063f13ac07fedc116733ffb34fa7cd3330ed700082433ed48785bf6db3cb405b",
+    "shared_strategies/close/tiered_tp_atr.py": "20155919267330f06d1e6d95034fd5b5a02888aa6d846fada0b999750688485c",
+    "shared_strategies/close/tiered_tp_atr_regime.py": "a173a84c2f58db71de8ee07da57604d31541c3af5b2cc3d3a3993f92306de7f2",
+    "shared_strategies/close/trailing_tp_ratchet.py": "08e0151276fce1b7a79be21660a6d56d50ec7b852d3666389e3bfc8502d7f90f",
+    "shared_strategies/open/adx_trend.py": "9ed424ddbeec3471e0b3725ba54938bc38e88689e6b70da41d87f063f951bc17",
+    "shared_strategies/open/indicators_core.py": "6b2770a42821fb0b5d7499e5f19857746ef6598f4b1d70c35505d776b18a704a",
+    "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+    "shared_tools/atr.py": "496a4f41f1c0509795b1a96446e56f0da85099eafcc293f2a8045b16a3dd9283",
+    "shared_tools/closed_bar.py": "75d49989e9d1301d4f9d9291ef25de488b088a8b5b3f899fe8f230a78c22c339",
+    "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+    "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae"
+  },
+  "failures": [],
+  "measured_at_utc": "2026-11-14T18:14:10Z",
+  "network_probe": {
+    "cache_load": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "socket_connect": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "venue_fetch": "refused: mean_reversion_exit_2018 scoring: network access is blocked"
+  },
+  "ok": true,
+  "protocol_sha256": "3247b07ccc23d7e8992376e71ce2be6f7c9ffb60bcad96ce6c06083d0870f7ca",
+  "source_commit": "ab5214ca216e5923a3f8f5c104e161fca4d41033",
+  "window": "parity"
+}

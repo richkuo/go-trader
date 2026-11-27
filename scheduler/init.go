@@ -117,6 +117,8 @@ var knownShortNames = map[string]string{
 	"vortex_trend":                 "vortex",
 	"williams_r_reversal":          "wrr",
 	"ultimate_oscillator":          "uo",
+	"volume_spike_breakout":        "vsbo",
+	"inversion_fvg":                "invfvg",
 	"hold":                         "hold",
 
 	"cumulative_volume_delta_divergence": "cvddiv",
@@ -126,6 +128,7 @@ var knownShortNames = map[string]string{
 	"perpetual_premium_reversion":        "premrev",
 	"order_book_imbalance":               "obimb",
 	"inventory_market_making":            "invmm",
+	"sweep_absorption_ifvg":              "sweepabs",
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
@@ -202,6 +205,8 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"triple_ema_bidir":             {"futures"},
 	"ultimate_oscillator":          {"futures"},
 	"vol_momentum":                 {"spot", "futures"},
+	"volume_spike_breakout":        {"spot", "futures"},
+	"inversion_fvg":                {"spot", "futures"},
 	"volume_weighted":              {"spot", "futures"},
 	"vortex_trend":                 {"futures"},
 	"vwap_rejection_st":            {"futures"},
@@ -215,6 +220,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"perpetual_premium_reversion":        {"futures"},
 	"order_book_imbalance":               {"futures"},
 	"inventory_market_making":            {"futures"},
+	"sweep_absorption_ifvg":              {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
@@ -278,6 +284,8 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"elder_force_pullback":         true,
 	"true_strength_index":          true,
 	"klinger_divergence":           true,
+	"volume_spike_breakout":        true,
+	"inversion_fvg":                true,
 
 	"cumulative_volume_delta_divergence": true,
 	"macro_event_breakout":               true,
@@ -285,6 +293,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"volume_profile_reclaim":             true,
 	"perpetual_premium_reversion":        true,
 	"order_book_imbalance":               true,
+	"sweep_absorption_ifvg":              true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -1941,7 +1950,7 @@ func runInit(args []string) int {
 
 	fmt.Printf("\nConfig written to %s\n", outputPath)
 	fmt.Println("Next steps:")
-	fmt.Println("  To enable Discord/Telegram notifications, edit the config or ask OpenClaw.")
+	fmt.Println("  To enable Discord/Telegram notifications, edit the config or ask your AI agent.")
 	if inContainerRuntime() {
 		fmt.Printf("  docker compose run --rm cli probe --config %s\n", outputPath)
 		fmt.Println("  docker compose up -d")

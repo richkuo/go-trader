@@ -3,7 +3,7 @@ package main
 import "time"
 
 const (
-	strategyDrawdownFastIntervalSeconds = 90
+	strategyDrawdownFastIntervalSeconds = 75
 	defaultDrawdownWarnThresholdPct     = 80
 )
 

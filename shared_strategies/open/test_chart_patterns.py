@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from shared_strategies.open.conftest import load_module, make_ohlcv
+from shared_strategies.open.conftest import load_module
 
 _CHART_PATTERNS = load_module("_chart_patterns_test", __file__.replace("test_chart_patterns.py", "chart_patterns.py"))
 PatternMatch = _CHART_PATTERNS.PatternMatch
@@ -24,62 +24,35 @@ _get_swing_indices = _CHART_PATTERNS._get_swing_indices
 _htf_gate_trend = _CHART_PATTERNS._htf_gate_trend
 
 
-class TestDoubleBottom:
-    def test_detects_double_bottom(self):
-        prices = (
-            list(np.linspace(100, 80, 20)) +
-            list(np.linspace(80, 90, 15)) +
-            list(np.linspace(90, 81, 15)) +
-            list(np.linspace(81, 100, 20)) +
-            [100] * 30
-        )
-        df = make_ohlcv(prices)
-        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
-        matches = detect_double_bottom(
-            df["high"], df["low"], df["close"], sh, sl, tolerance=0.03
-        )
-        assert len(matches) >= 1
-        assert matches[0].signal == 1
-
-
-def _double_top_fixture(prefix=None):
-    prices = (
-        list(np.linspace(80, 100, 20)) +
-        list(np.linspace(100, 90, 15)) +
-        list(np.linspace(90, 99, 15)) +
-        list(np.linspace(99, 85, 20)) +
-        [85] * 30
+def _gate_frame(n, offset):
+    start = pd.Timestamp("2024-01-01", tz="UTC") + pd.Timedelta(hours=offset)
+    close = 100 + np.cumsum(np.random.default_rng(offset).normal(0, 1, n))
+    return pd.DataFrame(
+        {"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 100.0},
+        index=pd.date_range(start, periods=n, freq="1h"),
     )
-    if prefix is not None:
-        prices = list(prefix) + prices
-    vol = [100.0] * len(prices)
-    off = len(prefix) if prefix is not None else 0
-    for i in range(off + 50, off + 70):
-        vol[i] = 200.0
-    return make_ohlcv(prices, volume=vol)
 
 
-class TestHTFGate:
-    def test_gated_signal_independent_of_future_bars(self):
-        df = _double_top_fixture(prefix=np.linspace(20, 80, 400))
-        df.index = pd.date_range("2024-01-01", periods=len(df), freq="1h")
-        kwargs = dict(
-            pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
-            htf_gate_factor=4, htf_gate_ema_fast=10, htf_gate_ema_slow=20,
-        )
-        full = chart_pattern_core(df, **kwargs)
-        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03,
-                                  vol_multiplier=1.0)
-        signal_bars = list(np.where(base["signal"].values != 0)[0])
-        assert len(signal_bars) >= 1
-        for k in signal_bars:
-            partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
-            assert partial["signal"].iloc[k] == full["signal"].iloc[k], (
-                f"gated signal at bar {k} flipped under truncation"
-            )
-        k = signal_bars[-1]
-        partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
-        assert (
-            partial["htf_gate_trend"].values
-            == full["htf_gate_trend"].values[: k + 1]
-        ).all()
+class TestHTFGateWarmBoundary:
+    def test_min_visible_buckets_and_refusal_boundary_over_every_start_offset(self):
+        for factor, ema_slow in ((4, 40), (4, 49), (4, 50), (5, 40), (6, 40)):
+            boundary = factor * (ema_slow + 1)
+            for frame in (150, 200, boundary - 1, boundary):
+                visible, warm = [], []
+                for offset in range(factor):
+                    out = chart_pattern_core(
+                        _gate_frame(frame, offset),
+                        htf_gate_factor=factor,
+                        htf_gate_ema_slow=ema_slow,
+                    )
+                    last = out.iloc[-1]
+                    assert int(last["htf_gate_candles"]) == frame
+                    assert int(last["htf_gate_min_candles"]) == boundary
+                    assert int(last["htf_gate_warm"]) == int(last["htf_gate_buckets"] > ema_slow)
+                    if not last["htf_gate_warm"]:
+                        assert (out["htf_gate_trend"].iloc[-factor:] == 0).all()
+                    visible.append(int(last["htf_gate_buckets"]))
+                    warm.append(bool(last["htf_gate_warm"]))
+                assert min(visible) == frame // factor, (factor, ema_slow, frame, visible)
+                assert all(warm) == (frame // factor > ema_slow), (factor, ema_slow, frame)
+                assert all(warm) == (frame >= boundary), (factor, ema_slow, frame)

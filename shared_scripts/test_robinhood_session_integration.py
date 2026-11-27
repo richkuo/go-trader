@@ -132,7 +132,8 @@ def _run(box, argv, stdin_text=None, umask=None, **env_kwargs):
         timeout=120,
         **kwargs,
     )
-    proc.elapsed = time.monotonic() - started
+    proc.finished = time.monotonic()
+    proc.elapsed = proc.finished - started
     return proc
 
 
@@ -243,11 +244,11 @@ def test_an_open_folder_mode_is_tightened_to_owner_only(tmp_path):
 def test_device_verification_fails_fast_and_latches_until_the_bootstrap(tmp_path):
     box = Box(tmp_path)
     box.set_routes({"POST " + TOKEN_URL: [VERIFICATION]})
-    started = time.monotonic()
+    ready = box.root / "stub-ready"
     proc = subprocess.Popen(
         [sys.executable, str(SCRIPTS / FETCH[0])],
         cwd=str(REPO_ROOT),
-        env=box.env(),
+        env=box.env(extra={"RH_OFFLINE_STUB_READY": str(ready)}),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -259,12 +260,12 @@ def test_device_verification_fails_fast_and_latches_until_the_bootstrap(tmp_path
         if proc.poll() is None:
             proc.kill()
         proc.stdin.close()
-    elapsed = time.monotonic() - started
+    finished = time.monotonic()
     first = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     first_made = box.requests()
     detail = _detail(first, box)
     assert first.returncode == 1, detail
-    assert elapsed < 5, detail
+    assert finished - float(ready.read_text()) < 5, detail
     doc = _doc(first)
     assert doc["error"].startswith(LOGIN_FAILED) and BOOTSTRAP in doc["error"], detail
     assert BOOTSTRAP in first.stderr, detail
@@ -596,10 +597,12 @@ def test_a_stalled_lock_holder_is_bounded_by_its_budget(tmp_path):
     box = Box(tmp_path)
     box.seed_session()
     box.set_routes({"GET " + POSITIONS_CHECK: [dict(EMPTY_PAGE, sleep_s=10)]})
-    first = _run(box, ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--budget-ms=3000", "--expected-account-id=acct-1"])
+    ready = box.root / "stub-ready"
+    first = _run(box, ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--budget-ms=3000", "--expected-account-id=acct-1"],
+                 extra={"RH_OFFLINE_STUB_READY": str(ready)})
     detail = _detail(first, box)
     assert first.returncode == 1, detail
-    assert first.elapsed < 5, detail
+    assert first.finished - float(ready.read_text()) < 5, detail
     assert _doc(first)["error"].startswith(LOGIN_FAILED), detail
     assert _token_posts(box.requests()) == [], detail
 

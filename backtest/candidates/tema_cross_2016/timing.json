@@ -1,0 +1,75 @@
+{
+  "dataset": "BTC 1h",
+  "effective_range": {
+    "frame_bars": 7931,
+    "scored_bars": 4920,
+    "scored_first_bar": "2025-06-10 00:00:00",
+    "scored_last_bar": "2025-12-31 23:00:00",
+    "warmup_first_bar": "2025-02-04 13:00:00"
+  },
+  "frame": "paper",
+  "label_calls": [
+    {
+      "bars": 7931,
+      "seconds": 462.8988301753998,
+      "windows": [
+        "composite_medium",
+        "medium"
+      ]
+    }
+  ],
+  "label_seconds": 462.9,
+  "legs": {
+    "cached_control": {
+      "seconds": 0.7,
+      "trades": 72
+    },
+    "cached_gross": {
+      "seconds": 0.7,
+      "trades": 72
+    },
+    "cached_htf": {
+      "seconds": 0.7,
+      "trades": 55
+    },
+    "cached_stress": {
+      "seconds": 0.6,
+      "trades": 69
+    },
+    "cold_control": {
+      "seconds": 463.6,
+      "trades": 72
+    }
+  },
+  "machine": {
+    "cpus": 10,
+    "load_avg": [
+      3.84716796875,
+      4.46826171875,
+      4.45849609375
+    ]
+  },
+  "measured_at_utc": "2026-11-11T06:32:04Z",
+  "note": "label window-bars count each distinct (frame, group, dataset, window) frame once, in the first stage that labels it, per label window that any of its arms reads; venue and bridge frames are approximated from the manifest spans; the judge stage adds label windows only for shortlisted gate arms on a new window",
+  "projected_process_hours_total": 19.1,
+  "seconds_per_window_bar": 0.02918,
+  "stages": {
+    "fidelity_composite_rows": {
+      "label_window_bars": 368280,
+      "process_hours": 3.0
+    },
+    "judge_baselines": {
+      "label_window_bars": 721606,
+      "process_hours": 5.8
+    },
+    "noise_gate": {
+      "label_window_bars": 903288,
+      "process_hours": 7.3
+    },
+    "select": {
+      "label_window_bars": 371347,
+      "process_hours": 3.0
+    }
+  },
+  "window": "is"
+}

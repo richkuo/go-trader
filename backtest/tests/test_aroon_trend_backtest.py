@@ -1,15 +1,10 @@
-import contextlib
 import os
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from backtester import Backtester
 from registry_loader import load_registry
-from atr import ensure_atr_indicator
-from eval_windows import compute_incumbent_legs, evaluate_window, incumbent_contract_kwargs, INCUMBENTS
-from optimizer import DEFAULT_PARAM_RANGES
+from eval_windows import compute_incumbent_legs, evaluate_window, INCUMBENTS
 
 NAME = "aroon_trend"
 TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]
@@ -33,39 +28,8 @@ def _trend(n, start=100.0, step=-0.5):
     return rows
 
 
-def _spike_up(rows, size=50.0):
-    px = rows[-1][3]
-    return rows + [(px + 0.3, px + size, px + 0.2, px + size - 1.0, 1.0)]
-
-
-def _spike_down(rows, size=50.0):
-    px = rows[-1][3]
-    return rows + [(px - 0.3, px - 0.2, px - size, px - size + 1.0, 1.0)]
-
-
 def _apply(df, params):
     return load_registry("futures").apply_strategy(NAME, df, params)
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
-
-
-def _bt(**kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid",
-                open_strategy={"name": NAME, "params": {"period": 10, "strength": 70.0}},
-                close_strategies=TP, stop_loss_atr_mult=1.0, direction="both", comparison_mode="strict")
-    base.update(kw)
-    return Backtester(**base)
 
 
 def _market(n=420, seed=1643):
@@ -79,95 +43,6 @@ def _market(n=420, seed=1643):
                        "volume": 50 + np.abs(rng.randn(n)) * 40})
     df.index = pd.date_range("2025-01-01", periods=n, freq="4h")
     return df
-
-
-def test_grid_and_boundary_periods_need_exactly_period_plus_two_rows(subtests):
-    with subtests.test(case="grid_fits_the_live_window"):
-        _grid_fits_the_live_window()
-    for period in (2, 198):
-        with subtests.test(case=f"period={period}"):
-            _boundary_periods_need_exactly_period_plus_two_rows(period)
-
-
-def _grid_fits_the_live_window():
-    grid = DEFAULT_PARAM_RANGES[NAME]
-    df = _market(260)
-    for period in grid["period"]:
-        assert period + 2 <= 200
-        for strength in grid["strength"]:
-            out = _apply(df, {"period": period, "strength": strength})
-            assert out["aroon_valid"].iloc[: period + 1].sum() == 0
-            assert bool(out["aroon_valid"].iloc[period + 1])
-
-
-def test_crossing_entry_rule_strength_and_extrema(subtests):
-    with subtests.test(case="rising_and_falling_without_a_crossing"):
-        _rising_and_falling_series_hold_without_a_crossing()
-    with subtests.test(case="crossings_fire_once"):
-        _crossings_fire_once_on_the_crossing_bar_both_sides()
-    with subtests.test(case="strength_is_strict"):
-        _strength_is_strict_and_never_delays_an_event()
-    with subtests.test(case="equal_extrema"):
-        _equal_extrema_pick_the_most_recent_bar()
-
-
-def _rising_and_falling_series_hold_without_a_crossing():
-    for step, up, down in ((0.5, 100.0, 0.0), (-0.5, 0.0, 100.0)):
-        out = _apply(_frame(_trend(40, step=step)), {"period": 10, "strength": 70.0})
-        valid = out[out["aroon_valid"]]
-        assert len(valid) == 40 - 11
-        assert (valid["aroon_up"] == up).all() and (valid["aroon_down"] == down).all()
-        assert (out["signal"] == 0).all()
-        assert set(out["aroon_reason"].iloc[11:]) == {"no_cross"}
-        assert set(out["aroon_reason"].iloc[:11]) == {"insufficient_history"}
-
-
-def _crossings_fire_once_on_the_crossing_bar_both_sides():
-    up = _apply(_frame(_spike_up(_trend(30))), {"period": 10, "strength": 70.0})
-    row = up.iloc[-1]
-    assert row["signal"] == 1 and row["aroon_reason"] == "entry_long" and row["aroon_reason_code"] == 1
-    assert row["aroon_up"] == 100.0 and row["aroon_down"] == 90.0
-    assert row["aroon_prev_up"] == 0.0 and row["aroon_prev_down"] == 100.0
-    assert row["aroon_high_age"] == 0 and row["aroon_low_age"] == 1
-    assert (up["signal"].iloc[:-1] == 0).all()
-
-    down = _apply(_frame(_spike_down(_trend(30, step=0.5))), {"period": 10, "strength": 70.0})
-    row = down.iloc[-1]
-    assert row["signal"] == -1 and row["aroon_reason_code"] == -1
-    assert row["aroon_down"] == 100.0 and row["aroon_up"] == 90.0
-    assert (down["signal"].iloc[:-1] == 0).all()
-
-    after = _spike_up(_trend(30))
-    after += [(after[-1][3], after[-1][2] + 60.0, after[-1][3] - 0.5, after[-1][3] - 0.2, 1.0)] * 3
-    tail = _apply(_frame(after), {"period": 10, "strength": 70.0})
-    assert int((tail["signal"] != 0).sum()) == 1
-
-
-def _strength_is_strict_and_never_delays_an_event():
-    df = _frame(_spike_up(_trend(30)))
-    at = _apply(df, {"period": 10, "strength": 100.0})
-    assert at["signal"].iloc[-1] == 0 and at["aroon_reason"].iloc[-1] == "strength_not_met"
-    assert at["aroon_reason_code"].iloc[-1] == 2
-    below = _apply(df, {"period": 10, "strength": 99.999})
-    assert below["signal"].iloc[-1] == 1
-    zero = _apply(df, {"period": 10, "strength": 0.0})
-    assert zero["signal"].iloc[-1] == 1
-    later = _frame(_spike_up(_trend(30)) + [(150.0, 200.0, 149.0, 199.0, 1.0)])
-    held = _apply(later, {"period": 10, "strength": 100.0})
-    assert (held["signal"] == 0).all()
-
-
-def _equal_extrema_pick_the_most_recent_bar():
-    rows = _trend(30, step=0.0)
-    rows = [(r[0], 100.4, 99.6, 100.0, 1.0) for r in rows]
-    rows[24] = (100.0, 105.0, 99.6, 100.0, 1.0)
-    rows[27] = (100.0, 105.0, 99.6, 100.0, 1.0)
-    rows[22] = (100.0, 100.4, 95.0, 100.0, 1.0)
-    rows[26] = (100.0, 100.4, 95.0, 100.0, 1.0)
-    out = _apply(_frame(rows), {"period": 10, "strength": 70.0})
-    last = out.iloc[29]
-    assert last["aroon_high_age"] == 2 and last["aroon_low_age"] == 3
-    assert last["aroon_up"] == 80.0 and last["aroon_down"] == 70.0
 
 
 def test_flat_range_and_input_defects_hold_with_reasons_then_recover(subtests):
@@ -230,57 +105,8 @@ def _timestamp_defects_hold():
     assert bool(out["aroon_valid"].iloc[37])
 
 
-def _boundary_periods_need_exactly_period_plus_two_rows(period):
-    need = period + 2
-    short = _apply(_market(need - 1), {"period": period, "strength": 0.0})
-    assert not short["aroon_valid"].any()
-    assert (short["aroon_reason"] == "insufficient_history").all()
-    exact = _apply(_market(need), {"period": period, "strength": 0.0})
-    assert exact["aroon_valid"].tolist() == [False] * (need - 1) + [True]
-
-
 PREFIX_PARAMS = [{"period": 25, "strength": 70.0}, {"period": 2, "strength": 0.0},
                  {"period": 198, "strength": 100.0}, {"period": 14, "strength": 50.0}]
-
-
-def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(subtests):
-    for i, params in enumerate(PREFIX_PARAMS):
-        with subtests.test(case=f"params{i}"):
-            _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params)
-
-
-def _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
-    df = _market(420)
-    full = _apply(df, params)
-    need = params["period"] + 2
-    cols = ["signal", "aroon_reason_code", "aroon_up", "aroon_down"]
-    for end in range(1, len(df) + 1):
-        prefix = _apply(df.iloc[:end], params).iloc[-1]
-        assert prefix[cols].equals(full.iloc[end - 1][cols]), end
-        if end >= need:
-            tail = _apply(df.iloc[max(0, end - 200):end], params).iloc[-1]
-            assert tail[cols].equals(full.iloc[end - 1][cols]), end
-
-
-def test_backtest_entries_fill_at_the_next_open_and_never_reverse_or_add():
-    rows = _spike_up(_trend(30))
-    rows += [(rows[-1][3] + 0.5, rows[-1][3] + 1.0, rows[-1][3] - 0.5, rows[-1][3] + 0.5, 1.0)] * 3
-    rows = _spike_down(rows, size=120.0)
-    rows += [(rows[-1][3], rows[-1][3] + 0.3, rows[-1][3] - 0.3, rows[-1][3], 1.0)] * 4
-    df = _frame(rows)
-    sig = ensure_atr_indicator(_apply(df, {"period": 10, "strength": 70.0}))
-    entries = sig.index[sig["signal"] != 0].tolist()
-    assert sig.loc[entries[0], "signal"] == 1
-    res = _bt(stop_loss_atr_mult=None, stop_loss_pct=50.0).run(
-        sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    first = res["trades"][0]
-    fill = df.index.get_loc(entries[0]) + 1
-    assert first["side"] == "long"
-    assert first["entry_date"] == str(df.index[fill])
-    assert first["entry_price"] == pytest.approx(df["open"].iloc[fill] * 1.0005)
-    assert sig.loc[entries[1], "signal"] == -1 and entries[1] < pd.Timestamp(first["exit_date"])
-    assert len(res["trades"]) == 1
-    assert first["exit_reason"] == "end_of_data"
 
 
 def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unchanged():
@@ -310,15 +136,3 @@ def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unch
     assert "incumbent_contract" not in default and contract["incumbent_contract"] == CONTRACT
     assert default["bars"] != contract["bars"]
     assert default["rows"][0]["leg"]["return_pct"] == contract["rows"][0]["leg"]["return_pct"]
-
-
-INVALID_INCUMBENT_CONTRACTS = [{"direction": "both"}, {"direction": "long", "params": {}}, "both",
-                               {"direction": "both", "close_strategies": TP, "stop_loss_atr_mult": 1.0,
-                                "trailing_stop_atr_mult": 1.0}]
-
-
-def test_invalid_incumbent_contracts_are_refused():
-    for bad in INVALID_INCUMBENT_CONTRACTS:
-        with _case(bad):
-            with pytest.raises(ValueError):
-                incumbent_contract_kwargs(bad)

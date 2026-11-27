@@ -237,6 +237,10 @@ say "read-only utilities beside the service, singleton refusals"
 cli inspect --config /data/config.json --all >/dev/null || fail "inspect beside the service failed"
 cli storage-inspect --config /data/config.json >/dev/null || fail "storage-inspect beside the service failed"
 cli probe --config /data/config.json >/dev/null || fail "probe beside the service failed"
+cli_sh "/app/.venv/bin/python3 -c 'import json; d = json.load(open(\"/data/config.json\")); d[\"market_feed\"] = \"websocket\"; d[\"market_feed_weight_budget\"] = {\"weight_per_minute\": 200, \"weight_startup\": 100, \"weight_reserve\": 100}; json.dump(d, open(\"/tmp/fw.json\", \"w\"))' && /app/go-trader probe --config /tmp/fw.json --deployment-config /data/config.json" >"$work/fw-probe.out" 2>&1 \
+    || { cat "$work/fw-probe.out" >&2; fail "probe of an embedded weight participant failed"; }
+grep -q "directory=/data/feed-weight" "$work/fw-probe.out" || { cat "$work/fw-probe.out" >&2; fail "the container probe does not name /data/feed-weight as the shared weight directory"; }
+cli_sh "test ! -e /data/feed-weight" || fail "the read-only probe created /data/feed-weight"
 set +e
 start=$SECONDS
 cli --config /data/config.json --once >"$work/once-busy.out" 2>&1
@@ -257,7 +261,7 @@ docker exec "$second" /app/go-trader healthcheck >/dev/null 2>&1 && fail "held c
 docker stop -t 10 "$second" >/dev/null
 [[ "$(docker inspect -f '{{.State.ExitCode}}' "$second")" == "79" ]] || fail "held second daemon did not exit 79 on stop"
 docker rm -f "$second" >/dev/null
-ok "inspect, storage-inspect and probe run beside the service; --once returns 79; a second daemon holds with one CRITICAL line and stops"
+ok "inspect, storage-inspect and probe run beside the service; the probe of a weight participant forecasts /data/feed-weight without creating it; --once returns 79; a second daemon holds with one CRITICAL line and stops"
 
 say "hot reload through SIGHUP"
 (cd "$work" && compose cp go-trader:/data/config.json ./config.json >/dev/null)
@@ -415,7 +419,8 @@ else
 fi
 
 say "stopped backup and restore"
-cli_sh 'cd /data && find . -type f | LC_ALL=C sort | xargs sha256sum' >"$work/before.sums"
+data_sums='cd /data && find . -path ./feed-weight -prune -o -type f -print | LC_ALL=C sort | xargs sha256sum'
+cli_sh "$data_sums" >"$work/before.sums"
 mkdir -p "$work/backups/b1"
 compose cp go-trader:/data "$work/backups/b1/data" >/dev/null
 cli version --json >"$work/backups/b1/image.json"
@@ -425,11 +430,12 @@ documented_restore() {
     compose stop >/dev/null 2>&1 || fail "$label: docker compose stop failed"
     compose ps -a >/dev/null || fail "$label: docker compose ps -a failed"
     compose create go-trader >/dev/null 2>&1 || fail "$label: docker compose create go-trader failed"
-    compose run --rm -T --entrypoint find cli /data -mindepth 1 -delete || fail "$label: emptying the data volume failed"
+    compose run --rm -T --entrypoint sh cli -c 'set -e; if [ ! -d /data/.feed-weight-current ] && [ -d /data/feed-weight ]; then mv /data/feed-weight /data/.feed-weight-current; fi; find /data -mindepth 1 -maxdepth 1 ! -name .feed-weight-current -exec rm -rf {} +' || fail "$label: emptying the data volume failed"
     compose cp "$work/backups/b1/data/." go-trader:/data >/dev/null || fail "$label: copying the backup in failed"
+    compose run --rm -T --entrypoint sh cli -c 'set -e; if [ -d /data/.feed-weight-current ]; then rm -rf /data/feed-weight; mv /data/.feed-weight-current /data/feed-weight; elif [ -d /data/feed-weight ]; then rm -f /data/feed-weight/authority.json; fi' || fail "$label: restoring the feed weight record failed"
     compose run --rm -T --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data || fail "$label: chown failed"
     cli probe --config /data/config.json >/dev/null 2>&1 || fail "$label: probe of the restored config failed"
-    cli_sh 'cd /data && find . -type f | LC_ALL=C sort | xargs sha256sum' >"$work/after.sums"
+    cli_sh "$data_sums" >"$work/after.sums"
     diff -u "$work/before.sums" "$work/after.sums" || fail "$label: restore did not reproduce the backed-up files"
     [[ "$(cli_sh 'stat -c %a /data' | tr -d '\r')" == "700" ]] || fail "$label: restored /data is not mode 0700"
     [[ "$(cli_sh 'find /data ! -user 10001 | wc -l' | tr -d ' \r')" == "0" ]] || fail "$label: restored files are not owned by uid 10001"
@@ -438,7 +444,11 @@ documented_restore() {
 }
 edit_config interval_seconds=900
 cli_sh 'echo later >/data/later.txt'
+held_policy='{"version":2,"key":"00000000000000000000000000000001","committed":{"weight_per_minute":0,"weight_startup":0,"weight_reserve":200},"tx":"fixture"}'
+cli_sh "mkdir -p /data/feed-weight/policies && chmod 700 /data/feed-weight /data/feed-weight/policies && printf '%s' '$held_policy' >/data/feed-weight/policies/00000000000000000000000000000001.json && echo '{\"version\":2}' >/data/feed-weight/authority.json"
 documented_restore "stopped container"
+[[ "$(cli_sh 'cat /data/feed-weight/policies/00000000000000000000000000000001.json' | tr -d '\r')" == "$held_policy" ]] || fail "an in-place restore lost the current feed weight policy evidence"
+cli_sh 'test -f /data/feed-weight/authority.json && test ! -e /data/.feed-weight-current' || fail "an in-place restore did not put the current feed weight record back"
 edit_config interval_seconds=900
 cli_sh 'echo later >/data/later.txt'
 compose down >/dev/null 2>&1

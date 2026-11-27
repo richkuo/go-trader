@@ -429,6 +429,7 @@ func bllOwner(t *testing.T, req feedRequirements, now time.Time) *marketFeedOwne
 			}
 		}
 		mergeRestRows(st, rows, now.Add(-time.Second))
+		st.historyLookback = lookback
 		st.Status = feedStatusReady
 		st.LastRecvAt = now
 		owner.keys[key] = st
@@ -518,6 +519,7 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 		name:                              ref,
 		perpetualPremiumStrategyName:      "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
 		inventoryMarketMakingStrategyName: "backtest/candidates/inventory_market_making_1636/REPORT.md",
+		sweepAbsorptionStrategyName:       "backtest/candidates/sweep_absorption_ifvg_2010/REPORT.md",
 	}
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)

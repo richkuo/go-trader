@@ -18,7 +18,7 @@ import (
 func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := OpenStateDB(dbPath)
+	db, err := openStateDBFromTemplate(dbPath)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
@@ -96,10 +96,10 @@ func confirmNonceFor(t *testing.T, ss *StatusServer, action, id, params string) 
 }
 
 type tradeStubs struct {
-	updateSL       func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
-	execute        func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	updateSL       func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
+	execute        func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
 	closer         HyperliquidLiveCloser
-	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	cancelOrder    func(auth hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchPositions func(accountAddress string) ([]HLPosition, error)
 	syncProtection func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error)
 }
@@ -114,7 +114,7 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		if stubs.cancelOrder != nil {
 			d.cancelOrder = stubs.cancelOrder
 		} else {
-			d.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+			d.cancelOrder = func(_ hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 				t.Error("cancelOrder must not be called")
 				return nil, "", fmt.Errorf("stub")
 			}
@@ -122,7 +122,7 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		if stubs.updateSL != nil {
 			d.updateSL = stubs.updateSL
 		} else {
-			d.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			d.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				t.Error("updateSL must not be called")
 				return nil, "", fmt.Errorf("stub")
 			}
@@ -130,7 +130,7 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		if stubs.execute != nil {
 			d.execute = stubs.execute
 		} else {
-			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			d.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				t.Error("execute must not be called")
 				return nil, "", fmt.Errorf("stub")
 			}
@@ -153,7 +153,7 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		if stubs.closer != nil {
 			d.closer = stubs.closer
 		} else {
-			d.closer = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+			d.closer = func(_ hlWriteAuth, symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 				t.Error("closer must not be called")
 				return nil, fmt.Errorf("stub")
 			}
@@ -284,7 +284,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 		stubs.fetchPositions = func(string) ([]HLPosition, error) {
 			return []HLPosition{{Coin: "ETH", Size: 100}}, nil
 		}
-		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		stubs.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			if cancelOID != 111 {
 				t.Errorf("cancelOID = %d, want 111 (cancel-then-queue)", cancelOID)
 			}
@@ -295,7 +295,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 			t.Fatalf("SaveState: %v", err)
 		}
 		cliDeps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-		cliDeps.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		cliDeps.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
 		}
 		cliDeps.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
@@ -352,7 +352,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 	t.Run("UICloseQueuesFromStubbedFill", func(t *testing.T) {
 		ss, db, _ := newTradeActionTestServer(t)
 		stubs := stubTradeDeps(t, ss)
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			if side != "sell" || size != 0.4 {
 				t.Errorf("close exec side=%s size=%.4f, want sell 0.4", side, size)
 			}
@@ -388,7 +388,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 	t.Run("UIAddQueuesAndGuardsPending", func(t *testing.T) {
 		ss, db, _ := newTradeActionTestServer(t)
 		stubs := stubTradeDeps(t, ss)
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return &HyperliquidExecuteResult{
 				Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2050, TotalSz: 0.05, OID: 556, Fee: 0.4}},
 			}, "", nil
@@ -408,7 +408,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 			t.Fatal("position mutated before drain")
 		}
 
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			t.Error("execute must not be called for a guarded add retry")
 			return nil, "", fmt.Errorf("stub")
 		}
@@ -422,7 +422,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 	t.Run("UICancelSLQueuesAndErrors", func(t *testing.T) {
 		ss, db, _ := newTradeActionTestServer(t)
 		stubs := stubTradeDeps(t, ss)
-		stubs.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		stubs.cancelOrder = func(_ hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			if oid != 111 {
 				t.Errorf("cancel oid = %d, want 111", oid)
 			}
@@ -445,7 +445,7 @@ func TestUITradeActionQueueing(t *testing.T) {
 
 		clearPendingManualActions(t, db)
 		ss.state.Strategies["hl-manual-eth"].Positions["ETH"].StopLossOID = 0
-		stubs.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		stubs.cancelOrder = func(_ hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			t.Error("cancelOrder must not be called with no resting SL")
 			return nil, "", fmt.Errorf("stub")
 		}
@@ -466,7 +466,7 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 		ss, db, _ := newTradeActionTestServer(t)
 		stubs := stubTradeDeps(t, ss)
 		closerCalled := false
-		stubs.closer = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		stubs.closer = func(_ hlWriteAuth, symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 			closerCalled = true
 			return nil, fmt.Errorf("must not run")
 		}
@@ -548,7 +548,7 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 		if err := db.DeletePendingManualActionsByID([]int64{rows[len(rows)-1].ID}); err != nil {
 			t.Fatalf("delete pending: %v", err)
 		}
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			if side != "buy" {
 				t.Errorf("open exec side = %s, want buy", side)
 			}
@@ -556,7 +556,7 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 				Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.05, OID: 555, Fee: 0.5}},
 			}, "", nil
 		}
-		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		stubs.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, "", nil
 		}
 		nonce = confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
@@ -611,7 +611,7 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 		}
 
 		clearPendingManualActions(t, db)
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return &HyperliquidExecuteResult{
 				Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: 0.4, OID: 4243, Fee: 1.5}},
 			}, "", nil
@@ -632,14 +632,14 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 		delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
 
 		var execCalls int32
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			atomic.AddInt32(&execCalls, 1)
 			time.Sleep(20 * time.Millisecond)
 			return &HyperliquidExecuteResult{
 				Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.05, OID: 557, Fee: 0.5}},
 			}, "", nil
 		}
-		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		stubs.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 998, StopLossTriggerPx: 1900}, "", nil
 		}
 
@@ -749,7 +749,7 @@ func TestUITradeActionPendingGuards(t *testing.T) {
 		}
 
 		clearPendingManualActions(t, db)
-		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		stubs.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 1001, StopLossTriggerPx: 1950}, "", nil
 		}
 		nonce = confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1950}`)
@@ -781,7 +781,7 @@ func TestManualCloseStopAndTakeProfitBooking(t *testing.T) {
 		position.TPArmedTiers = []bool{true, true, true}
 
 		stubs := stubTradeDeps(t, ss)
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return &HyperliquidExecuteResult{
 				Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
 				CancelStopLossSucceeded:     true,

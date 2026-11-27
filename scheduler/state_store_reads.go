@@ -544,20 +544,88 @@ func (st *StateStore) MarkPendingLimitOrderCancelRequested(strategyID, symbol st
 	return db.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
 }
 
-func (st *StateStore) MarkPendingLimitOrderOperatorRequired(id int64, at time.Time) error {
+func (st *StateStore) MarkPendingLimitOrderOperatorRequired(o PendingLimitOrder, at time.Time, evidenceJSON string) error {
 	db, err := st.liveFile()
 	if err != nil {
 		return err
 	}
-	return db.MarkPendingLimitOrderOperatorRequired(id, at)
+	return db.MarkPendingLimitOrderOperatorRequired(o, at, evidenceJSON)
 }
 
-func (st *StateStore) ClearPendingLimitOrderOperatorRequired(id int64) error {
+func (st *StateStore) DeletePendingLimitOrderIfUnchanged(o PendingLimitOrder) error {
 	db, err := st.liveFile()
 	if err != nil {
 		return err
 	}
-	return db.ClearPendingLimitOrderOperatorRequired(id)
+	return db.DeletePendingLimitOrderIfUnchanged(o)
+}
+
+func (st *StateStore) ManualLimitEntryTradeTotals(strategyID, exchangeOrderID string) (float64, []string, error) {
+	db, err := st.liveOwnedFileForStrategy(strategyID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return db.ManualLimitEntryTradeTotals(strategyID, exchangeOrderID)
+}
+
+// CommitLimitFillAdoption commits staged strategy books with the fill
+// watermarks of the limit rows they booked, in one live-file transaction.
+func (st *StateStore) CommitLimitFillAdoption(books []*StrategyState, rows []limitFillWatermark) error {
+	if st == nil {
+		return fmt.Errorf("state store unavailable")
+	}
+	db, err := st.liveFile()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(books))
+	scope := ScopeLive
+	for _, s := range books {
+		if s == nil {
+			return fmt.Errorf("strategy state is nil")
+		}
+		if s.robinhoodPartitionSavePending {
+			return fmt.Errorf("strategy %s holds a shared Robinhood settlement that commits only with a full live partition save", s.ID)
+		}
+		owned, err := st.liveOwnedFileForStrategy(s.ID)
+		if err != nil {
+			return err
+		}
+		if owned != db {
+			return fmt.Errorf("strategy %s is not stored in the live state file", s.ID)
+		}
+		if sc, ok := st.scopeForStrategy(s.ID); ok {
+			scope = sc
+		}
+		ids = append(ids, s.ID)
+	}
+	for _, r := range rows {
+		if _, err := st.liveOwnedFileForStrategy(r.StrategyID); err != nil {
+			return err
+		}
+	}
+	acks := st.acksForStrategies(ids)
+	if err := db.commitLimitFillAdoption(books, scope, acks, rows); err != nil {
+		return err
+	}
+	st.clearAcks(ids)
+	return nil
+}
+
+func (st *StateStore) liveFilePath() (string, error) {
+	db, err := st.liveFile()
+	if err != nil {
+		return "", err
+	}
+	return db.path, nil
+}
+
+func (st *StateStore) ClearPendingLimitOrderOperatorRequired(o PendingLimitOrder) error {
+	db, err := st.liveFile()
+	if err != nil {
+		return err
+	}
+	return db.ClearPendingLimitOrderOperatorRequired(o)
 }
 
 func (st *StateStore) CountPendingLimitOrders(strategyID, symbol string) (int, error) {

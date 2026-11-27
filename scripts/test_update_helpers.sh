@@ -1775,8 +1775,11 @@ fi
 rm -f "$rec_test/deploy/.venv"
 mv "$rec_test/deploy/.venv-real" "$rec_test/deploy/.venv"
 
+mkdir -p "$rec_test/shared/feed-weight"
+printf '{"version":1,"seq":1}\n' >"$rec_test/shared/feed-weight/authority.json"
 UPDATE_NO_FREEZE_EXCLUDES=1 GO_TRADER_SIGNAL_LOG="$rec_test/deploy/custom-signal.log" update_take_snapshot "$rec_test/deploy" "$rec_test/rec/$rkey" "" "" "" \
     || { echo "FAIL: update_take_snapshot failed" >&2; exit 1; }
+printf '{"version":1,"seq":2}\n' >"$rec_test/shared/feed-weight/authority.json"
 
 printf 'mutated-readme\n' >"$rec_test/deploy/README.md"
 printf 'added-by-failed-update\n' >"$rec_test/deploy/added_new.py"
@@ -1807,6 +1810,7 @@ assert_eq "$(cat "$rec_test/deploy/go-trader")" "bin-v1" "binary restored from s
 assert_eq "$(cat "$rec_test/deploy/sub/nested/primary.db")" "db1-runtime-write" "excluded nested runtime DB write survived restore"
 assert_eq "$(cat "$rec_test/deploy/custom_logs/app.log")" "log2" "custom log_dir survived restore"
 assert_eq "$(cat "$rec_test/deploy/custom-signal.log")" "sig1" "custom signal log survived restore"
+assert_eq "$(cat "$rec_test/shared/feed-weight/authority.json")" '{"version":1,"seq":2}' "a binary/config rollback keeps the shared feed weight record a peer advanced during the update"
 
 update_write_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" "$rec_test/rec/$rkey" "forced test failure" "files=ok probe=failed"
 if update_check_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" 2>/dev/null; then
@@ -2811,5 +2815,141 @@ print("yes" if mod.cpu_dropin_is_managed(sys.argv[2]) else "no")
     ! grep -qx 'daemon-reload' "$CPU_TEST_LOG" || cpu_fail "restore with nothing mutated must not reload" "$CPU_TEST_LOG"
 )
 rm -rf "$cpu_root"
+
+fcfg_root=$(mktemp -d)
+fcfg_root=$(cd "$fcfg_root" && pwd -P)
+(
+    ff() { echo "FAIL: feed config: $*" >&2; exit 1; }
+    feed_json='{"role":"feed","feed":{"source":"rest"}}'
+    mkdir -p "$fcfg_root/live" "$fcfg_root/secret" "$fcfg_root/snap1" "$fcfg_root/snap2" "$fcfg_root/target"
+    printf '%s\n' "$feed_json" >"$fcfg_root/live/config.json"
+    chmod 0640 "$fcfg_root/live/config.json"
+    printf 'TOP-SECRET\n' >"$fcfg_root/secret/shadow"
+
+    ln -s "$fcfg_root/secret/shadow" "$fcfg_root/live/config.json.staged"
+    if update_feed_config_snapshot "$fcfg_root/snap1" "$fcfg_root/live/config.json" "$fcfg_root/live/config.json.staged" 2>"$fcfg_root/staged.err"; then
+        ff "a staged config swapped to a symlink after the checks was copied"
+    fi
+    [[ ! -e "$fcfg_root/snap1/feed_config.candidate" ]] || ff "a candidate copy exists after the symlink refusal"
+    ! grep -rq TOP-SECRET "$fcfg_root/snap1" || ff "the symlink target was read into the snapshot"
+    grep -q "without following a symlink" "$fcfg_root/staged.err" || ff "no symlink refusal: $(cat "$fcfg_root/staged.err")"
+    echo "OK: feed config: a staged symlink is refused; nothing outside the config directory is read or copied"
+
+    rm -f "$fcfg_root/live/config.json.staged"
+    printf '{"role":"feed","feed":{"source":"rest","request_budget":{"per_minute":1}}}\n' >"$fcfg_root/live/config.json.staged"
+    update_feed_config_snapshot "$fcfg_root/snap2" "$fcfg_root/live/config.json" "$fcfg_root/live/config.json.staged" 2>"$fcfg_root/ok.err" \
+        || ff "a regular staged config was refused: $(cat "$fcfg_root/ok.err")"
+    cmp -s "$fcfg_root/snap2/feed_config.candidate" "$fcfg_root/live/config.json.staged" || ff "the candidate copy differs from the staged bytes"
+    cmp -s "$fcfg_root/snap2/feed_config.live" "$fcfg_root/live/config.json" || ff "the live copy differs from the live bytes"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$fcfg_root/snap2/feed_config.live")" == "640" ]] || ff "the live copy did not keep the live mode"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$fcfg_root/snap2/feed_config.candidate")" == "600" ]] || ff "the candidate copy is not private"
+    echo "OK: feed config: a regular staged file is copied byte for byte into the snapshot"
+
+    cand_sha=$(sed -n 's/^feed_config_candidate_sha=//p' "$fcfg_root/snap2/feed_config.env")
+    live="$fcfg_root/live/config.json"
+    mv "$fcfg_root/live" "$fcfg_root/live.real"
+    ln -s "$fcfg_root/target" "$fcfg_root/live"
+    if update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$fcfg_root/live.real/config.json" "$cand_sha" 2>"$fcfg_root/dir.err"; then
+        ff "promotion wrote through a config directory swapped to a symlink"
+    fi
+    [[ -z "$(ls -A "$fcfg_root/target")" ]] || ff "promotion wrote into the symlink target: $(ls -A "$fcfg_root/target")"
+    grep -q "is missing or is a symlink" "$fcfg_root/dir.err" || ff "no directory symlink refusal: $(cat "$fcfg_root/dir.err")"
+    rm "$fcfg_root/live"
+    mv "$fcfg_root/live.real" "$fcfg_root/live"
+
+    printf 'TARGET\n' >"$fcfg_root/target/config.json"
+    mv "$live" "$fcfg_root/live/config.json.real"
+    ln -s "$fcfg_root/target/config.json" "$live"
+    if update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$live" "$cand_sha" 2>"$fcfg_root/file.err"; then
+        ff "promotion wrote through a live config swapped to a symlink"
+    fi
+    [[ "$(cat "$fcfg_root/target/config.json")" == "TARGET" ]] || ff "promotion changed the symlink target"
+    [[ -L "$live" ]] || ff "promotion replaced the symlink"
+    [[ -z "$(ls -A "$fcfg_root/target" | grep -v '^config.json$')" ]] || ff "promotion left a file in the symlink target"
+    rm "$live"
+    mv "$fcfg_root/live/config.json.real" "$live"
+    echo "OK: feed config: promotion refuses a live config or directory swapped to a symlink and writes nothing outside the config directory"
+
+    update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$live" "$cand_sha" 2>"$fcfg_root/promote.err" \
+        || ff "a normal promotion failed: $(cat "$fcfg_root/promote.err")"
+    cmp -s "$live" "$fcfg_root/snap2/feed_config.candidate" || ff "the promoted bytes differ from the candidate"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$live")" == "640" ]] || ff "promotion did not keep the live mode"
+    [[ -z "$(ls -A "$fcfg_root/live" | grep '^\.go-trader-config\.')" ]] || ff "promotion left a temporary file"
+    update_feed_config_restore "$fcfg_root/snap2" 2>"$fcfg_root/restore.err" || ff "restore failed: $(cat "$fcfg_root/restore.err")"
+    cmp -s "$live" "$fcfg_root/snap2/feed_config.live" || ff "restore did not bring back the live bytes"
+    echo "OK: feed config: a normal promotion and its restore keep the bytes and the mode"
+) || exit 1
+rm -rf "$fcfg_root"
+
+fw_test=$(mktemp -d)
+printf 'old binary\n' >"$fw_test/old-go-trader"
+printf 'new binary go-trader-capability:feed-weight-authority-v1 tail\n' >"$fw_test/new-go-trader"
+assert_eq "$(update_probe_identity_args "$fw_test/new-go-trader" /var/lib/go-trader/a/config.json | tr '\n' ' ')" "--deployment-config /var/lib/go-trader/a/config.json " "a capable binary is probed with the persistent owner identity"
+assert_eq "$(update_probe_identity_args "$fw_test/old-go-trader" /var/lib/go-trader/a/config.json)" "" "an older binary is probed without the identity flag it does not know"
+assert_eq "$(update_probe_identity_args "$fw_test/new-go-trader" "")" "" "no identity, no flag"
+mkdir -p "$fw_test/bin" "$fw_test/tree/scheduler"
+cat >"$fw_test/bin/systemd-run" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FW_LOG"
+SH
+cat >"$fw_test/bin/systemctl" <<'SH'
+#!/bin/sh
+case "$*" in
+    *StateDirectory*) cat "$FW_STATE_DIRS" ;;
+    *ProtectSystem*) cat "$FW_STATE_DIRS.protect" 2>/dev/null || echo strict ;;
+    *) cat "$FW_STATE_DIRS.rw" 2>/dev/null || true ;;
+esac
+SH
+chmod +x "$fw_test/bin/systemd-run" "$fw_test/bin/systemctl"
+printf '{}\n' >"$fw_test/cfg.json"
+(
+    export PATH="$fw_test/bin:$PATH" FW_LOG="$fw_test/run.log"
+    UPDATE_PROBE_DEPLOYMENT_CONFIG=/var/lib/go-trader/a/config.json update_probe_as_owner "$fw_test/tree" "1:1" "$fw_test/new-go-trader" "$fw_test/cfg.json"
+    UPDATE_PROBE_DEPLOYMENT_CONFIG=/var/lib/go-trader/a/config.json update_probe_as_owner "$fw_test/tree" "1:1" "$fw_test/old-go-trader" "stdin:$fw_test/cfg.json"
+)
+grep -q -- "new-go-trader $fw_test/cfg.json --deployment-config /var/lib/go-trader/a/config.json\$" "$fw_test/run.log" \
+    || { echo "FAIL: the owner probe of a capable binary does not carry the persistent identity" >&2; cat "$fw_test/run.log" >&2; exit 1; }
+grep -q -- "old-go-trader\$" "$fw_test/run.log" \
+    || { echo "FAIL: the owner probe of an older binary carries flags it does not know" >&2; cat "$fw_test/run.log" >&2; exit 1; }
+printf '{"role":"feed","feed":{"source":"rest","request_budget":{"per_minute":1,"startup":1,"weight_per_minute":600,"weight_startup":100,"weight_reserve":100}}}\n' >"$fw_test/feed.json"
+printf '{"market_feed":"websocket","market_feed_weight_budget":{"weight_per_minute":200,"weight_startup":0,"weight_reserve":100}}\n' >"$fw_test/embedded.json"
+printf '{"market_feed":"websocket"}\n' >"$fw_test/plain.json"
+(
+    export PATH="$fw_test/bin:$PATH" FW_STATE_DIRS="$fw_test/dirs"
+    printf 'go-trader/feed-backup\n' >"$fw_test/dirs"
+    if update_feed_weight_grant_check go-trader@feed-backup.service "$fw_test/feed.json" 2>"$fw_test/grant.err"; then
+        echo "FAIL: a participating feed whose unit grants no shared state directory passed" >&2; exit 1
+    fi
+    grep -q "grants no StateDirectory" "$fw_test/grant.err" || { echo "FAIL: grant refusal text" >&2; cat "$fw_test/grant.err" >&2; exit 1; }
+    if update_feed_weight_grant_check go-trader.service "$fw_test/embedded.json" 2>/dev/null; then
+        echo "FAIL: an embedded participant without the shared grant passed" >&2; exit 1
+    fi
+    update_feed_weight_grant_check go-trader.service "$fw_test/plain.json" >/dev/null || { echo "FAIL: a non-participant was refused" >&2; exit 1; }
+    printf 'go-trader/feed-backup go-trader/shared\n' >"$fw_test/dirs"
+    update_feed_weight_grant_check go-trader@feed-backup.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: the template grant was refused" >&2; exit 1; }
+    printf 'go-trader\n' >"$fw_test/dirs"
+    update_feed_weight_grant_check go-trader.service "$fw_test/embedded.json" >/dev/null || { echo "FAIL: the plain unit grant was refused" >&2; exit 1; }
+    printf '\n' >"$fw_test/dirs"
+    printf -- '-/var/lib/go-trader\n' >"$fw_test/dirs.rw"
+    update_feed_weight_grant_check legacy.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: a ReadWritePaths grant was refused" >&2; exit 1; }
+    rm -f "$fw_test/dirs.rw"
+    printf 'full\n' >"$fw_test/dirs.protect"
+    update_feed_weight_grant_check legacy.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: a unit without ProtectSystem=strict was refused" >&2; exit 1; }
+)
+printf 'v2 binary go-trader-capability:feed-weight-authority-v1 go-trader-capability:feed-weight-record-v2 tail\n' >"$fw_test/v2-go-trader"
+notice=$(update_feed_weight_rollout_notice "$fw_test/new-go-trader" "$fw_test/v2-go-trader" "$fw_test/feed.json")
+[[ "$notice" == *"version 2"*"update every participant in one window"* ]] || { echo "FAIL: an update to the version 2 record does not announce the coordinated rollout: $notice" >&2; exit 1; }
+assert_eq "$(update_feed_weight_rollout_notice "$fw_test/v2-go-trader" "$fw_test/v2-go-trader" "$fw_test/feed.json")" "" "an update between version 2 binaries prints no rollout notice"
+assert_eq "$(update_feed_weight_rollout_notice "$fw_test/new-go-trader" "$fw_test/v2-go-trader" "$fw_test/plain.json")" "" "a non-participant prints no rollout notice"
+mkdir -p "$fw_test/fw/policies"
+printf '{"version":2,"epoch_id":"e"}\n' >"$fw_test/fw/authority.json"
+assert_eq "$(update_feed_weight_record_version "$fw_test/fw")" "2" "the record version is read from authority.json"
+rollback=$(update_feed_weight_rollback_notice "$fw_test/new-go-trader" "$fw_test/fw" 2>&1)
+[[ "$rollback" == *"move $fw_test/fw/authority.json aside"*"never delete $fw_test/fw/policies"* ]] || { echo "FAIL: a rollback to a version 1 binary beside a version 2 record prints no recovery path: $rollback" >&2; exit 1; }
+assert_eq "$(update_feed_weight_rollback_notice "$fw_test/v2-go-trader" "$fw_test/fw" 2>&1)" "" "a rollback to a version 2 binary prints no recovery path"
+printf '{"version":1,"epoch_id":"e"}\n' >"$fw_test/fw/authority.json"
+assert_eq "$(update_feed_weight_rollback_notice "$fw_test/new-go-trader" "$fw_test/fw" 2>&1)" "" "a version 1 record needs no rollback recovery"
+assert_eq "$(cat "$fw_test/fw/authority.json")" '{"version":1,"epoch_id":"e"}' "the rollback notice never writes the record"
+rm -rf "$fw_test"
 
 echo "OK: update_helpers tests passed"

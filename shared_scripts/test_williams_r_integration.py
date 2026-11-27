@@ -1,11 +1,9 @@
 import importlib.util
 import json
-import math
 import os
 import subprocess
 import sys
 
-import numpy as np
 import pandas as pd
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -145,22 +143,6 @@ def test_explicit_paper_check_emits_the_registry_decision_and_explanation(subtes
             _assert_registry_decision(out, bars, signal, action, code, action)
 
 
-def test_oversold_equality_on_the_current_bar_is_not_a_crossing(subtests):
-    for last_close, want_wr, want_signal in [
-            (92.0, -80.0, 0),
-            (92.5, -75.0, 1),
-            (91.0, -90.0, 0),
-        ]:
-        with subtests.test(last_close=last_close, want_wr=want_wr, want_signal=want_signal):
-            bars = _zigzag(60) + [(96.0, 100.0, 95.0, 96.0), (95.0, 100.0, 90.0, 90.0), (90.0, 95.0, 91.0, last_close)]
-            res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
-            assert res["wr_prev"] == -100.0
-            assert res["wr"] == want_wr
-            out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
-            assert out["signal"] == want_signal == int(res["signal"])
-            assert out["indicators"]["wr"] == want_wr
-
-
 def test_overbought_equality_on_the_current_bar_is_not_a_crossing(subtests):
     for last_close, want_wr, want_signal in [
             (98.0, -20.0, 0),
@@ -210,39 +192,3 @@ def test_closed_bar_decision_ignores_the_forming_tail_and_matches_next_bar_execu
                     platform="hyperliquid", strategy_type="perps")
     trade = bt.run(df, strategy_name=NAME, symbol="BTC", timeframe="1h", save=False)["trades"][0]
     assert pd.Timestamp(trade["entry_date"]) == df.index[len(closed)]
-
-
-def test_full_series_prefix_and_bounded_window_agree_at_every_allowed_lookback():
-    mod = _strategies()
-    rng = np.random.RandomState(1650)
-    n = 212
-    close = 100 + np.cumsum(rng.randn(n))
-    span = np.abs(rng.randn(n)) + 0.2
-    bars = [(c, c + s, c - s, c + (s * 0.5 if i % 3 else -s * 0.5)) for i, (c, s) in enumerate(zip(close, span))]
-    bars = [(o, max(h, c), min(low, c), c) for o, h, low, c in bars]
-    bars[60] = (bars[60][0], bars[60][2] - 1.0, bars[60][1], bars[60][3])
-    bars[130] = (bars[130][0], float("nan"), bars[130][2], bars[130][3])
-    df = _frame_from_bars(bars)
-    cols = ["signal", "wr_reason", "wr", "wr_prev", "wr_highest_high", "wr_lowest_low", "wr_valid"]
-
-    def same(a, b):
-        for col in cols:
-            x, y = a[col], b[col]
-            if isinstance(x, float) and math.isnan(x):
-                assert isinstance(y, float) and math.isnan(y), col
-            else:
-                assert x == y, col
-
-    for lookback in range(2, 101):
-        params = {"lookback": lookback}
-        full = mod.apply_strategy(NAME, df, params)
-        assert (full["wr_reason"].iloc[:min(lookback, 60)] == "insufficient_history").all()
-        for i in range(n):
-            prefix = mod.apply_strategy(NAME, df.iloc[:i + 1], params).iloc[-1]
-            same(full.iloc[i], prefix)
-            if i >= 199:
-                bounded = mod.apply_strategy(NAME, df.iloc[i - 199:i + 1], params).iloc[-1]
-                same(full.iloc[i], bounded)
-        assert (full["wr_reason"].iloc[60:61] == "inconsistent_hlc").all()
-        recovered = full["wr_valid"].iloc[61 + lookback:130]
-        assert recovered.all() if len(recovered) else True

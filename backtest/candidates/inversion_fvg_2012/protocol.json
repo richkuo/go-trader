@@ -1,0 +1,145 @@
+{
+  "schema": "inversion_fvg_protocol/v1",
+  "issue": 2012,
+  "study": "inversion_fvg_2012",
+  "frozen": "Every value below was fixed before any candidate, control or comparator was scored on a held-out window. run_study.py refuses to score when this file's sha256 differs from PROTOCOL_SHA256.",
+  "manifest": "study_manifest.json",
+  "data": {
+    "source": "Hyperliquid mainnet 4h BTC, ETH and SOL perpetual candles and hourly funding from the public info API (candleSnapshot, fundingHistory), frozen by backtest/candidates/chaikin_money_flow_1649 (#1649), copied byte for byte by backtest/candidates/volume_spike_breakout_2008 (#2008) and copied byte for byte again into data/; no new data was acquired and no proxy candles are used",
+    "source_manifest": "backtest/candidates/volume_spike_breakout_2008/study_manifest.json",
+    "native_venue_candles": true,
+    "timeframe_scope": "the study tests the pattern on native Hyperliquid 4h candles only; it does not establish performance on shorter or longer timeframes. The 1h inputs of chande_momentum_1661, ease_of_movement_1671 and ultimate_oscillator_1664 are Binance US spot candle proxies and are not used",
+    "prior_use": "Twenty-three earlier study manifests or protocols pin the same BTC 4h candle file (sha256 89f84288d462b830ceba8108ea9d69db4d3dac417c730dc9cdd13271c10fd0f8): aroon_trend_1643, awesome_oscillator_1660, bitcoin_lead_lag_1640 (4h), calendar_conditioned_entry_1653, camarilla_pivot_reversal_1669, chaikin_money_flow_1649, commodity_channel_trend_1656, connors_rsi_reversion_1645, dual_thrust_1642, elder_force_pullback_1668, elder_ray_pullback_1648, fisher_reversal_1646, klinger_divergence_1662, mass_index_reversal_1670, money_flow_index_reversal_1658, on_balance_volume_divergence_1657, regression_channel_reversion_1644, relative_vigor_index_1666, schaff_trend_cycle_1651, stochastic_momentum_index_1663, volume_spike_breakout_2008, vortex_trend_1647 and williams_r_reversal_1650. volume_spike_breakout_2008, whose train, test and quarterly windows this study reuses, scored the same held-out span [2025-09-01, 2026-09-01). This study's test window is therefore chronological retrospective evidence; it is not claimed to be previously unseen data."
+  },
+  "windows": {
+    "selection": "train",
+    "held_out": "test",
+    "quarters": ["test_q1", "test_q2", "test_q3", "test_q4"],
+    "warmup": "the manifest's 300 bars before each window start feed the evaluators only and are never scored; the largest support of any scored arm is 159 bars (max_gap_age 96 + retest_window 48 + 15), inside the warm-up"
+  },
+  "signal_contract": {
+    "owner": "shared_strategies/open/inversion_fvg.py",
+    "gap": "bar k: bullish when low[k] > high[k-2], zone [high[k-2], low[k]]; bearish when high[k] < low[k-2], zone [high[k], low[k-2]]; strict comparisons; width (top - bottom) > 0 and >= min_fvg_atr times the simple 14-bar ATR at k (mean of the true ranges of bars k-13..k, each using the previous close)",
+    "inversion": "a bearish gap inverts to a long zone on the first bar j with k < j <= k + max_gap_age whose close is strictly above the zone top; a bullish gap inverts to a short zone on the first close strictly below the zone bottom; each gap inverts at most once",
+    "retest": "an armed zone fires on the first bar m with j < m <= j + retest_window whose low <= level <= high and, for a long, close >= bottom (short: close <= top); level = bottom + entry_level * width (long), top - entry_level * width (short)",
+    "order": "per bar: clear expired zones and zones closed through (long: close < bottom; short: close > top), then process inversions and replace the armed zone per side (latest inversion wins, greatest gap bar on ties), then evaluate retests of zones armed on an earlier bar; each qualifying first retest consumes its zone; replaced zones never resume",
+    "conflict": "both raw sides qualifying on one bar consume both zones and hold before any platform suppression",
+    "platform": "futures emits +1 and -1; spot never emits -1 (short_suppressed_spot)",
+    "validity": "a decision at bar N is evaluated only when rows N-required_history_bars+1..N are clean (finite positive consistent OHLC, present strictly increasing timestamps) and the derived ATR and zone values over its gap bars are finite; otherwise it holds with the most recent defect as its reason; required_history_bars = max_gap_age + retest_window + 15"
+  },
+  "execution": {
+    "registry": "futures",
+    "venue": "hyperliquid perps",
+    "close_strategies": [
+      {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict",
+    "intrabar_resolution": "ohlc_walk",
+    "funding_mode": "charge",
+    "capital": 1000.0,
+    "fills": "a bar-N signal fills at the bar N+1 open; no reversal and no scale-in while a position is open",
+    "costs": "manifest taker and maker fees, per-coin half spread plus slippage, lot rounding to szDecimals and the venue minimum order value through the manifest execution_spec",
+    "cost_multipliers": {"base": 1.0, "stress": 2.0},
+    "stress_note": "the stress run doubles spread and slippage; fees stay at the manifest values"
+  },
+  "candidate": {
+    "name": "inversion_fvg",
+    "seed": {"min_fvg_atr": 0.25, "max_gap_age": 48, "retest_window": 24, "entry_level": 0.5},
+    "grid": {
+      "min_fvg_atr": [0.0, 0.25, 0.5, 1.0],
+      "max_gap_age": [24, 48, 96],
+      "retest_window": [12, 24, 48],
+      "entry_level": [0.25, 0.5, 0.75]
+    },
+    "grid_note": "the same 108-combination grid as backtest/optimizer.py DEFAULT_PARAM_RANGES; every combination passes the parameter validator (largest support 159 bars)"
+  },
+  "noninverted_control": {
+    "definition": "study-local adapter over the same evaluator (mode noninverted_retest); no production strategy or bypass parameter is registered. The same gaps (strict three-bar comparisons, the same ATR width filter) are armed in their ORIGINAL direction at formation bar k: a bullish gap arms a long zone, a bearish gap arms a short zone, with the same entry level formula. The latest formation per side replaces the armed zone (greatest k). The first contained retest qualifies only at k < m <= k + retest_window, with close >= bottom for a long and close <= top for a short. An original long clears on a close below bottom and an original short on a close above top, before retest evaluation. Each qualifying first retest consumes its zone, both sides on one bar hold before spot suppression, and the data validity, required history, costs, close and stop owners are the candidate's. max_gap_age has no effect on this predicate (it only sets the shared validity span), so the grid fixes it at the seed value and equivalent combinations collapse to that one deterministic representative",
+    "grid": {
+      "min_fvg_atr": [0.0, 0.25, 0.5, 1.0],
+      "max_gap_age": [48],
+      "retest_window": [12, 24, 48],
+      "entry_level": [0.25, 0.5, 0.75]
+    }
+  },
+  "inversion_close_control": {
+    "definition": "study-local adapter over the same evaluator (mode inversion_close); no production strategy or bypass parameter is registered. The candidate's gaps, width filter and first-inversion rule (k < j <= k + max_gap_age, strict close beyond the far side, once per gap) apply; the arm enters at the inversion bar j itself (signal on bar j, fill at the bar j+1 open), consumes the zone at that inversion close and omits every later retest. Several same-side inversions on one bar count once; long and short inversions on one bar hold before spot suppression. retest_window and entry_level have no effect on this predicate, so the grid fixes them at the seed values and equivalent combinations collapse to that one deterministic representative; data validity, required history, costs, close and stop owners are the candidate's",
+    "grid": {
+      "min_fvg_atr": [0.0, 0.25, 0.5, 1.0],
+      "max_gap_age": [24, 48, 96],
+      "retest_window": [24],
+      "entry_level": [0.5]
+    }
+  },
+  "excluded_comparators": {
+    "sweep_absorption_ifvg": "requires Hyperliquid executed-trade flow (absorption) and a session sweep; the frozen candle and funding sets hold no trade flow, so it cannot be scored on these inputs"
+  },
+  "comparators": {
+    "breakout": {
+      "short_entries": false,
+      "mapping": "rolling lookback-bar range breakout gated by true-range expansion (atr_period, atr_multiplier); a candle-only price-structure incumbent",
+      "grid": {"lookback": [10, 20, 30], "atr_period": [10, 14, 20], "atr_multiplier": [1.0, 1.5, 2.0]}
+    },
+    "donchian_breakout": {
+      "short_entries": true,
+      "mapping": "Donchian channel break over entry_period bars; exit_period has no effect under the explicit close owner",
+      "grid": {"entry_period": [10, 20, 30], "exit_period": [5, 10, 15]}
+    }
+  },
+  "arms": {
+    "candidate_both": {"strategy": "inversion_fvg", "direction": "both", "grid": "candidate.grid"},
+    "candidate_long": {"strategy": "inversion_fvg", "direction": "long", "grid": "candidate.grid"},
+    "noninverted_both": {"strategy": "noninverted_control", "direction": "both", "grid": "noninverted_control.grid"},
+    "noninverted_long": {"strategy": "noninverted_control", "direction": "long", "grid": "noninverted_control.grid"},
+    "inversion_close_both": {"strategy": "inversion_close_control", "direction": "both", "grid": "inversion_close_control.grid"},
+    "inversion_close_long": {"strategy": "inversion_close_control", "direction": "long", "grid": "inversion_close_control.grid"},
+    "breakout_long": {"strategy": "breakout", "direction": "long"},
+    "donchian_breakout_long": {"strategy": "donchian_breakout", "direction": "long"},
+    "donchian_breakout_both": {"strategy": "donchian_breakout", "direction": "both"}
+  },
+  "matched_contracts": {
+    "long_only": {
+      "candidate": "candidate_long",
+      "controls": ["noninverted_long", "inversion_close_long"],
+      "comparators": ["breakout_long", "donchian_breakout_long"]
+    },
+    "bidirectional": {
+      "candidate": "candidate_both",
+      "controls": ["noninverted_both", "inversion_close_both"],
+      "comparators": ["donchian_breakout_both"]
+    }
+  },
+  "direction_note": "breakout declares no short entries, so it is scored only in the long-only contract; the candidate, both controls and donchian_breakout are scored in both contracts",
+  "incumbent_reference": "M1 incumbents run under each arm's matched close, stop and direction contract through eval_windows incumbent_contract; descriptive only, never a verdict input",
+  "selection": {
+    "window": "train",
+    "eligibility": "all three datasets scored, candle and funding coverage complete, no liquidated leg, and at least min_train_clusters independent position clusters",
+    "rule": "highest mean net Sharpe across datasets, then highest mean drawdown-adjusted return, then earliest grid order",
+    "min_train_clusters": 10
+  },
+  "independent_positions": "every position of an arm in one window is an interval [entry_date, exit_date]; intervals from all datasets are merged when they overlap or touch, and each merged interval counts once as an independent position cluster",
+  "parity_gates": [
+    "the selected candidate_both, noninverted_both and inversion_close_both signals equal the independent sequential reference (reference.py) on every dataset frame (train and test, warm-up included)",
+    "the selected candidate_both decisions match the 200-bar live check window on every dataset's held-out frame with the matched close and stop owner (parity_diff, futures registry, strict)"
+  ],
+  "verdict": {
+    "primary_arm": "candidate_both",
+    "min_test_clusters": 30,
+    "inconclusive_when": [
+      "candle or funding coverage is incomplete for any arm in a matched comparison",
+      "any arm in a matched comparison has no eligible train selection",
+      "candidate_both has fewer than min_test_clusters independent held-out clusters",
+      "any parity gate fails"
+    ],
+    "pass_requires_all": [
+      "candidate_both mean held-out net return > 0 at cost x1",
+      "candidate_both mean held-out net return > 0 at cost x2",
+      "in each matched contract, the candidate mean held-out net return (cost x1) is strictly higher than each control and each comparator",
+      "in each matched contract, the candidate worst quarterly max drawdown is no worse (>=, drawdowns are negative percentages) than each control and each comparator worst quarterly max drawdown"
+    ],
+    "fail_when": "the evidence is adequate (no inconclusive condition) and any pass requirement is false",
+    "descriptive_only": "the seed held-out result, the one-step grid neighbours of the selected candidate_both parameters, the train-vs-test rank correlation and the M1 incumbent references are reported and never change the verdict",
+    "admission": "a pass, fail or inconclusive verdict changes no admission, default or live configuration; the strategy stays edge_status=no_edge (a pass keeps edge_source=unvalidated pending a separate promotion decision)"
+  }
+}

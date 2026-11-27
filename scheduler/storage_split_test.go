@@ -289,3 +289,125 @@ func TestStateStoreLegacyUnscopedRowPlacedPerFile(t *testing.T) {
 		t.Error("the placement is not durable; a second boot still finds an unscoped row")
 	}
 }
+
+func TestPortfolioRiskPeakRebaselinePendingMigration(t *testing.T) {
+	readPending := func(t *testing.T, sdb *StateDB, scope string) int {
+		t.Helper()
+		var v int
+		if err := sdb.db.QueryRow(`SELECT peak_rebaseline_pending FROM portfolio_risk WHERE scope = ?`, scope).Scan(&v); err != nil {
+			t.Fatalf("read peak_rebaseline_pending: %v", err)
+		}
+		return v
+	}
+
+	t.Run("PreUpdateFileReadOnlyThenMigratedAndPreserved", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "state.db")
+		sdb, err := OpenStateDB(path)
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		if _, err := sdb.db.Exec(`ALTER TABLE portfolio_risk DROP COLUMN peak_rebaseline_pending`); err != nil {
+			t.Fatalf("drop column to model a pre-update file: %v", err)
+		}
+		if _, err := sdb.db.Exec(`INSERT INTO portfolio_risk (scope, peak_value) VALUES ('live', 100), ('paper', 200)`); err != nil {
+			t.Fatalf("seed rows: %v", err)
+		}
+		sdb.Close()
+
+		ro, err := openStateDBReadOnly(path)
+		if err != nil {
+			t.Fatalf("openStateDBReadOnly: %v", err)
+		}
+		books, err := ro.loadScopeBooks([]PortfolioScope{ScopeLive, ScopePaper})
+		ro.Close()
+		if err != nil {
+			t.Fatalf("read-only load of a pre-update file: %v", err)
+		}
+		if prs := books.PortfolioRisk[ScopeLive]; prs == nil || prs.PeakValue != 100 || prs.PeakRebaselinePending {
+			t.Fatalf("read-only load = %+v, want peak 100 and no pending flag", prs)
+		}
+
+		sdb, err = OpenStateDB(path)
+		if err != nil {
+			t.Fatalf("migrating OpenStateDB: %v", err)
+		}
+		if readPending(t, sdb, "live") != 0 || readPending(t, sdb, "paper") != 0 {
+			t.Fatal("migrated rows must default to 0")
+		}
+		if _, err := sdb.db.Exec(`UPDATE portfolio_risk SET peak_rebaseline_pending = 1 WHERE scope = 'paper'`); err != nil {
+			t.Fatalf("set flag: %v", err)
+		}
+		sdb.Close()
+		for i := 0; i < 2; i++ {
+			sdb, err = OpenStateDB(path)
+			if err != nil {
+				t.Fatalf("repeat migration %d: %v", i, err)
+			}
+			if readPending(t, sdb, "paper") != 1 || readPending(t, sdb, "live") != 0 {
+				t.Fatalf("repeat migration %d changed the stored flags", i)
+			}
+			books, err := sdb.loadScopeBooks([]PortfolioScope{ScopeLive, ScopePaper})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if !books.PortfolioRisk[ScopePaper].PeakRebaselinePending || books.PortfolioRisk[ScopeLive].PeakRebaselinePending {
+				t.Fatal("load must map the stored flag to its own scope")
+			}
+			sdb.Close()
+		}
+	})
+
+	t.Run("LegacyUnscopedTableRebuildDefaultsToZero", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "state.db")
+		sdb, err := OpenStateDB(path)
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		for _, stmt := range []string{
+			`DROP TABLE portfolio_risk`,
+			`CREATE TABLE portfolio_risk (id INTEGER PRIMARY KEY CHECK (id = 1), peak_value REAL NOT NULL DEFAULT 0, current_drawdown_pct REAL NOT NULL DEFAULT 0, kill_switch_active INTEGER NOT NULL DEFAULT 0, kill_switch_at TEXT NOT NULL DEFAULT '', warning_sent INTEGER NOT NULL DEFAULT 0)`,
+			`INSERT INTO portfolio_risk (id, peak_value, kill_switch_active) VALUES (1, 555, 1)`,
+		} {
+			if _, err := sdb.db.Exec(stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+		sdb.Close()
+		for i := 0; i < 2; i++ {
+			sdb, err = OpenStateDB(path)
+			if err != nil {
+				t.Fatalf("migrate legacy table (pass %d): %v", i, err)
+			}
+			if readPending(t, sdb, "") != 0 {
+				t.Fatal("the legacy row must copy through the scoped rebuild with the flag at 0")
+			}
+			books, err := sdb.loadScopeBooks([]PortfolioScope{scopeUnassigned})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if prs := books.PortfolioRisk[scopeUnassigned]; prs == nil || prs.PeakValue != 555 || !prs.KillSwitchActive || prs.PeakRebaselinePending {
+				t.Fatalf("legacy row after rebuild = %+v", prs)
+			}
+			sdb.Close()
+		}
+	})
+
+	t.Run("LatchedRowNeverLoadsPending", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "state.db")
+		sdb, err := OpenStateDB(path)
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		defer sdb.Close()
+		if _, err := sdb.db.Exec(`INSERT INTO portfolio_risk (scope, peak_value, kill_switch_active, peak_rebaseline_pending) VALUES ('live', 100, 1, 1)`); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		books, err := sdb.loadScopeBooks([]PortfolioScope{ScopeLive})
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if prs := books.PortfolioRisk[ScopeLive]; prs.PeakRebaselinePending {
+			t.Fatal("a latched row must load with the pending change cancelled")
+		}
+	})
+}

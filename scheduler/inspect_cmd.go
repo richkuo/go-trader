@@ -479,7 +479,11 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	fmt.Fprintf(&b, "  max_drawdown_pct:    %g%s\n", sc.MaxDrawdownPct, markIfDefault(explicit, "max_drawdown_pct"))
 	if sc.Type != "manual" {
 		if !sc.CircuitBreakerEnabled() {
-			fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
+			source := "explicit"
+			if sc.CircuitBreaker == nil && sc.paperCircuitBreakerOff {
+				source = "paper_circuit_breakers is not true"
+			}
+			fmt.Fprintf(&b, "  circuit_breaker:     off (%s) — drawdown + consecutive-loss halt disabled\n", source)
 		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {
 			fmt.Fprintf(&b, "  circuit_breaker:     on — %s\n", ov)
 		}

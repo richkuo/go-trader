@@ -120,8 +120,18 @@ func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
 	if feedLedgerFrom(ctx) != nil {
 		return ctx
 	}
-	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1}, true, nil)
+	metaWeight, _ := hlInfoWeight("meta", 0)
+	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1,
+		WeightPerMinute: feedIntPtr(hlLotMetadataLedgerPerMinute * metaWeight), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}, true, nil)
+	local.closeOnSuccess = true
+	local.coverage = feedSharedCoverageLotLocal
 	return withFeedLedger(ctx, local)
+}
+
+func (c *hlLotMetadataCache) requestLedger() *feedRequestLedger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return feedLedgerFrom(c.baseCtx)
 }
 
 func (c *hlLotMetadataCache) configure(ctx context.Context) {
@@ -191,7 +201,7 @@ func (c *hlLotMetadataCache) Ensure(coin string) {
 }
 
 func (c *hlLotMetadataCache) refresh(base context.Context, endpoint string) (*hlLotSnapshot, error) {
-	ctx, cancel := context.WithTimeout(withFeedReason(base, string(feedRestLotMeta)), hlLotMetadataFetchTimeout)
+	ctx, cancel := context.WithTimeout(withFeedInput(withFeedReason(base, string(feedRestLotMeta)), string(feedRestLotMeta)), hlLotMetadataFetchTimeout)
 	defer cancel()
 	data, err := c.fetch(ctx, endpoint)
 	if err != nil {

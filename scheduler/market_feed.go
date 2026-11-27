@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -43,6 +42,7 @@ const (
 	feedStatusInvalid       feedKeyStatus = "invalid"
 	feedStatusFailed        feedKeyStatus = "failed"
 	feedStatusBudget        feedKeyStatus = "budget_exhausted"
+	feedStatusRateLimited   feedKeyStatus = "rate_limited"
 	feedStatusNotDue        feedKeyStatus = "not_due"
 )
 
@@ -159,32 +159,57 @@ func isFiniteFeedPrice(v float64) bool {
 }
 
 type feedKeyState struct {
-	Key           marketFeedKey
-	IntervalMs    int64
-	Required      int
-	Capacity      int
-	Bars          []feedBar
-	Status        feedKeyStatus
-	StatusDetail  string
-	CoverageShort bool
-	LastRecvAt    time.Time
-	LastSource    feedBarSource
-	Pending       []feedBar
-	InvalidCount  int
-	LastInvalid   string
-	seq           uint64
-	corr          feedKeyCorrection
+	Key          marketFeedKey
+	IntervalMs   int64
+	Required     int
+	Capacity     int
+	Bars         []feedBar
+	Status       feedKeyStatus
+	StatusDetail string
+	LastRecvAt   time.Time
+	LastSource   feedBarSource
+	Pending      []feedBar
+	InvalidCount int
+	LastInvalid  string
+	seq          uint64
+	corr         feedKeyCorrection
+	rlSeq        uint64
+	weightHeld   bool
+	sharedHeld   bool
+	restVerified bool
+
+	historyTarget   int
+	historyLookback int
+	historyShort    bool
+	historyInflight bool
+	historyErr      string
+	historyFailures int
+	historyRetryAt  time.Time
+	repairFromMs    int64
 }
 
 func newFeedKeyState(key marketFeedKey, intervalMs int64, required int) *feedKeyState {
 	capacity := required + hlFeedHistoryMargin
 	return &feedKeyState{
-		Key:        key,
-		IntervalMs: intervalMs,
-		Required:   required,
-		Capacity:   capacity,
-		Status:     feedStatusBootstrapping,
+		Key:           key,
+		IntervalMs:    intervalMs,
+		Required:      required,
+		Capacity:      capacity,
+		Status:        feedStatusBootstrapping,
+		historyTarget: required,
 	}
+}
+
+func (s *feedKeyState) incrementalAnchor() int64 {
+	newest := s.Bars[len(s.Bars)-1].OpenMs
+	if s.repairFromMs != 0 && s.repairFromMs < newest {
+		return s.repairFromMs
+	}
+	return newest
+}
+
+func (s *feedKeyState) needsHistory() bool {
+	return len(s.Bars) == 0 || s.historyLookback < s.historyTarget
 }
 
 func (s *feedKeyState) raiseRequired(required int) {
@@ -282,10 +307,12 @@ type mergeRestOutcome struct {
 	Replaced int
 	Kept     int
 	Invalid  int
+	Stored   int
 }
 
 func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) mergeRestOutcome {
 	var out mergeRestOutcome
+	valid := make(map[int64]bool, len(raws))
 	for _, raw := range raws {
 		bar := feedBarFromRaw(raw, s.IntervalMs, feedBarSourceREST, requestedAt)
 		if err := validateFeedBar(bar, s.IntervalMs); err != nil {
@@ -293,6 +320,7 @@ func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) m
 			out.Invalid++
 			continue
 		}
+		valid[bar.OpenMs] = true
 		bar.RestSeenAt = requestedAt
 		idx, found := s.indexOfOpen(bar.OpenMs)
 		if found {
@@ -321,6 +349,11 @@ func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) m
 		out.Added++
 	}
 	s.trim()
+	for openMs := range valid {
+		if _, found := s.indexOfOpen(openMs); found {
+			out.Stored++
+		}
+	}
 	if out.Added+out.Replaced > 0 {
 		if requestedAt.After(s.LastRecvAt) {
 			s.LastRecvAt = requestedAt
@@ -331,20 +364,23 @@ func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) m
 }
 
 type feedKeyReadiness struct {
-	Key           marketFeedKey
-	Bars          int
-	Required      int
-	Ready         bool
-	Stale         bool
-	StaleReason   string
-	CoverageShort bool
-	Status        feedKeyStatus
-	Detail        string
-	FirstOpenMs   int64
-	LastOpenMs    int64
-	LastCloseMs   int64
-	LastRecvAt    time.Time
-	Source        string
+	Key             marketFeedKey
+	Bars            int
+	Required        int
+	Ready           bool
+	Stale           bool
+	StaleReason     string
+	CoverageShort   bool
+	Status          feedKeyStatus
+	Detail          string
+	FirstOpenMs     int64
+	LastOpenMs      int64
+	LastCloseMs     int64
+	LastRecvAt      time.Time
+	Source          string
+	HistoryLookback int
+	HistoryTarget   int
+	HistoryErr      string
 }
 
 func feedReadyFloor(required int) int {
@@ -364,21 +400,26 @@ func feedSilenceLimit(intervalMs int64) time.Duration {
 
 func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadiness {
 	out := feedKeyReadiness{
-		Key:           s.Key,
-		Bars:          len(s.Bars),
-		Required:      s.Required,
-		Status:        s.Status,
-		Detail:        s.StatusDetail,
-		CoverageShort: s.CoverageShort,
-		LastRecvAt:    s.LastRecvAt,
-		Source:        string(s.LastSource),
+		Key:             s.Key,
+		Bars:            len(s.Bars),
+		Required:        s.Required,
+		Status:          s.Status,
+		Detail:          s.StatusDetail,
+		LastRecvAt:      s.LastRecvAt,
+		Source:          string(s.LastSource),
+		HistoryLookback: s.historyLookback,
+		HistoryTarget:   s.historyTarget,
+		HistoryErr:      s.historyErr,
+	}
+	if s.historyLookback > 0 && s.historyLookback < out.Required {
+		out.Required = s.historyLookback
 	}
 	if len(s.Bars) > 0 {
 		out.FirstOpenMs = s.Bars[0].OpenMs
 		out.LastOpenMs = s.Bars[len(s.Bars)-1].OpenMs
 		out.LastCloseMs = s.Bars[len(s.Bars)-1].CloseMs
 	}
-	if s.Status == feedStatusFailed || s.Status == feedStatusBudget {
+	if s.Status == feedStatusFailed || s.Status == feedStatusBudget || s.Status == feedStatusRateLimited {
 		return out
 	}
 	if s.Status == feedStatusRepairing {
@@ -387,18 +428,26 @@ func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadine
 		}
 		return out
 	}
-	floor := feedReadyFloor(s.Required)
 	if len(s.Bars) == 0 {
 		out.Status = feedStatusBootstrapping
 		out.Detail = "no bars"
 		return out
 	}
+	if s.historyLookback == 0 {
+		out.Status = feedStatusBootstrapping
+		out.Detail = "full history is not loaded"
+		if s.historyErr != "" {
+			out.Detail = "full history is not loaded: " + s.historyErr
+		}
+		return out
+	}
+	floor := feedReadyFloor(out.Required)
 	if len(s.Bars) < floor {
 		out.Status = feedStatusShort
 		out.Detail = fmt.Sprintf("%d bars, below the %d-bar floor", len(s.Bars), floor)
 		return out
 	}
-	out.CoverageShort = len(s.Bars) < s.Required
+	out.CoverageShort = s.historyShort && len(s.Bars) < out.Required
 	nowMs := now.UTC().UnixMilli()
 	if nowMs-out.LastCloseMs > 2*s.IntervalMs+int64(feedStaleGrace/time.Millisecond) {
 		out.Stale = true
@@ -416,9 +465,19 @@ func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadine
 	out.Ready = true
 	out.Status = feedStatusReady
 	if out.CoverageShort {
-		out.Detail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(s.Bars), s.Required)
+		out.Detail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(s.Bars), out.Required)
 	} else {
 		out.Detail = ""
+	}
+	if s.historyLookback < s.historyTarget {
+		pending := fmt.Sprintf("history covers a %d-bar lookback; the %d-bar load is pending", s.historyLookback, s.historyTarget)
+		if s.historyErr != "" {
+			pending += ": " + s.historyErr
+		}
+		if out.Detail != "" {
+			pending = out.Detail + "; " + pending
+		}
+		out.Detail = pending
 	}
 	return out
 }
@@ -443,6 +502,25 @@ type feedFunding struct {
 	FetchedAt  time.Time
 	Source     string
 	Err        string
+
+	ScalarErr        string
+	RecordsErr       string
+	ScalarFetchedAt  time.Time
+	RecordsFetchedAt time.Time
+	RecordsContract  int
+	RecordsFromMs    int64
+	RecordsToMs      int64
+	RecordsThroughMs int64
+
+	scalarLimited     bool
+	recordsLimited    bool
+	scalarWeightHeld  bool
+	recordsWeightHeld bool
+	waitingForBars    bool
+	openedAt          time.Time
+	loadProgressAt    time.Time
+	recordsSeq        uint64
+	run               *feedFundingRun
 }
 
 type feedRestReason string
@@ -457,6 +535,8 @@ const (
 	feedRestFunding   feedRestReason = "funding"
 	feedRestMids      feedRestReason = "mids"
 	feedRestLotMeta   feedRestReason = "lot_metadata"
+
+	feedRestKillSwitch feedRestReason = "kill_switch_positions"
 
 	feedRestAccountingFunding feedRestReason = "accounting_funding"
 
@@ -488,6 +568,12 @@ type marketFeedOwner struct {
 	midCoins     map[string]bool
 	funding      map[string]*feedFunding
 	fundingNeeds map[string]feedFundingNeed
+
+	fundingCoverage   string
+	fundingSeq        uint64
+	fundingLastServed string
+	accountingDue     map[string]time.Time
+
 	observations map[feedObservationKey]*feedObservationState
 	tradeFlows   map[feedObservationKey]*feedTradeFlowState
 	books        map[feedObservationKey]*feedBookState
@@ -523,15 +609,17 @@ type marketFeedOwner struct {
 	corrRunning    bool
 	requestLedger  *feedRequestLedger
 
+	fetchSeq        uint64
+	midsRateLimited bool
+	midsWeightHeld  map[string]bool
+
+	historyJitter  func(time.Duration) time.Duration
+	historyTick    time.Duration
+	historyWorkers int
+
 	alerts chan feedAlert
 	clock  func() time.Time
 	logf   func(string, ...any)
-}
-
-type feedFundingNeed struct {
-	Scalar  bool
-	Records bool
-	StartMs int64
 }
 
 func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *marketFeedOwner {
@@ -558,9 +646,14 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 
 		accountingCoins:   make(map[string]bool),
 		accountingFunding: make(map[string]*feedAccountingFunding),
+		accountingDue:     make(map[string]time.Time),
+		midsWeightHeld:    make(map[string]bool),
 		macro:             make(map[feedMacroKey]*feedMacroPrepared),
 		macroNeeds:        make(map[feedMacroKey]feedMacroNeed),
 		corrOffsets:       append([]time.Duration(nil), feedCorrectionOffsets...),
+		historyJitter:     feedHistoryRandomJitter,
+		historyTick:       feedHistoryTick,
+		historyWorkers:    feedHistoryWorkers,
 		alerts:            make(chan feedAlert, feedAlertChannelDepth),
 		clock:             clock,
 		logf:              logf,
@@ -660,6 +753,9 @@ func (o *marketFeedOwner) SetConnected(connected bool) {
 			o.lastDisconnectAt = now
 			o.markObservationsDisconnectedLocked(now.UnixMilli())
 			for _, st := range o.keys {
+				if len(st.Bars) > 0 && st.repairFromMs == 0 {
+					st.repairFromMs = st.Bars[len(st.Bars)-1].OpenMs
+				}
 				if st.Status == feedStatusReady || st.Status == feedStatusStale {
 					st.Status = feedStatusRepairing
 					st.StatusDetail = "socket disconnected"
@@ -737,73 +833,16 @@ func (o *marketFeedOwner) keysAwaitingRepair() []marketFeedKey {
 	return out
 }
 
-func (o *marketFeedOwner) repairSpan(key marketFeedKey) (startMs int64, required int, intervalMs int64, ok bool) {
+func (o *marketFeedOwner) sharedHeldKeys() map[marketFeedKey]bool {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
-	st := o.keys[key]
-	if st == nil {
-		return 0, 0, 0, false
-	}
-	if len(st.Bars) == 0 {
-		return 0, st.Required, st.IntervalMs, true
-	}
-	return st.Bars[len(st.Bars)-1].OpenMs, st.Required, st.IntervalMs, true
-}
-
-func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, reason feedRestReason) error {
-	startMs, required, intervalMs, ok := o.repairSpan(key)
-	if !ok {
-		return fmt.Errorf("feed key %s is not tracked", key)
-	}
-	ctx = withFeedReason(ctx, string(reason))
-	requestedAt := o.now()
-	var raws []hlCandleRaw
-	var err error
-	if startMs == 0 {
-		var hist hlCandleHistory
-		hist, err = hlFetchCandleHistory(ctx, key.Symbol, key.Timeframe, required, requestedAt)
-		raws = hist.Raws
-	} else {
-		endMs := requestedAt.UnixMilli()
-		windowStart := startMs - intervalMs
-		if windowStart < 0 {
-			windowStart = 0
+	out := map[marketFeedKey]bool{}
+	for k, st := range o.keys {
+		if st.sharedHeld {
+			out[k] = true
 		}
-		raws, err = fetchHyperliquidCandleSnapshotFn(ctx, key.Symbol, key.Timeframe, windowStart, endMs)
 	}
-	o.countRestCall(reason)
-	if err != nil {
-		o.feedMu.Lock()
-		if st := o.keys[key]; st != nil {
-			st.StatusDetail = err.Error()
-			if len(st.Bars) == 0 {
-				st.Status = feedStatusFailed
-			}
-		}
-		o.feedMu.Unlock()
-		return err
-	}
-
-	o.feedMu.Lock()
-	defer o.feedMu.Unlock()
-	st := o.keys[key]
-	if st == nil {
-		return fmt.Errorf("feed key %s is not tracked", key)
-	}
-	mergeRestRows(st, raws, requestedAt)
-	drainPendingSocketBars(st)
-	if len(st.Bars) == 0 {
-		st.Status = feedStatusFailed
-		st.StatusDetail = "the venue returned no candles"
-		return fmt.Errorf("feed key %s: the venue returned no candles", key)
-	}
-	st.CoverageShort = len(st.Bars) < st.Required
-	st.Status = feedStatusReady
-	st.StatusDetail = ""
-	if st.CoverageShort {
-		st.StatusDetail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(st.Bars), st.Required)
-	}
-	return nil
+	return out
 }
 
 func (o *marketFeedOwner) markKeyUnready(key marketFeedKey, status feedKeyStatus, detail string) {
@@ -838,17 +877,19 @@ func (o *marketFeedOwner) connectedForReadinessLocked(now time.Time) bool {
 }
 
 type marketFeedHealth struct {
-	Mode         string                `json:"mode"`
-	Connected    bool                  `json:"connected"`
-	Generation   uint64                `json:"generation"`
-	LastSnapshot string                `json:"last_snapshot,omitempty"`
-	Metrics      feedMetrics           `json:"metrics"`
-	Keys         []marketFeedHealthKey `json:"keys"`
-	Mids         []marketFeedHealthMid `json:"mids,omitempty"`
-	Observations []marketFeedHealthObs `json:"observations,omitempty"`
-	Shared       *sharedFeedStatus     `json:"shared,omitempty"`
-	Correction   *feedCorrectionHealth `json:"correction,omitempty"`
-	Requests     *feedBudgetTotals     `json:"requests,omitempty"`
+	Mode         string                    `json:"mode"`
+	Connected    bool                      `json:"connected"`
+	Generation   uint64                    `json:"generation"`
+	LastSnapshot string                    `json:"last_snapshot,omitempty"`
+	Metrics      feedMetrics               `json:"metrics"`
+	Keys         []marketFeedHealthKey     `json:"keys"`
+	Mids         []marketFeedHealthMid     `json:"mids,omitempty"`
+	Observations []marketFeedHealthObs     `json:"observations,omitempty"`
+	Shared       *sharedFeedStatus         `json:"shared,omitempty"`
+	Correction   *feedCorrectionHealth     `json:"correction,omitempty"`
+	Requests     *feedBudgetTotals         `json:"requests,omitempty"`
+	RateLimit    []feedRateLimitHostStatus `json:"rate_limit,omitempty"`
+	Weight       *feedWeightStatus         `json:"weight,omitempty"`
 }
 
 type marketFeedHealthKey struct {
@@ -864,6 +905,9 @@ type marketFeedHealthKey struct {
 	CorrectionPending int    `json:"correction_pending,omitempty"`
 	CorrectionOverdue int    `json:"correction_overdue,omitempty"`
 	CorrectionError   string `json:"correction_error,omitempty"`
+	HistoryLookback   int    `json:"history_lookback"`
+	HistoryTarget     int    `json:"history_target"`
+	HistoryError      string `json:"history_error,omitempty"`
 }
 
 type marketFeedHealthObs struct {
@@ -921,6 +965,9 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	if o.requestLedger != nil {
 		totals := o.requestLedger.snapshot()
 		health.Requests = &totals
+		health.RateLimit = o.requestLedger.rateLimitStatus()
+		w := o.requestLedger.weightStatus()
+		health.Weight = &w
 	}
 	perKey := make(map[marketFeedKey]feedKeyCorrection, len(o.keys))
 	for k, st := range o.keys {
@@ -1006,6 +1053,9 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 			CorrectionPending: perKey[r.Key].pendingBars,
 			CorrectionOverdue: perKey[r.Key].overdueBars,
 			CorrectionError:   perKey[r.Key].lastErr,
+			HistoryLookback:   r.HistoryLookback,
+			HistoryTarget:     r.HistoryTarget,
+			HistoryError:      r.HistoryErr,
 		})
 	}
 	return health

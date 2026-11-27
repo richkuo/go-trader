@@ -18,6 +18,7 @@ const (
 	containerDataDir       = "/data"
 	containerConfigPath    = "/data/config.json"
 	containerStateDBPath   = "/data/state.db"
+	containerFeedWeightDir = "/data/feed-weight"
 	containerLogDir        = "/app/logs"
 	containerRuntimeUID    = 10001
 	containerRuntimeGID    = 10001

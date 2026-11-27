@@ -1,0 +1,3323 @@
+{
+  "engine_check": {
+    "rows_checked": 76,
+    "rows_with_mismatch": 0,
+    "rows_without_engine_labels": 0,
+    "sampled_bars": 19398
+  },
+  "network_blocked": true,
+  "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+  "results_sha256": "b51aae054b9ec9b70b8546d3afa5e046a380b029d04e6b6502c2364940ed67a0",
+  "rows": [
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 2891,
+      "n": 4081,
+      "passes": true,
+      "period": 336,
+      "seconds": 436.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 0.972826,
+      "derived": {
+        "buckets_closed": 1827,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2023-03-02 12:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2023-12-31 20:00:00"
+      },
+      "eval_bars": 4416,
+      "fetch_depth": 60,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "mismatches": [
+        {
+          "bar": "2023-07-06 04:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-07-13 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-07-19 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-07-29 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-07-30 08:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-08-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-08-13 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-08-14 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-09-20 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-10-19 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 1104,
+      "passes": true,
+      "seconds": 0.5,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 2891,
+      "n": 8449,
+      "passes": true,
+      "period": 336,
+      "seconds": 853.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 0.948543,
+      "derived": {
+        "buckets_closed": 2919,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2023-09-02 12:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2024-12-31 20:00:00"
+      },
+      "eval_bars": 8784,
+      "fetch_depth": 60,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "mismatches": [
+        {
+          "bar": "2024-01-01 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2024-02-01 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-03 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-03 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 2196,
+      "passes": false,
+      "seconds": 0.7,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 2891,
+      "n": 3505,
+      "passes": true,
+      "period": 336,
+      "seconds": 376.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 0.946875,
+      "derived": {
+        "buckets_closed": 1683,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2024-09-02 12:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2025-06-09 20:00:00"
+      },
+      "eval_bars": 3840,
+      "fetch_depth": 60,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "mismatches": [
+        {
+          "bar": "2025-01-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-17 00:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-18 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-21 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-25 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-26 00:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-26 16:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-02-13 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-02-14 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-02-14 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 960,
+      "passes": false,
+      "seconds": 0.5,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 2891,
+      "n": 7168,
+      "passes": true,
+      "period": 336,
+      "seconds": 735.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.956267,
+      "derived": {
+        "buckets_closed": 2599,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 2,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2025-09-02 12:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2026-11-09 20:00:00"
+      },
+      "eval_bars": 7503,
+      "fetch_depth": 60,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "mismatches": [
+        {
+          "bar": "2026-01-12 16:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-01-12 20:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-01-13 08:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-02-13 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-13 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-15 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-15 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 1875,
+      "passes": true,
+      "seconds": 0.7,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 354,
+        "mismatches": [],
+        "sampled": 354
+      },
+      "eval_bars": 8832,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "lookback": 2891,
+      "n": 8497,
+      "passes": true,
+      "period": 336,
+      "seconds": 1259.5,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "live_both",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 0.972826,
+      "derived": {
+        "buckets_closed": 1466,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2023-05-01 16:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2023-12-31 20:00:00"
+      },
+      "eval_bars": 8832,
+      "fetch_depth": 60,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "mismatches": [
+        {
+          "bar": "2023-07-06 04:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-07-13 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-07-19 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-07-29 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-07-30 08:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2023-08-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-08-13 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-08-14 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-09-20 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2023-10-19 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 1104,
+      "passes": true,
+      "seconds": 1.0,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 703,
+        "mismatches": [],
+        "sampled": 703
+      },
+      "eval_bars": 17568,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "lookback": 2891,
+      "n": 17233,
+      "passes": true,
+      "period": 336,
+      "seconds": 2121.6,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "live_both",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 0.948543,
+      "derived": {
+        "buckets_closed": 2558,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2023-11-01 16:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2024-12-31 20:00:00"
+      },
+      "eval_bars": 17568,
+      "fetch_depth": 60,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "mismatches": [
+        {
+          "bar": "2024-01-01 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2024-02-01 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-02 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-03 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-03 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2024-02-04 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 2196,
+      "passes": false,
+      "seconds": 1.5,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 308,
+        "mismatches": [],
+        "sampled": 308
+      },
+      "eval_bars": 7680,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "lookback": 2891,
+      "n": 7345,
+      "passes": true,
+      "period": 336,
+      "seconds": 1148.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "live_both",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 0.946875,
+      "derived": {
+        "buckets_closed": 1322,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2024-11-01 16:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2025-06-09 20:00:00"
+      },
+      "eval_bars": 7680,
+      "fetch_depth": 60,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "mismatches": [
+        {
+          "bar": "2025-01-02 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-17 00:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-18 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-21 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-01-25 12:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-26 00:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-01-26 16:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2025-02-13 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-02-14 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2025-02-14 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 960,
+      "passes": false,
+      "seconds": 0.7,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 2891,
+      "n": 14671,
+      "passes": true,
+      "period": 336,
+      "seconds": 1847.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "live_both",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 0.956267,
+      "derived": {
+        "buckets_closed": 2238,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 2,
+        "dropped_bucket_opens": [],
+        "first_bucket": "2025-11-01 16:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2026-11-09 20:00:00"
+      },
+      "eval_bars": 15006,
+      "fetch_depth": 60,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "mismatches": [
+        {
+          "bar": "2026-01-12 16:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-01-12 20:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-01-13 08:00:00",
+          "frozen": 1,
+          "live_rule": -1
+        },
+        {
+          "bar": "2026-02-13 16:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-13 20:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 00:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-14 08:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-15 04:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        },
+        {
+          "bar": "2026-02-15 12:00:00",
+          "frozen": -1,
+          "live_rule": 1
+        }
+      ],
+      "n": 1875,
+      "passes": true,
+      "seconds": 1.2,
+      "unit": {
+        "arm": null,
+        "coin": "ETH",
+        "frame": "live",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "htf",
+        "regime_window": "htf",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 84,
+        "mismatches": [],
+        "sampled": 84
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 2891,
+      "n": 4249,
+      "passes": true,
+      "period": 336,
+      "seconds": 346.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 83,
+        "mismatches": [],
+        "sampled": 83
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 2891,
+      "n": 4225,
+      "passes": true,
+      "period": 336,
+      "seconds": 643.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "live_both",
+        "coin": "ETH",
+        "frame": "live",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 452.5,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 3229.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 3011,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 679.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 1660.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 2189.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 3223.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 3011,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 679.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 2506.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 2199.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 3243.1,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 3011,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 694.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 2539.5,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 2306.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 3011,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 2515.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 3011,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 722.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 2548.1,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 354,
+        "mismatches": [],
+        "sampled": 354
+      },
+      "eval_bars": 8832,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 8483,
+      "passes": true,
+      "period": 350,
+      "seconds": 1299.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 703,
+        "mismatches": [],
+        "sampled": 703
+      },
+      "eval_bars": 17568,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 17219,
+      "passes": true,
+      "period": 350,
+      "seconds": 1794.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 308,
+        "mismatches": [],
+        "sampled": 308
+      },
+      "eval_bars": 7680,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "lookback": 3011,
+      "n": 7331,
+      "passes": true,
+      "period": 350,
+      "seconds": 784.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 1933.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 354,
+        "mismatches": [],
+        "sampled": 354
+      },
+      "eval_bars": 8832,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 8483,
+      "passes": true,
+      "period": 350,
+      "seconds": 988.6,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 703,
+        "mismatches": [],
+        "sampled": 703
+      },
+      "eval_bars": 17568,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 17219,
+      "passes": true,
+      "period": 350,
+      "seconds": 1786.6,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 308,
+        "mismatches": [],
+        "sampled": 308
+      },
+      "eval_bars": 7680,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "lookback": 3011,
+      "n": 7331,
+      "passes": true,
+      "period": 350,
+      "seconds": 783.1,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 1917.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 354,
+        "mismatches": [],
+        "sampled": 354
+      },
+      "eval_bars": 8832,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 8483,
+      "passes": true,
+      "period": 350,
+      "seconds": 885.1,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 703,
+        "mismatches": [],
+        "sampled": 703
+      },
+      "eval_bars": 17568,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 17219,
+      "passes": true,
+      "period": 350,
+      "seconds": 1770.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 308,
+        "mismatches": [],
+        "sampled": 308
+      },
+      "eval_bars": 7680,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "lookback": 3011,
+      "n": 7331,
+      "passes": true,
+      "period": 350,
+      "seconds": 792.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 1906.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 354,
+        "mismatches": [],
+        "sampled": 354
+      },
+      "eval_bars": 8832,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 8483,
+      "passes": true,
+      "period": 350,
+      "seconds": 892.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 703,
+        "mismatches": [],
+        "sampled": 703
+      },
+      "eval_bars": 17568,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:30:00",
+      "lookback": 3011,
+      "n": 17219,
+      "passes": true,
+      "period": 350,
+      "seconds": 1776.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 308,
+        "mismatches": [],
+        "sampled": 308
+      },
+      "eval_bars": 7680,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:30:00",
+      "lookback": 3011,
+      "n": 7331,
+      "passes": true,
+      "period": 350,
+      "seconds": 779.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 601,
+        "mismatches": [],
+        "sampled": 601
+      },
+      "eval_bars": 15006,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 14657,
+      "passes": true,
+      "period": 350,
+      "seconds": 1921.6,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 651.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 662.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 729.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 722.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "HYPE",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 79,
+        "mismatches": [],
+        "sampled": 79
+      },
+      "eval_bars": 4584,
+      "first_bar": "2026-05-03 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 3011,
+      "n": 4235,
+      "passes": true,
+      "period": 350,
+      "seconds": 730.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "bar_1h",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 351.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BNB",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 350.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "BTC",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 353.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "ETH",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 350.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "HYPE",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 78,
+        "mismatches": [],
+        "sampled": 78
+      },
+      "eval_bars": 4560,
+      "first_bar": "2026-08-07 00:00:00",
+      "last_bar": "2026-11-09 23:30:00",
+      "lookback": 3011,
+      "n": 4211,
+      "passes": true,
+      "period": 350,
+      "seconds": 351.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "control",
+        "coin": "SOL",
+        "frame": "paper",
+        "group": "venue",
+        "interval": "30m",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "tail"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 711,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 263.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 711,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 503.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 711,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 231.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 711,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 407.6,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 711,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 265.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 711,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 484.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 711,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 229.0,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 711,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 417.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 177,
+        "mismatches": [],
+        "sampled": 177
+      },
+      "eval_bars": 4416,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 23:00:00",
+      "lookback": 711,
+      "n": 4067,
+      "passes": true,
+      "period": 350,
+      "seconds": 263.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 352,
+        "mismatches": [],
+        "sampled": 352
+      },
+      "eval_bars": 8784,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 23:00:00",
+      "lookback": 711,
+      "n": 8435,
+      "passes": true,
+      "period": 350,
+      "seconds": 437.2,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 154,
+        "mismatches": [],
+        "sampled": 154
+      },
+      "eval_bars": 3840,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 23:00:00",
+      "lookback": 711,
+      "n": 3491,
+      "passes": true,
+      "period": 350,
+      "seconds": 230.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 301,
+        "mismatches": [],
+        "sampled": 301
+      },
+      "eval_bars": 7503,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 23:00:00",
+      "lookback": 711,
+      "n": 7154,
+      "passes": true,
+      "period": 350,
+      "seconds": 434.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 45,
+        "mismatches": [],
+        "sampled": 45
+      },
+      "eval_bars": 1104,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 20:00:00",
+      "lookback": 711,
+      "n": 755,
+      "passes": true,
+      "period": 350,
+      "seconds": 64.8,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 88,
+        "mismatches": [],
+        "sampled": 88
+      },
+      "eval_bars": 2196,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 20:00:00",
+      "lookback": 711,
+      "n": 1847,
+      "passes": true,
+      "period": 350,
+      "seconds": 125.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 39,
+        "mismatches": [],
+        "sampled": 39
+      },
+      "eval_bars": 960,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 20:00:00",
+      "lookback": 711,
+      "n": 611,
+      "passes": true,
+      "period": 350,
+      "seconds": 57.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 76,
+        "mismatches": [],
+        "sampled": 76
+      },
+      "eval_bars": 1876,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 20:00:00",
+      "lookback": 711,
+      "n": 1527,
+      "passes": true,
+      "period": 350,
+      "seconds": 114.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "BTC",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 45,
+        "mismatches": [],
+        "sampled": 45
+      },
+      "eval_bars": 1104,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 20:00:00",
+      "lookback": 711,
+      "n": 755,
+      "passes": true,
+      "period": 350,
+      "seconds": 65.3,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 88,
+        "mismatches": [],
+        "sampled": 88
+      },
+      "eval_bars": 2196,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 20:00:00",
+      "lookback": 711,
+      "n": 1847,
+      "passes": true,
+      "period": 350,
+      "seconds": 124.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 39,
+        "mismatches": [],
+        "sampled": 39
+      },
+      "eval_bars": 960,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 20:00:00",
+      "lookback": 711,
+      "n": 611,
+      "passes": true,
+      "period": 350,
+      "seconds": 57.5,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 76,
+        "mismatches": [],
+        "sampled": 76
+      },
+      "eval_bars": 1876,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 20:00:00",
+      "lookback": 711,
+      "n": 1527,
+      "passes": true,
+      "period": 350,
+      "seconds": 115.5,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "ETH",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 45,
+        "mismatches": [],
+        "sampled": 45
+      },
+      "eval_bars": 1104,
+      "first_bar": "2023-07-01 00:00:00",
+      "last_bar": "2023-12-31 20:00:00",
+      "lookback": 711,
+      "n": 755,
+      "passes": true,
+      "period": 350,
+      "seconds": 64.7,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2023H2"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 88,
+        "mismatches": [],
+        "sampled": 88
+      },
+      "eval_bars": 2196,
+      "first_bar": "2024-01-01 00:00:00",
+      "last_bar": "2024-12-31 20:00:00",
+      "lookback": 711,
+      "n": 1847,
+      "passes": true,
+      "period": 350,
+      "seconds": 123.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2024"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 39,
+        "mismatches": [],
+        "sampled": 39
+      },
+      "eval_bars": 960,
+      "first_bar": "2025-01-01 00:00:00",
+      "last_bar": "2025-06-09 20:00:00",
+      "lookback": 711,
+      "n": 611,
+      "passes": true,
+      "period": 350,
+      "seconds": 56.4,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "2025H1"
+      }
+    },
+    {
+      "agreement": 1.0,
+      "disagreements": 0,
+      "engine_check": {
+        "engine_labels_found": true,
+        "equal": 76,
+        "mismatches": [],
+        "sampled": 76
+      },
+      "eval_bars": 1876,
+      "first_bar": "2026-01-01 00:00:00",
+      "last_bar": "2026-11-09 20:00:00",
+      "lookback": 711,
+      "n": 1527,
+      "passes": true,
+      "period": 350,
+      "seconds": 111.9,
+      "thresholds": {
+        "adx": 20.0,
+        "efficiency": 0.5,
+        "range_eff": 0.03,
+        "return_eff": 0.02
+      },
+      "transitions": {},
+      "unit": {
+        "arm": "combo",
+        "coin": "SOL",
+        "frame": "spot",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "composite",
+        "regime_window": "composite_medium",
+        "window": "oos"
+      }
+    }
+  ],
+  "selection_sha256": "93e16d3524805c82daae5b91650a2cef75f9f34f932b28d79ae122a80612ec32",
+  "source_commit": "ed0b70b7aa3090ab709a5fa3c844772359dd65e0"
+}

@@ -27,6 +27,7 @@ var researchPaperRouteStrategies = map[string]bool{
 	"perpetual_premium_reversion":        true,
 	"order_book_imbalance":               true,
 	"inventory_market_making":            true,
+	"sweep_absorption_ifvg":              true,
 }
 
 const (

@@ -1,4 +1,4 @@
-# go-trader — Crypto Trading Bot
+# go-trader — AI-Enabled Crypto Trading Bot
 
 [![GitHub release](https://img.shields.io/github/v/release/richkuo/go-trader)](https://github.com/richkuo/go-trader/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/44BykmWZsP)
@@ -6,15 +6,15 @@
 
 A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestrates 50+ strategies across spot, options, perpetual futures, and CME futures by spawning short-lived Python scripts. Both paper and live execution are supported per strategy for spot, perps and futures. Options strategies run as paper only on every platform: no venue order path exists for options, so config load refuses a `type: options` strategy with `--mode=live`.
 
-Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno (unmaintained; see the platform table). Deribit and OKX are unmaintained: their code stays available to existing configs, but the project no longer maintains them or runs automated venue-specific execution tests for them ([issue 2077](https://github.com/richkuo/go-trader/issues/2077)). Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
 
-Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
+Join the Discord: [https://discord.gg/44BykmWZsP](https://discord.gg/44BykmWZsP)
 
 ---
 
 ## Getting Started
 
-**Quick flow for a new server:** tell OpenClaw or Hermes:
+**Quick flow for a new server:** tell any AI agent (Claude Code, Codex, Cursor, OpenClaw, Hermes, or similar):
 
 ```
 install https://github.com/richkuo/go-trader and init.
@@ -22,7 +22,7 @@ install https://github.com/richkuo/go-trader and init.
 
 ### AI Agent Setup (Recommended)
 
-Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`) — it clones the repo, installs deps, walks through configuration, builds the binary, and starts the service. For non-Claude agents see [AGENTS.md](AGENTS.md). Using [OpenClaw](https://openclaw.ai) or [Hermes](https://hermes-agent.nousresearch.com/)? Just say "Set up go-trader".
+Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`) — it clones the repo, installs deps, walks through configuration, builds the binary, and starts the service. For non-Claude agents see [AGENTS.md](AGENTS.md), the full agent guide that `scripts/agent_guide.py` generates from `CLAUDE.md` and `.claude/rules/`. go-trader does not need a specific agent platform; agent stacks such as [OpenClaw](https://openclaw.ai) or [Hermes](https://hermes-agent.nousresearch.com/) are optional. With one of them, just say "Set up go-trader".
 
 ### Interactive Setup (go-trader init)
 
@@ -114,7 +114,7 @@ flowchart TB
             PROT["Protection<br/>on-chain SL/TP, trailing,<br/>liquidation clamp"]
             RECON["Reconciliation<br/>shared wallet, cashflow, fills"]
             MIRROR["Replay mirror<br/>live decisions to paper"]
-            FEED["Market feed (market_feed=websocket, or shared from role=feed services over Unix sockets:<br/>websocket primary, REST backup with a request budget)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
+            FEED["Market feed (market_feed=websocket, or shared from role=feed services over Unix sockets:<br/>websocket primary, REST backup with a request and venue weight budget)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
             OPS["Operator surfaces<br/>Discord bot, loopback dashboard,<br/>owner DMs"]
         end
         subgraph Py["One-shot Python subprocesses (per cycle)"]
@@ -162,14 +162,16 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
 | Binance US | Spot | BTC, ETH, SOL | — | CCXT public |
-| Deribit | Options | BTC, ETH | — (paper only) | Public ticker marks only; a missing quote opens no leg |
+| Deribit (unmaintained) | Options | BTC, ETH | — (paper only) | Public ticker marks only; a missing quote opens no leg |
 | IBKR/CME | Options | BTC, ETH (others refused) | — (paper only) | 0.1-coin contracts; entry and marks use Black-Scholes on BinanceUS spot and the same 14-day measured volatility (no volatility opens no leg and fails the mark); expiries from a paper CME Micro weekday calendar; expiry cutoff 16:00 Europe/London; cash settlement at the BinanceUS one-minute close VWAP from 15:30 to 16:00 London, read from 16:05 London |
 | Hyperliquid | Perps | any HL-listed | `HYPERLIQUID_SECRET_KEY` | SDK public |
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | `TOPSTEP_API_KEY` / `_SECRET` / `_ACCOUNT_ID` | yfinance |
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, … | `ROBINHOOD_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` | yfinance; timeframes `1m`, `2m`, `5m`, `15m`, `30m`, `1h`/`60m`, `90m`, `2h`, `4h`, `6h`, `8h`, `12h` (from Yahoo `1h`), `1d`, `1w`, `1M`/`1mo` |
 | Robinhood | Stock options | SPY, QQQ, AAPL, … | — (paper only) | Black-Scholes from measured realized volatility when logged out; when the Robinhood credentials are set, the check logs in and prices only from the authenticated option mark (expiry, strikes, premiums, Greeks) |
-| OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo); options paper only | CCXT public; options price only from a listed option ticker |
-| Luno | Spot | BTC, ETH, … | Luno creds | CCXT public |
+| OKX (unmaintained) | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo); options paper only | CCXT public; options price only from a listed option ticker |
+| Luno (unmaintained) | Spot | BTC, ETH, … | None for orders: the generated `luno-` spot strategy uses the shared spot checker and has no Luno order route. Optional `LUNO_API_KEY` / `LUNO_API_SECRET` give the Luno adapter data access | Binance US candles through the shared spot checker |
+
+**Luno is unmaintained** ([issue 2078](https://github.com/richkuo/go-trader/issues/2078)). Existing `luno` configurations still load and run with the same behavior, and the scheduler and the backtester keep the modeled 1% Luno fee. The project no longer maintains or specifically tests Luno: no test checks the Luno fee entry, the Luno adapter or a Luno backtest fee case. No Luno fix is planned.
 
 **Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `chart_pattern`, `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`, `momentum_pro`, `mean_reversion_pro`, `rsi_bb_combo`, `consolidation_range`, `atr_band_revert`, `mtf_confluence`, `funding_skew`, `regime_adaptive`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically. `donchian_breakout` is deprecated (hidden from discovery, still loadable via explicit config).
 
@@ -243,6 +245,7 @@ Every file is locked before any migration or startup write, so a second schedule
 | `portfolio_risk.paper` | Optional override block with the same fields, applied to paper strategies only. Omitted or zero fields inherit the parent; `paper.max_notional_usd` is restart-required | absent |
 | `risk_free_rate` | Annualized rate for Sharpe calculations | 0.04 |
 | `status_port` | HTTP status port (+5 fallback on collision); override with `--status-port` | 8099 |
+| `dashboard_candles.archive_dir` | Read-only candle archive for the dashboard chart, the tuner preview and trade review (clean absolute path). Without it, trade review cannot save marks and charts show feed bars or trade-built bars only. Also `refresh_seconds` (30 to 86400) and `max_generation_bytes` (1 MiB to 16 GiB). Restart-required (SKILL.md § Dashboard Candle Sources) | absent |
 | `default_stop_loss_atr_mult` | Fleet-wide HL perps fallback when all five `stop_loss_*` / `trailing_stop_*` fields omitted; `0` opts out | 1.0 |
 
 ### Regime Detection
@@ -287,6 +290,7 @@ Opt-in via `correlation.enabled: true`. Warns when a single asset exceeds `max_c
 | `discord.owner_id` | Owner DM for upgrades + config migration (`DISCORD_OWNER_ID`) |
 | `discord.channels` | Map keyed by `spot` / `options` / `<platform>` / `<platform>-paper` |
 | `discord.trade_alert_channels` | Optional per-type trade-alert routing; SIGHUP-reloadable |
+| `discord.slash_commands` | `false` (default): no slash commands; the daemon removes its `go-trader-` commands once per start. `true`: a background worker registers and maintains them, and trading never waits for it. Restart-required. Use one bot application and token per instance. Turn it on before you update if you resolve live holds with slash commands (SKILL.md § Discord Slash Commands) |
 | `telegram.trade_alert_channels` | Same override for Telegram |
 
 ### Summary Frequency
@@ -309,7 +313,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `script`, `args` | Python entry-point + argv (auto-filled for `manual`) | required |
 | `capital` | Virtual starting capital in USD. May be omitted only when every member of one supported 2+ live perps wallet uses shared-wallet pool budgeting with `margin_per_trade_usd` | 1000 |
 | `max_drawdown_pct` | Per-strategy CB; peak-relative (spot/options/futures), margin-relative (perps) | spot 5, options 10, perps 5 |
-| `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
+| `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains. Paper strategies arm no breaker unless root `paper_circuit_breakers` is `true` (alerts need `notify_paper_circuit_breakers`) | enabled (live) |
 | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter (50-EMA on the default higher timeframe). Missing, short or unusable higher-timeframe candles hold new entries and additions while closes and protection continue, and repeated failures alert; restart-required | false |
@@ -320,8 +324,8 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |
 | `sizing_leverage` | Perps — order sizing multiplier | `leverage` |
 | `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage`, with each position reserved at the larger of entry-price or mark-price margin | omitted |
-| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out | omitted |
-| `trailing_stop_min_move_pct` | HL trailing stop debounce (OID cap 1000) | 0.5 |
+| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; live OKX perps arm an exchange stop only when one is set (no regime ATR stops; needs `check_okx.py`); all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out. `trailing_stop_pct: 0` beside a positive `stop_loss_pct`, `stop_loss_margin_pct` or `trailing_stop_atr_mult` is refused at load; beside a positive `stop_loss_atr_mult` it is valid and the fixed ATR stop arms | omitted |
+| `trailing_stop_min_move_pct` | HL and OKX perps trailing stop debounce (HL OID cap 1000) | 0.5 |
 | `margin_mode` | HL perps — `isolated` / `cross`; from flat only | `isolated` |
 | `direction` | Perps — `long` / `short` / `both` | `long` |
 | `allowed_regimes` | Whitelist for new entries; requires `regime.enabled` | (no gate) |
@@ -465,7 +469,7 @@ journalctl --namespace=+go-trader -u go-trader -n 50
 
 **Paper instances get a lower CPU weight.** A config with `"paper_only": true` refuses every live strategy, and for its `go-trader@<instance>` unit `scripts/install-service.sh` and `scripts/update.sh --restart` write the managed drop-in `40-go-trader-cpu.conf` with `CPUWeight=20` (set `GO_TRADER_PAPER_CPU_WEIGHT` in the unit environment to change it, `0` for none), so live instances on the same host keep their CPU share. Check it with `systemctl show -p CPUWeight go-trader@<instance>.service`.
 
-Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. A trade history row opens a review window where you save preferred entry and exit labels, and suggest-only trade mark analysis (Anthropic API or your own Claude Code session) turns saved labels into research suggestions. Paper strategies can be flattened with the `/go-trader-paper-close` command or the dashboard, and `remove-strategy` refuses while a strategy holds positions. A separate `/tuning` page launches persistent research retunes across one or more strategies and diffs the ranked results against live config — suggestions are never auto-applied. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
+Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. The strategy chart and the trade review chart show a volume pane when the bars carry volume (hidden for trade-derived bars) and a bar readout of open, high, low, close, change from the previous close and volume; a value the bars do not carry reads `unavailable`. Both charts offer candle, hollow candle, bar, line, area, baseline and Heikin Ashi (derived) types; normal, logarithmic and percentage scales; local time or UTC; last-price line and label switches; fullscreen; PNG export of the chart canvas; and studies (SMA, EMA, Bollinger Bands, VWAP from the first loaded bar, RSI, MACD, ATR) with bounded inputs, warm-up shown as `unavailable`, and no studies on trade-derived bars. The display settings are saved in this browser only (`goTraderChartPreferences`, no token), and a blocked or failed save keeps them for the open page. The strategy chart draws `Book entry` and `Book-tracked stop` lines for an open regular position only when the status and the market candles match the same strategy and symbol (a live stop also needs its stop order id); it draws no take-profit or liquidation line. The charts use TradingView Lightweight Charts v5.3.0 (Apache 2.0; license and notice at `/dashboard/lightweight-charts.LICENSE.txt` and `/dashboard/lightweight-charts.NOTICE.txt`), and each chart page shows the attribution notice. The library's logo link on the chart opens `https://www.tradingview.com/?utm_medium=lwc-link&utm_campaign=lwc-chart&utm_source=<host><path>&utm_content=lwc-5.3.0`, so a click sends the dashboard host name and page path to TradingView in the address; the pages send no referrer. A chart failure shows in the chart area and leaves the rest of the page working. The strategy chart has a timeframe select, loads older bars as you scroll left and updates the newest bars in place without resetting your zoom. Chart, preview and review candles never come from the exchange on demand: they come from the bars the market feed already holds, from a read-only candle archive you publish with `scripts/candle-archive-publish.py` (`dashboard_candles.archive_dir`), or, for the chart only, from labelled bars built from your own trades; trade review saves only against a complete archive window (SKILL.md § Dashboard Candle Sources). A trade history row opens a review window where you save preferred entry and exit labels, and suggest-only trade mark analysis (Anthropic API or your own Claude Code session) turns saved labels into research suggestions. Paper strategies can be flattened with the `/go-trader-paper-close` command or the dashboard, and `remove-strategy` refuses while a strategy holds positions. A separate `/tuning` page launches persistent research retunes across one or more strategies and diffs the ranked results against live config — suggestions are never auto-applied. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
 
 **Tailscale Serve** — publish HTTPS on the tailnet while go-trader stays on loopback:
 
@@ -484,7 +488,7 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 
 - **Portfolio kill switch** — halts at `portfolio_risk.max_drawdown_pct` (default 25); submits real closes on HL / OKX perps / Robinhood crypto / TopStep. Robinhood closes sell at most the go-trader book for each coin; coin above the book in the same account is the operator's, is reported and is never sold. Owner-DM reset confirmation wait is tunable via `kill_switch_reset_dm_timeout` (Go duration string, e.g. `"6h"`; default 6h).
 - **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto (at most the strategy's own book; holdings above it are reported, not sold), TopStep auto-close; OKX spot needs manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
-- **Hyperliquid stop-loss** — one positive field among seven mutually-exclusive stop owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_mult_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trailing_stop_atr_mult_regime`); all omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out. A stop past the Hyperliquid liquidation price is clamped, never left unreachable.
+- **Hyperliquid stop-loss** — one positive field among seven mutually-exclusive stop owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_mult_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trailing_stop_atr_mult_regime`); all omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out. The loader refuses `trailing_stop_pct: 0` beside a positive `stop_loss_pct`, `stop_loss_margin_pct` or `trailing_stop_atr_mult`, because the zero would hide that stop; `trailing_stop_pct: 0` beside a positive `stop_loss_atr_mult` is valid and arms the fixed ATR stop. A stop past the Hyperliquid liquidation price is clamped, never left unreachable.
 - **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
 - **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.
 - **AVWAP stop close** — `avwap_stop`: exits when price breaches the anchored VWAP by `buffer_atr_mult`× ATR on the losing side; virtual exit only (no on-chain trigger).

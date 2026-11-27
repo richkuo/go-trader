@@ -95,12 +95,13 @@ def main():
     cancel_succeeded = False
     cancel_succeeded_oids = []
     cancel_failed_oids = []
+    cancel_unacknowledged_oids = []
 
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         if not args.cancel_protection_after_close:
-            cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
+            cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids, cancel_unacknowledged_oids = _cancel_trigger_orders(
                 adapter, args.symbol, args.cancel_stop_loss_oid
             )
         fills_since_ms = int(time.time() * 1000) - 10_000
@@ -108,21 +109,24 @@ def main():
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(args.symbol, str(e), cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                    cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
 
     if not isinstance(result, dict):
         _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                    cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
     outer_status = result.get("status")
     if outer_status not in (None, "ok"):
         _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                    cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
     statuses = result.get("response", {}).get("data", {}).get("statuses", [])
@@ -130,7 +134,8 @@ def main():
     if not statuses:
         _emit_success(args.symbol, fill={}, already_flat=True,
                       cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                      cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                      cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                      cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
     first = statuses[0]
@@ -138,13 +143,15 @@ def main():
     if "error" in first:
         _emit_error(args.symbol, f"per-status error: {first['error']}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                    cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
     if "filled" not in first:
         _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                    cancel_unacknowledged_oids=cancel_unacknowledged_oids)
         return
 
     filled = first["filled"]
@@ -153,7 +160,7 @@ def main():
         "total_sz": float(filled.get("totalSz", 0) or 0),
     }
     if args.cancel_protection_after_close and _fill_covers_requested_size(fill["total_sz"], args.sz, args.cancel_min_fill):
-        cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
+        cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids, cancel_unacknowledged_oids = _cancel_trigger_orders(
             adapter, args.symbol, args.cancel_stop_loss_oid
         )
     oid = filled.get("oid")
@@ -165,7 +172,8 @@ def main():
 
     _lookup_fill(adapter, fill, fills_since_ms)
     _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                  cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                  cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
+                  cancel_unacknowledged_oids=cancel_unacknowledged_oids)
 
 
 def _lookup_fill(adapter, fill, fills_since_ms):
@@ -185,22 +193,35 @@ def _cancel_trigger_orders(adapter, symbol, cancel_oids):
     cancel_errors = []
     cancel_succeeded_oids = []
     cancel_failed_oids = []
+    cancel_unacknowledged_oids = []
     for oid in cancel_oids:
         if oid <= 0:
             continue
         try:
-            rejected = _cancel_rejection(adapter.cancel_trigger_order(symbol, oid))
+            response = adapter.cancel_trigger_order(symbol, oid)
+            rejected = _cancel_rejection(response)
             if rejected:
                 cancel_failed_oids.append(oid)
                 cancel_errors.append(f"{oid}: {rejected}")
                 print(f"[WARN] cancel_trigger_order({symbol}, {oid}) rejected: {rejected}", file=sys.stderr)
                 continue
             cancel_succeeded_oids.append(oid)
+            if not _cancel_acknowledged(response):
+                cancel_unacknowledged_oids.append(oid)
         except Exception as ce:
             cancel_failed_oids.append(oid)
             cancel_errors.append(f"{oid}: {ce}")
             print(f"[WARN] cancel_trigger_order({symbol}, {oid}) failed: {ce}", file=sys.stderr)
-    return "; ".join(cancel_errors), bool(cancel_succeeded_oids), cancel_succeeded_oids, cancel_failed_oids
+    return "; ".join(cancel_errors), bool(cancel_succeeded_oids), cancel_succeeded_oids, cancel_failed_oids, cancel_unacknowledged_oids
+
+
+def _cancel_acknowledged(response):
+    if not isinstance(response, dict) or response.get("status") != "ok":
+        return False
+    data = response.get("response")
+    data = data.get("data") if isinstance(data, dict) else None
+    statuses = data.get("statuses") if isinstance(data, dict) else None
+    return isinstance(statuses, list) and len(statuses) > 0 and all(st == "success" for st in statuses)
 
 
 def _cancel_rejection(response):
@@ -351,19 +372,22 @@ def run_sized_close(args):
     cancel_succeeded = False
     cancel_succeeded_oids = []
     cancel_failed_oids = []
+    cancel_unacknowledged_oids = []
     if _fill_covers_requested_size(fill["total_sz"], submitted_sz, args.cancel_min_fill):
-        cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
+        cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids, cancel_unacknowledged_oids = _cancel_trigger_orders(
             adapter, symbol, args.cancel_stop_loss_oid
         )
 
     _lookup_fill(adapter, fill, fills_since_ms)
     _emit_success(symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
                   cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
-                  order_outcome="filled", submitted_sz=submitted_sz)
+                  order_outcome="filled", submitted_sz=submitted_sz,
+                  cancel_unacknowledged_oids=cancel_unacknowledged_oids)
 
 
 def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False,
-                  cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None):
+                  cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None,
+                  cancel_unacknowledged_oids=None):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
@@ -384,11 +408,14 @@ def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succee
         out["cancel_stop_loss_succeeded_oids"] = cancel_succeeded_oids
     if cancel_failed_oids:
         out["cancel_stop_loss_failed_oids"] = cancel_failed_oids
+    if cancel_unacknowledged_oids:
+        out["cancel_stop_loss_unacknowledged_oids"] = cancel_unacknowledged_oids
     print(json.dumps(out))
 
 
 def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False,
-                cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None):
+                cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None,
+                cancel_unacknowledged_oids=None):
     close = {"symbol": symbol, "fill": {}}
     if submitted_sz is not None:
         close["submitted_sz"] = submitted_sz
@@ -408,6 +435,8 @@ def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False,
         out["cancel_stop_loss_succeeded_oids"] = cancel_succeeded_oids
     if cancel_failed_oids:
         out["cancel_stop_loss_failed_oids"] = cancel_failed_oids
+    if cancel_unacknowledged_oids:
+        out["cancel_stop_loss_unacknowledged_oids"] = cancel_unacknowledged_oids
     print(json.dumps(out))
     sys.exit(1)
 

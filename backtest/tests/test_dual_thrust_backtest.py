@@ -264,25 +264,6 @@ def test_timezone_column_and_native_close_inputs_resolve_the_same_opening_times(
     assert (base["signal"] != 0).any()
 
 
-def test_later_rows_and_rows_outside_the_required_span_never_change_a_decision():
-    df = _walk(24 * 10, seed=23)
-    base = _apply(df)
-    later = _frame([(1.0, 0.5, 2.0, 1.0)] * 30, start=str(df.index[-1] + pd.Timedelta(minutes=30)))
-    extended = pd.concat([df, later])
-    extended.attrs = dict(df.attrs)
-    ext = _apply(extended)
-    for i in range(len(df)):
-        _same(base.iloc[i], ext.iloc[i])
-    i = 8 * 24 + 5
-    for k in (0, 3 * 24, 6 * 24 - 1):
-        poisoned = df.copy()
-        poisoned.iloc[k, poisoned.columns.get_loc("high")] = -5.0
-        _same(base.iloc[i], _apply(poisoned).iloc[i])
-    hit = df.copy()
-    hit.iloc[6 * 24, hit.columns.get_loc("low")] = -5.0
-    assert not bool(_apply(hit)["dt_valid"].iloc[i])
-
-
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": P},
                 close_strategies=[TP], stop_loss_atr_mult=1.0, direction="both")

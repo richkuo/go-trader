@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -16,7 +17,7 @@ func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) 
 func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *[]string, *map[string][]int64) {
 	var calls []string
 	cancels := make(map[string][]int64)
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		cancels[symbol] = append([]int64(nil), cancelStopLossOIDs...)
 		if err, ok := errs[symbol]; ok && err != nil {
@@ -31,28 +32,43 @@ func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *
 	return closer, &calls, &cancels
 }
 
-func stubHLStateFetcher(positions []HLPosition, err error) (HLStateFetcher, *int) {
+const stubHLEndpoint = "https://hl.stub"
+
+func stubHLStateFetcher(positions []HLPosition, err error) (HLStrictPositionReader, *int) {
 	var calls int
-	fetcher := func(addr string) ([]HLPosition, error) {
+	reader := func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
 		calls++
 		if err != nil {
-			return nil, err
+			return hlStrictPositionSnapshot{}, err
 		}
-		return positions, nil
+		return hlStrictPositionSnapshot{Target: target, Positions: positions}, nil
 	}
-	return fetcher, &calls
+	return reader, &calls
 }
 
-func defaultHLInputs(hlAddr string, fetched bool, positions []HLPosition,
+func withHLBaselineRead(baseline []HLPosition, later HLStrictPositionReader) HLStrictPositionReader {
+	served := false
+	return func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
+		if !served {
+			served = true
+			return hlStrictPositionSnapshot{Target: target, Positions: baseline}, nil
+		}
+		return later(ctx, target)
+	}
+}
+
+func defaultHLInputs(hlAddr string, baselineFromPositions bool, positions []HLPosition,
 	hlLive []StrategyConfig, reason string, timeout time.Duration,
-	closer HyperliquidLiveCloser, fetcher HLStateFetcher) KillSwitchCloseInputs {
+	closer HyperliquidLiveCloser, reader HLStrictPositionReader) KillSwitchCloseInputs {
+	if baselineFromPositions {
+		reader = withHLBaselineRead(positions, reader)
+	}
 	return KillSwitchCloseInputs{
 		HLAddr:          hlAddr,
-		HLStateFetched:  fetched,
-		HLPositions:     positions,
+		HLEndpoint:      stubHLEndpoint,
 		HLLiveAll:       hlLive,
 		HLCloser:        closer,
-		HLFetcher:       fetcher,
+		HLReader:        reader,
 		PortfolioReason: reason,
 		CloseTimeout:    timeout,
 	}
@@ -81,8 +97,8 @@ func TestPlanKillSwitchClose(t *testing.T) {
 		if len(plan.CloseReport.ClosedCoins) != 1 || plan.CloseReport.ClosedCoins[0] != "ETH" {
 			t.Errorf("ClosedCoins = %v, want [ETH]", plan.CloseReport.ClosedCoins)
 		}
-		if *fetchCalls != 0 {
-			t.Errorf("fetcher must not be called when state already fetched, got %d", *fetchCalls)
+		if *fetchCalls != 1 {
+			t.Errorf("one fresh position read must follow the close, got %d", *fetchCalls)
 		}
 		if len(*calls) != 1 || (*calls)[0] != "ETH" {
 			t.Errorf("closer calls = %v, want [ETH]", *calls)
@@ -147,7 +163,7 @@ func TestPlanKillSwitchClose(t *testing.T) {
 			if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
 				t.Errorf("expected ETH error to remain in report, got %v", plan.CloseReport.Errors)
 			}
-			if !strings.Contains(strings.Join(plan.LogLines, "\n"), "unable to verify HL state after close error: hl 503") {
+			if !strings.Contains(strings.Join(plan.LogLines, "\n"), "the position read after the last close attempt failed: hl 503") {
 				t.Errorf("expected verification fetch error log line, got %v", plan.LogLines)
 			}
 		})
@@ -175,7 +191,7 @@ func TestPlanKillSwitchClose(t *testing.T) {
 		if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
 			t.Errorf("expected LATCHED message on fetch failure, got: %s", plan.DiscordMessage)
 		}
-		if !strings.Contains(plan.DiscordMessage, "Could not fetch") {
+		if !strings.Contains(plan.DiscordMessage, "could not fetch HL positions before the close: hl 503") {
 			t.Errorf("expected fetch-failure detail in message, got: %s", plan.DiscordMessage)
 		}
 	})
@@ -295,15 +311,6 @@ func TestPlanKillSwitchClose(t *testing.T) {
 					in.RHSettle = func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} }
 				},
 			},
-			{
-				name: "TopStep", want: "venue down",
-				wire: func(in *KillSwitchCloseInputs) {
-					in.TSLiveAll = []StrategyConfig{{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
-						Args: []string{"momentum", "ES", "1h", "--mode=live"}}}
-					in.TSCloser, _ = stubTSLiveCloser(map[string]error{"ES": fmt.Errorf("venue down")})
-					in.TSFetcher, _ = stubTSPositionsFetcher([]TopStepPosition{{Coin: "ES", Size: 2}}, nil)
-				},
-			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -336,7 +343,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "BTC", Size: 1.0, EntryPrice: 50000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{
 					Symbol: symbol,
@@ -398,7 +405,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 0.588, EntryPrice: 1754.10}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
 				Platform: "hyperliquid",
@@ -482,7 +489,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
 				Platform: "hyperliquid",
@@ -681,33 +688,6 @@ func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (Robinhood
 	return fetcher, &calls
 }
 
-func stubTSLiveCloser(errs map[string]error) (TopStepLiveCloser, *[]string) {
-	var calls []string
-	closer := func(symbol string) (*TopStepCloseResult, error) {
-		calls = append(calls, symbol)
-		if err, ok := errs[symbol]; ok && err != nil {
-			return nil, err
-		}
-		return &TopStepCloseResult{
-			Close:    &TopStepClose{Symbol: symbol, Fill: &TopStepCloseFill{TotalContracts: 1, AvgPx: 5000}},
-			Platform: "topstep",
-		}, nil
-	}
-	return closer, &calls
-}
-
-func stubTSPositionsFetcher(positions []TopStepPosition, err error) (TopStepPositionsFetcher, *int) {
-	var calls int
-	fetcher := func() ([]TopStepPosition, error) {
-		calls++
-		if err != nil {
-			return nil, err
-		}
-		return positions, nil
-	}
-	return fetcher, &calls
-}
-
 type killSwitchPlatformHarness struct {
 	name         string
 	label        string
@@ -744,33 +724,6 @@ func killSwitchPlatformHarnesses() []killSwitchPlatformHarness {
 			unconfigured: func(plan KillSwitchClosePlan) []string {
 				var out []string
 				for _, p := range plan.RHUnconfigured {
-					out = append(out, p.Coin)
-				}
-				return out
-			},
-		},
-		{
-			name: "TopStep", label: "TopStep", coin: "ES", extraCoin: "NQ",
-			build: func(coins []string, closeErrs map[string]error, fetchErr error) (KillSwitchCloseInputs, *[]string, *int) {
-				var positions []TopStepPosition
-				for _, c := range coins {
-					positions = append(positions, TopStepPosition{Coin: c, Size: 2, AvgPrice: 5000, Side: "long"})
-				}
-				closer, calls := stubTSLiveCloser(closeErrs)
-				fetcher, fetchCalls := stubTSPositionsFetcher(positions, fetchErr)
-				return KillSwitchCloseInputs{
-					TSLiveAll: []StrategyConfig{{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
-						Args: []string{"momentum", "ES", "1h", "--mode=live"}}},
-					TSCloser:        closer,
-					TSFetcher:       fetcher,
-					PortfolioReason: "drawdown reason",
-					CloseTimeout:    time.Second,
-				}, calls, fetchCalls
-			},
-			errs: func(plan KillSwitchClosePlan) map[string]error { return plan.TSCloseReport.Errors },
-			unconfigured: func(plan KillSwitchClosePlan) []string {
-				var out []string
-				for _, p := range plan.TSUnconfigured {
 					out = append(out, p.Coin)
 				}
 				return out

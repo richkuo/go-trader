@@ -57,23 +57,60 @@ type feedEndpointState struct {
 }
 
 type sharedFeedFetchReport struct {
-	Key        int64    `json:"key"`
-	Status     string   `json:"status"`
-	Endpoint   string   `json:"endpoint,omitempty"`
-	Source     string   `json:"source,omitempty"`
-	Instance   string   `json:"instance,omitempty"`
-	Generation uint64   `json:"generation,omitempty"`
-	Hash       string   `json:"hash,omitempty"`
-	Bytes      int      `json:"bytes,omitempty"`
-	SealedAtMs int64    `json:"sealed_at_ms,omitempty"`
-	KeysTotal  int      `json:"keys_total"`
-	KeysReady  int      `json:"keys_ready"`
-	Gaps       []string `json:"gaps,omitempty"`
-	Reason     string   `json:"reason,omitempty"`
-	Attempts   []string `json:"attempts,omitempty"`
-	WaitedMs   int64    `json:"waited_ms"`
-	AtUnix     int64    `json:"at"`
-	Alerts     []string `json:"-"`
+	Key              int64                  `json:"key"`
+	Status           string                 `json:"status"`
+	Endpoint         string                 `json:"endpoint,omitempty"`
+	Source           string                 `json:"source,omitempty"`
+	Instance         string                 `json:"instance,omitempty"`
+	Generation       uint64                 `json:"generation,omitempty"`
+	Hash             string                 `json:"hash,omitempty"`
+	Bytes            int                    `json:"bytes,omitempty"`
+	SealedAtMs       int64                  `json:"sealed_at_ms,omitempty"`
+	KeysTotal        int                    `json:"keys_total"`
+	KeysReady        int                    `json:"keys_ready"`
+	Gaps             []string               `json:"gaps,omitempty"`
+	Reason           string                 `json:"reason,omitempty"`
+	Attempts         []string               `json:"attempts,omitempty"`
+	WaitedMs         int64                  `json:"waited_ms"`
+	AtUnix           int64                  `json:"at"`
+	FillRequest      string                 `json:"fill_request,omitempty"`
+	BackupEndpoint   string                 `json:"backup_endpoint,omitempty"`
+	BackupSource     string                 `json:"backup_source,omitempty"`
+	BackupInstance   string                 `json:"backup_instance,omitempty"`
+	BackupGeneration uint64                 `json:"backup_generation,omitempty"`
+	BackupHash       string                 `json:"backup_hash,omitempty"`
+	BackupSealedAtMs int64                  `json:"backup_sealed_at_ms,omitempty"`
+	Filled           []string               `json:"filled,omitempty"`
+	FillDetails      []sharedFeedKeyFill    `json:"fill_details,omitempty"`
+	Unready          []sharedFeedUnreadyKey `json:"unready,omitempty"`
+	Alerts           []string               `json:"-"`
+}
+
+type sharedFeedKeyFill struct {
+	Key            string `json:"key"`
+	PrimaryStatus  string `json:"primary_status"`
+	PrimaryDetail  string `json:"primary_detail,omitempty"`
+	BackupBars     int    `json:"backup_bars"`
+	BackupRequired int    `json:"backup_required"`
+}
+
+type sharedFeedUnreadyKey struct {
+	Key          string `json:"key"`
+	Status       string `json:"status"`
+	Detail       string `json:"detail,omitempty"`
+	BackupStatus string `json:"backup_status,omitempty"`
+	BackupDetail string `json:"backup_detail,omitempty"`
+}
+
+type feedKeyFallback struct {
+	Key            string `json:"key"`
+	StartKey       int64  `json:"start_key"`
+	StartedAt      int64  `json:"started_at"`
+	LastKey        int64  `json:"last_key"`
+	Cycles         int    `json:"cycles"`
+	PrimaryStatus  string `json:"primary_status"`
+	PrimaryDetail  string `json:"primary_detail,omitempty"`
+	BackupInstance string `json:"backup_instance"`
 }
 
 type sharedFeedClient struct {
@@ -92,6 +129,8 @@ type sharedFeedClient struct {
 	servedBy string
 	lastGaps string
 	last     *sharedFeedFetchReport
+	fallback map[marketFeedKey]*feedKeyFallback
+	fillSlow string
 }
 
 func newSharedFeedClient(cfg *Config) *sharedFeedClient {
@@ -110,12 +149,13 @@ func newSharedFeedClientWithEndpoints(eps []sharedFeedEndpoint) *sharedFeedClien
 			d := net.Dialer{Timeout: feedClientDialTimeout}
 			return d.DialContext(ctx, "unix", path)
 		},
-		clock:   func() time.Time { return time.Now().UTC() },
-		sleep:   sleepCtx,
-		settle:  feedSealSettleDelay,
-		prepare: feedSealPrepareBudget,
-		grace:   feedSealPublishGrace,
-		states:  make(map[string]*feedEndpointState, len(eps)),
+		clock:    func() time.Time { return time.Now().UTC() },
+		sleep:    sleepCtx,
+		settle:   feedSealSettleDelay,
+		prepare:  feedSealPrepareBudget,
+		grace:    feedSealPublishGrace,
+		states:   make(map[string]*feedEndpointState, len(eps)),
+		fallback: make(map[marketFeedKey]*feedKeyFallback),
 	}
 	for _, ep := range eps {
 		c.states[ep.Name] = &feedEndpointState{Name: ep.Name, Socket: ep.Socket}
@@ -205,7 +245,7 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
 			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d through v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionPremium, marketSnapshotVersion)}
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionFunding, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -284,6 +324,7 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 	giveUp := c.giveUpAt(key)
 	report := sharedFeedFetchReport{Key: key}
 	var snap *marketSnapshot
+	served := -1
 	for i, ep := range c.endpoints {
 		if !c.clock().Before(giveUp) {
 			err := &feedEndpointError{Kind: feedErrPendingLimit, Detail: fmt.Sprintf("key %d give-up time %s passed before this endpoint was asked", key, giveUp.Format(time.RFC3339))}
@@ -302,7 +343,7 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 			if bound.After(giveUp) {
 				bound = giveUp
 			}
-			epCtx, cancel = context.WithDeadline(ctx, time.Now().Add(bound.Sub(c.clock())))
+			epCtx, cancel = c.clockDeadlineCtx(ctx, bound)
 		}
 		doc, h, err := c.fetchFrom(epCtx, ep, key, epGiveUp)
 		cancel()
@@ -313,6 +354,7 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 		}
 		report.Attempts = append(report.Attempts, ep.Name+"=sealed")
 		snap = doc.snapshot()
+		served = i
 		report.Status = feedFetchSealed
 		report.Endpoint = ep.Name
 		report.Source = doc.Source
@@ -329,6 +371,7 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 		}
 		break
 	}
+	var primaryReady, filled []marketFeedKey
 	stopping := false
 	if snap == nil {
 		snap = degradedSharedSnapshot(key, c.clock())
@@ -339,6 +382,38 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 			report.Reason = "the consumer is stopping; " + report.Reason
 		}
 	} else {
+		required := cycleRequirementKeys(reqs)
+		var backupDoc *feedSealDoc
+		if served == 0 && len(c.endpoints) > 1 {
+			fillSet := unreadyCandleKeys(snap, required)
+			if len(fillSet) == 0 {
+				report.FillRequest = "none"
+			} else {
+				backupDoc = c.fetchFill(ctx, c.endpoints[1], key, giveUp, &report)
+				if backupDoc != nil {
+					primaryEntries := make(map[marketFeedKey]*marketSnapshotKey, len(fillSet))
+					for _, k := range fillSet {
+						primaryEntries[k] = snap.keys[k]
+					}
+					filled = applyKeyFills(snap, backupDoc, c.endpoints[1].Name, fillSet)
+					for _, k := range filled {
+						st, detail := sharedFeedEntryStatus(primaryEntries[k])
+						e := snap.keys[k]
+						report.Filled = append(report.Filled, k.PayloadID())
+						report.FillDetails = append(report.FillDetails, sharedFeedKeyFill{
+							Key: k.PayloadID(), PrimaryStatus: st, PrimaryDetail: detail,
+							BackupBars: e.Readiness.Bars, BackupRequired: e.Readiness.Required,
+						})
+					}
+				}
+			}
+			for _, k := range required {
+				if !containsFeedKey(fillSet, k) {
+					primaryReady = append(primaryReady, k)
+				}
+			}
+		}
+		report.Unready = sharedFeedUnreadyKeys(snap, required, backupDoc)
 		report.Gaps = applySealCoverage(snap, reqs)
 	}
 	report.WaitedMs = c.clock().Sub(started).Milliseconds()
@@ -384,11 +459,234 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 			c.lastGaps = gaps
 		}
 	}
+	if report.Status == feedFetchSealed && served == 0 {
+		c.updateFallbackEpisodes(key, snap, filled, primaryReady, &report)
+	}
+	if report.Status == feedFetchSealed && served > 0 {
+		c.fillSlow = ""
+	}
 	cp := report
 	cp.Alerts = nil
 	c.last = &cp
 	c.mu.Unlock()
 	return snap, report
+}
+
+func (c *sharedFeedClient) clockDeadlineCtx(ctx context.Context, bound time.Time) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(ctx, time.Now().Add(bound.Sub(c.clock())))
+}
+
+func (c *sharedFeedClient) fetchFill(ctx context.Context, ep sharedFeedEndpoint, key int64, giveUp time.Time, report *sharedFeedFetchReport) *feedSealDoc {
+	name := ep.Name + "(fill)"
+	if !c.clock().Before(giveUp) {
+		err := &feedEndpointError{Kind: feedErrPendingLimit, Detail: fmt.Sprintf("key %d give-up time %s passed before the fill request", key, giveUp.Format(time.RFC3339))}
+		c.recordEndpoint(ep, key, feedWireHeader{}, err, report)
+		report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", name, err))
+		report.FillRequest = err.Error()
+		return nil
+	}
+	c.mu.Lock()
+	slow := c.fillSlow
+	c.mu.Unlock()
+	bound := giveUp
+	probing := false
+	if slow != "" {
+		if probe := c.clock().Add(feedClientProbeFloor); probe.Before(bound) {
+			bound, probing = probe, true
+		}
+	}
+	fctx, cancel := c.clockDeadlineCtx(ctx, bound)
+	doc, h, err := c.fetchFrom(fctx, ep, key, bound)
+	cancel()
+	answered := h.Status != ""
+	var ee *feedEndpointError
+	if probing && answered && errors.As(err, &ee) && ee.Kind == feedErrPendingLimit && c.clock().Before(giveUp) {
+		probing = false
+		fctx, cancel = c.clockDeadlineCtx(ctx, giveUp)
+		doc, h, err = c.fetchFrom(fctx, ep, key, giveUp)
+		cancel()
+	}
+	c.recordEndpoint(ep, key, h, err, report)
+	c.mu.Lock()
+	c.fillSlow = ""
+	if !answered && errors.As(err, &ee) && ee.Kind == feedErrTransport {
+		c.fillSlow = ee.Kind
+	}
+	c.mu.Unlock()
+	if err != nil {
+		report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", name, err))
+		report.FillRequest = err.Error()
+		if probing {
+			report.FillRequest = fmt.Sprintf("probe %s after an earlier fill request ended %s: %v", feedClientProbeFloor, slow, err)
+		}
+		return nil
+	}
+	report.Attempts = append(report.Attempts, name+"=sealed")
+	report.FillRequest = feedFetchSealed
+	report.BackupEndpoint = ep.Name
+	report.BackupSource = doc.Source
+	report.BackupInstance = doc.Instance
+	report.BackupGeneration = doc.Generation
+	report.BackupHash = h.Hash
+	report.BackupSealedAtMs = doc.SealedAtMs
+	return doc
+}
+
+func cycleRequirementKeys(reqs cycleMarketRequirements) []marketFeedKey {
+	out := make([]marketFeedKey, 0, len(reqs.Keys))
+	for _, cr := range reqs.Keys {
+		out = append(out, cr.Key)
+	}
+	return out
+}
+
+func containsFeedKey(keys []marketFeedKey, k marketFeedKey) bool {
+	for _, x := range keys {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+func unreadyCandleKeys(snap *marketSnapshot, keys []marketFeedKey) []marketFeedKey {
+	var out []marketFeedKey
+	for _, k := range keys {
+		if entry, ok := snap.keys[k]; !ok || entry == nil || !entry.Readiness.Ready {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func applyKeyFills(snap *marketSnapshot, doc *feedSealDoc, endpoint string, fillSet []marketFeedKey) []marketFeedKey {
+	want := make(map[marketFeedKey]bool, len(fillSet))
+	for _, k := range fillSet {
+		want[k] = true
+	}
+	var filled []marketFeedKey
+	for _, sk := range doc.Keys {
+		if !sk.Readiness.Ready {
+			continue
+		}
+		key, entry := sk.snapshotKey()
+		if !want[key] {
+			continue
+		}
+		entry.FilledFrom = endpoint
+		snap.keys[key] = entry
+		filled = append(filled, key)
+		delete(want, key)
+	}
+	sort.Slice(filled, func(i, j int) bool { return marketFeedKeyLess(filled[i], filled[j]) })
+	return filled
+}
+
+func sharedFeedEntryStatus(entry *marketSnapshotKey) (string, string) {
+	if entry == nil {
+		return "missing", "the key is not in the seal"
+	}
+	st := string(entry.Readiness.Status)
+	if st == "" {
+		st = "not_ready"
+	}
+	return st, entry.Readiness.Detail
+}
+
+func sharedFeedUnreadyKeys(snap *marketSnapshot, keys []marketFeedKey, backup *feedSealDoc) []sharedFeedUnreadyKey {
+	var backupStatus map[marketFeedKey]feedSealReadiness
+	if backup != nil {
+		backupStatus = make(map[marketFeedKey]feedSealReadiness, len(backup.Keys))
+		for _, sk := range backup.Keys {
+			backupStatus[marketFeedKey{Host: sk.Host, Namespace: sk.Namespace, Symbol: sk.Symbol, Timeframe: sk.Timeframe}] = sk.Readiness
+		}
+	}
+	var out []sharedFeedUnreadyKey
+	for _, k := range unreadyCandleKeys(snap, keys) {
+		st, detail := sharedFeedEntryStatus(snap.keys[k])
+		u := sharedFeedUnreadyKey{Key: k.PayloadID(), Status: st, Detail: detail}
+		if backup != nil {
+			if r, ok := backupStatus[k]; ok {
+				u.BackupStatus, u.BackupDetail = r.Status, r.Detail
+			} else {
+				u.BackupStatus, u.BackupDetail = "missing", "the key is not in the seal"
+			}
+		}
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+func (c *sharedFeedClient) updateFallbackEpisodes(key int64, snap *marketSnapshot, filled, primaryReady []marketFeedKey, report *sharedFeedFetchReport) {
+	details := make(map[string]sharedFeedKeyFill, len(report.FillDetails))
+	for _, d := range report.FillDetails {
+		details[d.Key] = d
+	}
+	var started, ended []marketFeedKey
+	for _, k := range filled {
+		entry, ok := snap.keys[k]
+		if !ok || entry == nil || entry.FilledFrom == "" {
+			continue
+		}
+		if ep, open := c.fallback[k]; open {
+			ep.LastKey = key
+			ep.Cycles++
+			ep.BackupInstance = report.BackupInstance
+			continue
+		}
+		d := details[k.PayloadID()]
+		c.fallback[k] = &feedKeyFallback{
+			Key: k.PayloadID(), StartKey: key, StartedAt: c.clock().Unix(), LastKey: key, Cycles: 1,
+			PrimaryStatus: d.PrimaryStatus, PrimaryDetail: d.PrimaryDetail, BackupInstance: report.BackupInstance,
+		}
+		started = append(started, k)
+	}
+	for _, k := range primaryReady {
+		if _, open := c.fallback[k]; open {
+			delete(c.fallback, k)
+			ended = append(ended, k)
+		}
+	}
+	if len(started) > 0 {
+		parts := make([]string, 0, len(started))
+		for _, k := range started {
+			d := details[k.PayloadID()]
+			why := d.PrimaryStatus
+			if d.PrimaryDetail != "" {
+				why += ": " + d.PrimaryDetail
+			}
+			parts = append(parts, fmt.Sprintf("%s (primary %s; backup %d bars, required %d)", k.PayloadID(), why, d.BackupBars, d.BackupRequired))
+		}
+		report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED KEY FALLBACK** key %d: %s. These keys come from the %s seal (source %s, instance %s, generation %d, hash %s); every other input comes from the %s seal (source %s, instance %s, generation %d, hash %s).",
+			key, strings.Join(parts, "; "), report.BackupEndpoint, report.BackupSource, report.BackupInstance, report.BackupGeneration, report.BackupHash,
+			report.Endpoint, report.Source, report.Instance, report.Generation, report.Hash))
+	}
+	if len(ended) > 0 {
+		ids := make([]string, 0, len(ended))
+		for _, k := range ended {
+			ids = append(ids, k.PayloadID())
+		}
+		report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED KEY FALLBACK ENDED** key %d: %s come from the %s seal again (source %s, instance %s, generation %d, hash %s).",
+			key, strings.Join(ids, ", "), report.Endpoint, report.Source, report.Instance, report.Generation, report.Hash))
+	}
+}
+
+func (c *sharedFeedClient) closeFallbackEpisodes(req feedRequirements) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var closed []string
+	for k := range c.fallback {
+		if _, ok := req.Keys[k]; !ok {
+			delete(c.fallback, k)
+			closed = append(closed, k.PayloadID())
+		}
+	}
+	sort.Strings(closed)
+	return closed
 }
 
 func (c *sharedFeedClient) recordEndpoint(ep sharedFeedEndpoint, key int64, h feedWireHeader, err error, report *sharedFeedFetchReport) {
@@ -462,7 +760,11 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 			continue
 		}
 		if entry.Readiness.Required < cr.Required {
-			gaps = append(gaps, fmt.Sprintf("%s lookback %d is below the %d this consumer needs", cr.Key.PayloadID(), entry.Readiness.Required, cr.Required))
+			if entry.FilledFrom != "" {
+				gaps = append(gaps, fmt.Sprintf("%s lookback %d in the %s seal is below the %d this consumer needs", cr.Key.PayloadID(), entry.Readiness.Required, entry.FilledFrom, cr.Required))
+			} else {
+				gaps = append(gaps, fmt.Sprintf("%s lookback %d is below the %d this consumer needs", cr.Key.PayloadID(), entry.Readiness.Required, cr.Required))
+			}
 			delete(snap.keys, cr.Key)
 		}
 	}
@@ -476,8 +778,12 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 		if !need.Scalar && !need.Records {
 			continue
 		}
-		if _, ok := snap.funding[coin]; !ok {
+		f, ok := snap.funding[coin]
+		switch {
+		case !ok:
 			gaps = append(gaps, fmt.Sprintf("funding for %s is not in the seal", coin))
+		case need.Records && f.RecordsContract != feedFundingRecordsContract:
+			gaps = append(gaps, fmt.Sprintf("funding records for %s carry coverage contract %d, want %d", coin, f.RecordsContract, feedFundingRecordsContract))
 		}
 	}
 	obsKeys := make([]feedObservationKey, 0, len(reqs.Observations))
@@ -596,8 +902,15 @@ func sharedFeedCompatibilityLines(prefix string, descs []feedEndpointDescription
 		for _, coin := range fundingCoins {
 			need := req.Funding[coin]
 			got := fundingServed[coin]
-			if (need.Scalar && !got.Scalar) || (need.Records && !got.Records) {
+			switch {
+			case (need.Scalar && !got.Scalar) || (need.Records && !got.Records):
 				gaps = append(gaps, "funding "+coin+" not served")
+			case need.Records && got.RecordsContract != feedFundingRecordsContract:
+				gaps = append(gaps, fmt.Sprintf("funding records %s coverage contract %d, want %d", coin, got.RecordsContract, feedFundingRecordsContract))
+			case need.Records:
+				for _, gap := range got.need().covers(need) {
+					gaps = append(gaps, fmt.Sprintf("funding records %s reader %s", coin, gap))
+				}
 			}
 		}
 		obsServed := make(map[feedObservationKey]int64, len(desc.Observations))
@@ -671,6 +984,10 @@ func (c *sharedFeedClient) status() *sharedFeedStatus {
 	for _, n := range names {
 		out.Endpoints = append(out.Endpoints, *c.states[n])
 	}
+	for _, ep := range c.fallback {
+		out.Fallbacks = append(out.Fallbacks, *ep)
+	}
+	sort.Slice(out.Fallbacks, func(i, j int) bool { return out.Fallbacks[i].Key < out.Fallbacks[j].Key })
 	if c.last != nil {
 		cp := *c.last
 		out.Last = &cp
@@ -682,6 +999,7 @@ type sharedFeedStatus struct {
 	Outage    bool                   `json:"outage"`
 	ServedBy  string                 `json:"served_by,omitempty"`
 	Endpoints []feedEndpointState    `json:"endpoints"`
+	Fallbacks []feedKeyFallback      `json:"key_fallbacks,omitempty"`
 	Last      *sharedFeedFetchReport `json:"last,omitempty"`
 }
 
@@ -691,8 +1009,29 @@ func sharedFeedAuditLine(r sharedFeedFetchReport, strategies int, cadences []int
 		gaps = strings.Join(r.Gaps, "|")
 	}
 	if r.Status == feedFetchSealed {
-		return fmt.Sprintf("[feed-audit] key=%d status=sealed endpoint=%s source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d strategies=%d cadences=%s at=%d waited_ms=%d gaps=%q",
-			r.Key, r.Endpoint, r.Source, r.Instance, r.Generation, r.Hash, r.Bytes, r.KeysTotal, r.KeysReady, strategies, joinInts(cadences), r.AtUnix, r.WaitedMs, gaps)
+		backupInstance, backupHash := "none", "none"
+		if r.BackupHash != "" {
+			backupInstance, backupHash = r.BackupInstance, r.BackupHash
+		}
+		filled := "none"
+		if len(r.Filled) > 0 {
+			filled = strings.Join(r.Filled, ",")
+		}
+		unready := "none"
+		if len(r.Unready) > 0 {
+			ids := make([]string, 0, len(r.Unready))
+			for _, u := range r.Unready {
+				ids = append(ids, u.Key)
+			}
+			unready = strings.Join(ids, ",")
+		}
+		fillRequest := r.FillRequest
+		if fillRequest == "" {
+			fillRequest = "none"
+		}
+		return fmt.Sprintf("[feed-audit] key=%d status=sealed endpoint=%s source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d strategies=%d cadences=%s at=%d waited_ms=%d backup_instance=%s backup_generation=%d backup_hash=%s filled=%s unready=%s fill_request=%q gaps=%q",
+			r.Key, r.Endpoint, r.Source, r.Instance, r.Generation, r.Hash, r.Bytes, r.KeysTotal, r.KeysReady, strategies, joinInts(cadences), r.AtUnix, r.WaitedMs,
+			backupInstance, r.BackupGeneration, backupHash, filled, unready, fillRequest, gaps)
 	}
 	return fmt.Sprintf("[feed-audit] key=%d status=degraded strategies=%d cadences=%s at=%d waited_ms=%d reason=%q",
 		r.Key, strategies, joinInts(cadences), r.AtUnix, r.WaitedMs, r.Reason)

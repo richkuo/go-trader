@@ -50,16 +50,21 @@ _fixture = os.environ["GO_TRADER_BENCH_FIXTURE"]
 with open(_fixture, "r") as _fh:
     _CANDLES = json.load(_fh)
 
-sys.path.insert(0, os.path.join(_repo, "platforms", "hyperliquid"))
-import adapter as _adapter
+sys.path.insert(0, _repo)
+from platforms.hyperliquid import adapter as _adapter
 
 
 def _pinned_get_ohlcv(self, symbol, interval="1h", limit=200):
+    print("[bench] candle fixture used", file=sys.stderr)
     return _CANDLES[-limit:] if limit and limit > 0 else list(_CANDLES)
 
 
+def _pinned_meta_cache():
+    return {"tokens": [], "universe": []}, {"universe": [{"name": "BTC", "szDecimals": 5}]}
+
+
+_adapter._load_meta_cache = _pinned_meta_cache
 _adapter.HyperliquidExchangeAdapter.get_ohlcv = _pinned_get_ohlcv
-print("[bench] candle fixture injected", file=sys.stderr)
 '''
 
 
@@ -72,6 +77,8 @@ def _write_sitecustomize(dir_path: str) -> str:
 
 def _bench_env(fixture: str, inject_dir: str) -> dict:
     env = dict(os.environ)
+    env.pop("HYPERLIQUID_SECRET_KEY", None)
+    env.pop("HYPERLIQUID_ACCOUNT_ADDRESS", None)
     env["GO_TRADER_BENCH_REPO"] = REPO_ROOT
     env["GO_TRADER_BENCH_FIXTURE"] = fixture
     existing = env.get("PYTHONPATH", "")
@@ -80,16 +87,23 @@ def _bench_env(fixture: str, inject_dir: str) -> dict:
     return env
 
 
+def _require_fixture_use(proc: subprocess.CompletedProcess) -> str:
+    stderr = proc.stderr.decode(errors="replace")
+    if "[bench] candle fixture used" not in stderr.splitlines():
+        raise SystemExit(
+            "candle fixture was not used; refusing to publish a network-bound "
+            "benchmark.\nchild stderr:\n" + stderr)
+    return stderr
+
+
 def _verify_injection(env: dict) -> None:
     proc = subprocess.run(
         [PYTHON, CHECK_SCRIPT] + _strategy_argv(DEFAULT_STRATEGIES[0]),
         cwd=REPO_ROOT, env=env, capture_output=True, check=False,
     )
-    stderr = proc.stderr.decode(errors="replace")
-    if "[bench] candle fixture injected" not in stderr:
-        raise SystemExit(
-            "candle fixture injection did not take effect; refusing to publish a "
-            "network-bound benchmark.\nchild stderr:\n" + stderr)
+    stderr = _require_fixture_use(proc)
+    if proc.returncode != 0:
+        raise SystemExit("preflight child exited %d:\n%s" % (proc.returncode, stderr))
     try:
         payload = json.loads(proc.stdout.decode())
     except ValueError:
@@ -105,7 +119,7 @@ def _verify_batched_arm(env: dict) -> None:
         cwd=REPO_ROOT, env=env, input=_batch_stdin(strategies).encode(),
         capture_output=True, check=False,
     )
-    stderr = proc.stderr.decode(errors="replace")
+    stderr = _require_fixture_use(proc)
     if proc.returncode != 0:
         raise SystemExit("batched preflight child exited %d:\n%s"
                          % (proc.returncode, stderr))
@@ -144,7 +158,7 @@ def _run(args, stdin_text=None, env=None):
         cwd=REPO_ROOT,
         input=stdin_text.encode() if stdin_text is not None else None,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         env=env,
         check=False,
     )
@@ -152,6 +166,7 @@ def _run(args, stdin_text=None, env=None):
         raise SystemExit(
             "benchmark child exited %d (argv: %s); refusing to publish a timing "
             "for work that did not complete." % (proc.returncode, " ".join(args)))
+    _require_fixture_use(proc)
 
 
 def _strategy_argv(strategy: str) -> list:

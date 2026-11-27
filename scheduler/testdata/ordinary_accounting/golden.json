@@ -1,46 +1,5 @@
 {
   "bookings": {
-    "futures_open_close": {
-      "book": {
-        "cash": "20726.75",
-        "circuit_breaker": false,
-        "closed": [
-          "{\"avg_cost\":\"5002.5\",\"close_price\":\"5007.495\",\"close_reason\":\"signal\",\"quantity\":\"3\",\"realized_pnl\":\"741.75\",\"side\":\"long\",\"symbol\":\"ES\"}"
-        ],
-        "consecutive_losses": 0,
-        "current_drawdown": "0",
-        "daily_pnl": "741.75",
-        "options": {},
-        "peak_value": "20000",
-        "positions": {
-          "ES": {
-            "added_notional_usd": "0",
-            "avg_cost": "5007.495",
-            "hedge_for": "",
-            "initial_quantity": "3",
-            "last_add_price": "0",
-            "leverage": "0",
-            "multiplier": "50",
-            "quantity": "3",
-            "risk_anchor_price": "0",
-            "scale_in_count": 0,
-            "side": "short",
-            "symbol": "ES"
-          }
-        },
-        "trades": [
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Close long 3 contracts, PnL: $741.75 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"5007.495\",\"quantity\":\"3\",\"realized_pnl\":\"749.25\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"751124.25\"}",
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Open long 3 contracts @ $5002.50 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":false,\"pnl_gross\":true,\"price\":\"5002.5\",\"quantity\":\"3\",\"realized_pnl\":\"0\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"4500\"}",
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Open short 3 contracts @ $5007.49 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":false,\"pnl_gross\":true,\"price\":\"5007.495\",\"quantity\":\"3\",\"realized_pnl\":\"0\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"4500\"}"
-        ]
-      },
-      "result": [
-        1,
-        true,
-        2,
-        true
-      ]
-    },
     "hl_book_close": {
       "book": {
         "cash": "10197.39",
@@ -379,19 +338,20 @@
         "paper_kill_switch_owner_false": {
           "auto_reset": true,
           "books": {
-            "deribit-opt": {
-              "cash": "5250",
+            "hl-btc-short": {
+              "cash": "2830",
               "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 2,
+              "closed": [
+                "{\"avg_cost\":\"63000\",\"close_price\":\"52000\",\"close_reason\":\"circuit_breaker\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"side\":\"short\",\"symbol\":\"BTC\"}"
+              ],
+              "consecutive_losses": 0,
               "current_drawdown": "0",
-              "daily_pnl": "-250",
+              "daily_pnl": "330",
               "options": {},
-              "peak_value": "6400",
+              "peak_value": "3100",
               "positions": {},
               "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-100.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"700\",\"quantity\":\"1\",\"realized_pnl\":\"-100\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"deribit-opt\",\"symbol\":\"BTC-P-55000\",\"trade_type\":\"options\",\"value\":\"700\"}",
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-150.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"750\",\"quantity\":\"1\",\"realized_pnl\":\"-150\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"deribit-opt\",\"symbol\":\"BTC-C-70000\",\"trade_type\":\"options\",\"value\":\"750\"}"
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $330.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"52000\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"hl-btc-short\",\"symbol\":\"BTC\",\"trade_type\":\"perps\",\"value\":\"1560\"}"
               ]
             },
             "hl-corrupt": {
@@ -460,7 +420,22 @@
                 "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $-600.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"1.5\",\"realized_pnl\":\"-600\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"hl-short\",\"symbol\":\"ETH\",\"trade_type\":\"perps\",\"value\":\"5400\"}"
               ]
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5250",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 2,
+              "current_drawdown": "0",
+              "daily_pnl": "-250",
+              "options": {},
+              "peak_value": "6400",
+              "positions": {},
+              "trades": [
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-100.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"700\",\"quantity\":\"10\",\"realized_pnl\":\"-100\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"ibkr-opt\",\"symbol\":\"BTC-P-55000\",\"trade_type\":\"options\",\"value\":\"700\"}",
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-150.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"750\",\"quantity\":\"10\",\"realized_pnl\":\"-150\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ibkr-opt\",\"symbol\":\"BTC-C-70000\",\"trade_type\":\"options\",\"value\":\"750\"}"
+              ]
+            },
+            "rh-eth-spot": {
               "cash": "2300",
               "circuit_breaker": false,
               "closed": [
@@ -473,37 +448,21 @@
               "peak_value": "2100",
               "positions": {},
               "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close long, PnL: $300.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"0.5\",\"realized_pnl\":\"300\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"okx-spot\",\"symbol\":\"ETH\",\"trade_type\":\"spot\",\"value\":\"1800\"}"
-              ]
-            },
-            "okx-swap": {
-              "cash": "2830",
-              "circuit_breaker": false,
-              "closed": [
-                "{\"avg_cost\":\"63000\",\"close_price\":\"52000\",\"close_reason\":\"circuit_breaker\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"side\":\"short\",\"symbol\":\"BTC\"}"
-              ],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "330",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {},
-              "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $330.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"52000\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"okx-swap\",\"symbol\":\"BTC\",\"trade_type\":\"perps\",\"value\":\"1560\"}"
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close long, PnL: $300.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"0.5\",\"realized_pnl\":\"300\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"rh-eth-spot\",\"symbol\":\"ETH\",\"trade_type\":\"spot\",\"value\":\"1800\"}"
               ]
             }
           },
           "close_applied": true,
           "closed": [
-            "deribit-opt",
+            "hl-btc-short",
             "hl-corrupt",
             "hl-hedged",
             "hl-long",
             "hl-short",
-            "okx-spot",
-            "okx-swap"
+            "ibkr-opt",
+            "rh-eth-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: deribit-opt, hl-corrupt, hl-hedged, hl-long, hl-short, okx-spot, okx-swap No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle. The drawdown peak stays at its old value until the first eligible paper valuation after this close, which then becomes the new peak.",
           "portfolio_risk": {
             "current_drawdown_pct": "0",
             "current_margin_drawdown_pct": "0",
@@ -511,26 +470,27 @@
             "events": 2,
             "kill_switch_active": false,
             "kill_switch_close_applied": false,
-            "peak_value": "20405",
+            "peak_value": "31000",
             "warning_sent": false
           }
         },
         "paper_kill_switch_owner_true": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5250",
+            "hl-btc-short": {
+              "cash": "2830",
               "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 2,
+              "closed": [
+                "{\"avg_cost\":\"63000\",\"close_price\":\"52000\",\"close_reason\":\"circuit_breaker\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"side\":\"short\",\"symbol\":\"BTC\"}"
+              ],
+              "consecutive_losses": 0,
               "current_drawdown": "0",
-              "daily_pnl": "-250",
+              "daily_pnl": "330",
               "options": {},
-              "peak_value": "6400",
+              "peak_value": "3100",
               "positions": {},
               "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-100.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"700\",\"quantity\":\"1\",\"realized_pnl\":\"-100\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"deribit-opt\",\"symbol\":\"BTC-P-55000\",\"trade_type\":\"options\",\"value\":\"700\"}",
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-150.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"750\",\"quantity\":\"1\",\"realized_pnl\":\"-150\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"deribit-opt\",\"symbol\":\"BTC-C-70000\",\"trade_type\":\"options\",\"value\":\"750\"}"
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $330.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"52000\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"hl-btc-short\",\"symbol\":\"BTC\",\"trade_type\":\"perps\",\"value\":\"1560\"}"
               ]
             },
             "hl-corrupt": {
@@ -599,7 +559,22 @@
                 "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $-600.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"1.5\",\"realized_pnl\":\"-600\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"hl-short\",\"symbol\":\"ETH\",\"trade_type\":\"perps\",\"value\":\"5400\"}"
               ]
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5250",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 2,
+              "current_drawdown": "0",
+              "daily_pnl": "-250",
+              "options": {},
+              "peak_value": "6400",
+              "positions": {},
+              "trades": [
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-100.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"700\",\"quantity\":\"10\",\"realized_pnl\":\"-100\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"ibkr-opt\",\"symbol\":\"BTC-P-55000\",\"trade_type\":\"options\",\"value\":\"700\"}",
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker force-close, PnL: $-150.00\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"750\",\"quantity\":\"10\",\"realized_pnl\":\"-150\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ibkr-opt\",\"symbol\":\"BTC-C-70000\",\"trade_type\":\"options\",\"value\":\"750\"}"
+              ]
+            },
+            "rh-eth-spot": {
               "cash": "2300",
               "circuit_breaker": false,
               "closed": [
@@ -612,37 +587,21 @@
               "peak_value": "2100",
               "positions": {},
               "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close long, PnL: $300.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"0.5\",\"realized_pnl\":\"300\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"okx-spot\",\"symbol\":\"ETH\",\"trade_type\":\"spot\",\"value\":\"1800\"}"
-              ]
-            },
-            "okx-swap": {
-              "cash": "2830",
-              "circuit_breaker": false,
-              "closed": [
-                "{\"avg_cost\":\"63000\",\"close_price\":\"52000\",\"close_reason\":\"circuit_breaker\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"side\":\"short\",\"symbol\":\"BTC\"}"
-              ],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "330",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {},
-              "trades": [
-                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close short, PnL: $330.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"52000\",\"quantity\":\"0.03\",\"realized_pnl\":\"330\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"okx-swap\",\"symbol\":\"BTC\",\"trade_type\":\"perps\",\"value\":\"1560\"}"
+                "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Circuit breaker close long, PnL: $300.00 (model-only reconciliation adjustment; no exchange fill), pre-streak=0\",\"exchange_fee\":\"0\",\"exchange_order_id\":\"\",\"fee_source\":\"reconcile_adjustment\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"3600\",\"quantity\":\"0.5\",\"realized_pnl\":\"300\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"rh-eth-spot\",\"symbol\":\"ETH\",\"trade_type\":\"spot\",\"value\":\"1800\"}"
               ]
             }
           },
           "close_applied": true,
           "closed": [
-            "deribit-opt",
+            "hl-btc-short",
             "hl-corrupt",
             "hl-hedged",
             "hl-long",
             "hl-short",
-            "okx-spot",
-            "okx-swap"
+            "ibkr-opt",
+            "rh-eth-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: deribit-opt, hl-corrupt, hl-hedged, hl-long, hl-short, okx-spot, okx-swap No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper' to clear this latch.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM prompt with 'reset paper' followed by the prompt's reply code to clear this latch.",
           "portfolio_risk": {
             "current_drawdown_pct": "34.1774193548",
             "current_margin_drawdown_pct": "30.2114803625",
@@ -748,7 +707,7 @@
             "hl-noprice",
             "rh-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle. The drawdown peak stays at its old value until the first eligible paper valuation after this close, which then becomes the new peak.",
           "portfolio_risk": {
             "current_drawdown_pct": "0",
             "current_margin_drawdown_pct": "0",
@@ -756,7 +715,7 @@
             "events": 2,
             "kill_switch_active": false,
             "kill_switch_close_applied": false,
-            "peak_value": "1960",
+            "peak_value": "2700",
             "warning_sent": false
           }
         },
@@ -801,7 +760,7 @@
             "hl-noprice",
             "rh-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper:alt' to clear this latch.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM prompt with 'reset paper:alt' followed by the prompt's reply code to clear this latch.",
           "portfolio_risk": {
             "current_drawdown_pct": "27.4074074074",
             "current_margin_drawdown_pct": "0",
@@ -924,27 +883,31 @@
         "paper_kill_switch_owner_false": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -1069,7 +1032,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -1092,33 +1078,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -1141,27 +1100,31 @@
         "paper_kill_switch_owner_true": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -1286,7 +1249,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -1309,33 +1295,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -1663,27 +1622,31 @@
         "paper_kill_switch_owner_false": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -1808,7 +1771,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -1831,33 +1817,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -1880,27 +1839,31 @@
         "paper_kill_switch_owner_true": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -2025,7 +1988,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -2048,33 +2034,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -2402,27 +2361,31 @@
         "paper_kill_switch_owner_false": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -2547,7 +2510,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -2570,33 +2556,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -2619,27 +2578,31 @@
         "paper_kill_switch_owner_true": {
           "auto_reset": false,
           "books": {
-            "deribit-opt": {
-              "cash": "5200",
+            "hl-btc-short": {
+              "cash": "2500",
               "circuit_breaker": false,
               "closed": [],
               "consecutive_losses": 0,
               "current_drawdown": "0",
               "daily_pnl": "0",
-              "options": {
-                "BTC-C-70000": {
-                  "action": "buy",
-                  "current_value_usd": "750",
-                  "quantity": "1"
-                },
-                "BTC-P-55000": {
-                  "action": "sell",
-                  "current_value_usd": "-700",
-                  "quantity": "1"
+              "options": {},
+              "peak_value": "3100",
+              "positions": {
+                "BTC": {
+                  "added_notional_usd": "0",
+                  "avg_cost": "63000",
+                  "hedge_for": "",
+                  "initial_quantity": "0.03",
+                  "last_add_price": "0",
+                  "leverage": "4",
+                  "multiplier": "1",
+                  "quantity": "0.03",
+                  "risk_anchor_price": "0",
+                  "scale_in_count": 0,
+                  "side": "short",
+                  "symbol": "BTC"
                 }
               },
-              "peak_value": "6400",
-              "positions": {},
               "trades": []
             },
             "hl-corrupt": {
@@ -2764,7 +2727,30 @@
               },
               "trades": []
             },
-            "okx-spot": {
+            "ibkr-opt": {
+              "cash": "5200",
+              "circuit_breaker": false,
+              "closed": [],
+              "consecutive_losses": 0,
+              "current_drawdown": "0",
+              "daily_pnl": "0",
+              "options": {
+                "BTC-C-70000": {
+                  "action": "buy",
+                  "current_value_usd": "750",
+                  "quantity": "10"
+                },
+                "BTC-P-55000": {
+                  "action": "sell",
+                  "current_value_usd": "-700",
+                  "quantity": "10"
+                }
+              },
+              "peak_value": "6400",
+              "positions": {},
+              "trades": []
+            },
+            "rh-eth-spot": {
               "cash": "500",
               "circuit_breaker": false,
               "closed": [],
@@ -2787,33 +2773,6 @@
                   "scale_in_count": 0,
                   "side": "long",
                   "symbol": "ETH"
-                }
-              },
-              "trades": []
-            },
-            "okx-swap": {
-              "cash": "2500",
-              "circuit_breaker": false,
-              "closed": [],
-              "consecutive_losses": 0,
-              "current_drawdown": "0",
-              "daily_pnl": "0",
-              "options": {},
-              "peak_value": "3100",
-              "positions": {
-                "BTC": {
-                  "added_notional_usd": "0",
-                  "avg_cost": "63000",
-                  "hedge_for": "",
-                  "initial_quantity": "0.03",
-                  "last_add_price": "0",
-                  "leverage": "4",
-                  "multiplier": "1",
-                  "quantity": "0.03",
-                  "risk_anchor_price": "0",
-                  "scale_in_count": 0,
-                  "side": "short",
-                  "symbol": "BTC"
                 }
               },
               "trades": []
@@ -3078,29 +3037,33 @@
   },
   "valuations": {
     "check_risk": {
-      "deribit-opt": {
+      "hl-btc-short": {
         "allowed": true,
         "book": {
-          "cash": "5200",
+          "cash": "2500",
           "circuit_breaker": false,
           "closed": [],
           "consecutive_losses": 0,
-          "current_drawdown": "17.96875",
+          "current_drawdown": "0",
           "daily_pnl": "0",
-          "options": {
-            "BTC-C-70000": {
-              "action": "buy",
-              "current_value_usd": "750",
-              "quantity": "1"
-            },
-            "BTC-P-55000": {
-              "action": "sell",
-              "current_value_usd": "-700",
-              "quantity": "1"
+          "options": {},
+          "peak_value": "3100",
+          "positions": {
+            "BTC": {
+              "added_notional_usd": "0",
+              "avg_cost": "63000",
+              "hedge_for": "",
+              "initial_quantity": "0.03",
+              "last_add_price": "0",
+              "leverage": "4",
+              "multiplier": "1",
+              "quantity": "0.03",
+              "risk_anchor_price": "0",
+              "scale_in_count": 0,
+              "side": "short",
+              "symbol": "BTC"
             }
           },
-          "peak_value": "6400",
-          "positions": {},
           "trades": []
         },
         "reason": ""
@@ -3367,7 +3330,34 @@
         },
         "reason": ""
       },
-      "okx-spot": {
+      "ibkr-opt": {
+        "allowed": true,
+        "book": {
+          "cash": "5200",
+          "circuit_breaker": false,
+          "closed": [],
+          "consecutive_losses": 0,
+          "current_drawdown": "17.96875",
+          "daily_pnl": "0",
+          "options": {
+            "BTC-C-70000": {
+              "action": "buy",
+              "current_value_usd": "750",
+              "quantity": "10"
+            },
+            "BTC-P-55000": {
+              "action": "sell",
+              "current_value_usd": "-700",
+              "quantity": "10"
+            }
+          },
+          "peak_value": "6400",
+          "positions": {},
+          "trades": []
+        },
+        "reason": ""
+      },
+      "rh-eth-spot": {
         "allowed": true,
         "book": {
           "cash": "500",
@@ -3392,37 +3382,6 @@
               "scale_in_count": 0,
               "side": "long",
               "symbol": "ETH"
-            }
-          },
-          "trades": []
-        },
-        "reason": ""
-      },
-      "okx-swap": {
-        "allowed": true,
-        "book": {
-          "cash": "2500",
-          "circuit_breaker": false,
-          "closed": [],
-          "consecutive_losses": 0,
-          "current_drawdown": "0",
-          "daily_pnl": "0",
-          "options": {},
-          "peak_value": "3100",
-          "positions": {
-            "BTC": {
-              "added_notional_usd": "0",
-              "avg_cost": "63000",
-              "hedge_for": "",
-              "initial_quantity": "0.03",
-              "last_add_price": "0",
-              "leverage": "4",
-              "multiplier": "1",
-              "quantity": "0.03",
-              "risk_anchor_price": "0",
-              "scale_in_count": 0,
-              "side": "short",
-              "symbol": "BTC"
             }
           },
           "trades": []
@@ -3462,9 +3421,8 @@
       }
     },
     "collect_positions": {
-      "deribit-opt": [
-        "deribit-opt OPT BTC-C-70000 ($750.00) mark unknown",
-        "deribit-opt OPT BTC-P-55000 ($-700.00) mark unknown"
+      "hl-btc-short": [
+        "hl-btc-short SHORT BTC x0.030 @ $63,000.00 (+$30.00) | SL: $64,000.00 (-1.6%) | 4x ($473 margin)"
       ],
       "hl-corrupt": [
         "hl-corrupt LONG AVAX x0.000 @ $0.00 (+$0.00) | 2x ($0 margin)"
@@ -3491,11 +3449,12 @@
       "hl-short": [
         "hl-short SHORT ETH x1.500 @ $3,200.00 (+$150.00) | SL: $3,300.00 (-3.1%) | 3x ($1,600 margin)"
       ],
-      "okx-spot": [
-        "okx-spot LONG ETH x0.500 @ $3,000.00 (+$50.00)"
+      "ibkr-opt": [
+        "ibkr-opt OPT BTC-C-70000 ($750.00) mark unknown",
+        "ibkr-opt OPT BTC-P-55000 ($-700.00) mark unknown"
       ],
-      "okx-swap": [
-        "okx-swap SHORT BTC x0.030 @ $63,000.00 (+$30.00) | SL: $64,000.00 (-1.6%) | 4x ($473 margin)"
+      "rh-eth-spot": [
+        "rh-eth-spot LONG ETH x0.500 @ $3,000.00 (+$50.00)"
       ],
       "rh-spot": [
         "rh-spot LONG DOGE x4000.000 @ $0.15 (-$120.00)"
@@ -3569,9 +3528,9 @@
               "gross_delta_usd": "14260",
               "net_delta_usd": "10540",
               "strategies": [
-                "deribit-opt|options|9300",
+                "hl-btc-short|perps|-1860",
                 "hl-long|perps|3100",
-                "okx-swap|perps|-1860"
+                "ibkr-opt|options|9300"
               ]
             },
             "ETH": {
@@ -3580,7 +3539,7 @@
               "net_delta_usd": "-3100",
               "strategies": [
                 "hl-short|perps|-4650",
-                "okx-spot|spot|1550"
+                "rh-eth-spot|spot|1550"
               ]
             },
             "SOL": {
@@ -3603,9 +3562,9 @@
             "gross_delta_usd": "14260",
             "net_delta_usd": "10540",
             "strategies": [
-              "deribit-opt|options|9300",
+              "hl-btc-short|perps|-1860",
               "hl-long|perps|3100",
-              "okx-swap|perps|-1860"
+              "ibkr-opt|options|9300"
             ]
           },
           "ETH": {
@@ -3614,7 +3573,7 @@
             "net_delta_usd": "-3100",
             "strategies": [
               "hl-short|perps|-4650",
-              "okx-spot|spot|1550"
+              "rh-eth-spot|spot|1550"
             ]
           },
           "SOL": {
@@ -3677,7 +3636,7 @@
       }
     },
     "display_strategy_value": {
-      "deribit-opt": "5250",
+      "hl-btc-short": "2530",
       "hl-corrupt": "1100",
       "hl-hedged": "1825",
       "hl-live-a": "20",
@@ -3686,8 +3645,8 @@
       "hl-manual": "40",
       "hl-noprice": "1200",
       "hl-short": "3950",
-      "okx-spot": "2050",
-      "okx-swap": "2530",
+      "ibkr-opt": "5250",
+      "rh-eth-spot": "2050",
       "rh-spot": "880"
     },
     "exposure_cap": {
@@ -3771,7 +3730,7 @@
       }
     },
     "portfolio_value": {
-      "deribit-opt": "5250",
+      "hl-btc-short": "2530",
       "hl-corrupt": "1100",
       "hl-hedged": "1825",
       "hl-live-a": "20",
@@ -3780,12 +3739,12 @@
       "hl-manual": "40",
       "hl-noprice": "1200",
       "hl-short": "3950",
-      "okx-spot": "2050",
-      "okx-swap": "2530",
+      "ibkr-opt": "5250",
+      "rh-eth-spot": "2050",
       "rh-spot": "880"
     },
     "portfolio_warning_position": {
-      "deribit-opt": "(flat)",
+      "hl-btc-short": "pos: short 0.03 BTC @ $63000 ($30 unrealized)",
       "hl-corrupt": "(flat)",
       "hl-hedged": "pos: short 0.01 BTC @ $62500 ($5 unrealized) +1 more",
       "hl-live-a": "pos: long 0.02 BTC @ $61000 ($20 unrealized)",
@@ -3794,8 +3753,8 @@
       "hl-manual": "pos: long 0.4 ETH @ $3000 ($40 unrealized)",
       "hl-noprice": "pos: long 30 XYZ @ $10 ($0 unrealized)",
       "hl-short": "pos: short 1.5 ETH @ $3200 ($150 unrealized)",
-      "okx-spot": "pos: long 0.5 ETH @ $3000 ($50 unrealized)",
-      "okx-swap": "pos: short 0.03 BTC @ $63000 ($30 unrealized)",
+      "ibkr-opt": "(flat)",
+      "rh-eth-spot": "pos: long 0.5 ETH @ $3000 ($50 unrealized)",
       "rh-spot": "pos: long 4000 DOGE @ $0.15 (-$120 unrealized)"
     },
     "shared_wallet_pool": {
