@@ -659,7 +659,7 @@ func okxAbsentCloseHeld(expiresAtMs int64, now time.Time) string {
 
 func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) bool {
 	incident := func(why string) { okxProtectionIncident(store, s, mu, p, why, notifier, logger) }
-	orderID := fmt.Sprintf("okr%x", sha256.Sum256([]byte(p.RecordID)))[:32]
+	orderID := fmt.Sprintf("okr%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d", p.RecordID, p.Version+1))))[:32]
 	var saved okxStopRequest
 	if p.RequestJSON != "" {
 		if err := json.Unmarshal([]byte(p.RequestJSON), &saved); err != nil {
@@ -671,7 +671,7 @@ func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState
 	if p.Status == okxProtectReducing && saved.Reduce != nil && saved.Reduce.ClientID != "" {
 		orderID = saved.Reduce.ClientID
 	}
-	if p.Status != okxProtectReducing {
+	if p.Status != okxProtectReducing || saved.Reduce == nil {
 		pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
 		if err != nil {
 			incident("owned exposure could not be verified before a reduce: " + err.Error())
@@ -738,7 +738,25 @@ func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState
 		incident(fmt.Sprintf("the emergency reduce has no confirmed fill for order %s (submit: %v, read: %v)", orderID, submitErr, err))
 		return false
 	}
-	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, okxProtectReducing, true, notifier, logger, nil)
+	fill := out.Fills[0]
+	qty, qtyErr := strconv.ParseFloat(fill.Qty, 64)
+	if qtyErr != nil || fill.OrdID == "" || fill.Side != okxReduceSide(p.Side) || qty < 0 ||
+		saved.Reduce == nil || saved.Reduce.ClientID != orderID {
+		incident(fmt.Sprintf("the emergency reduce %s evidence does not match the saved side or size", orderID))
+		return false
+	}
+	if qty == 0 {
+		return releaseOKXEmergencyReduce(store, s, mu, p, saved, notifier, logger)
+	}
+	if !okxUsablePrice(qty) || qty > saved.Reduce.Quantity && !okxFillQuantityEqual(qty, saved.Reduce.Quantity) {
+		incident(fmt.Sprintf("the emergency reduce %s evidence does not match the saved side or size", orderID))
+		return false
+	}
+	next := okxProtectArming
+	if p.AlgoID != "" {
+		next = okxProtectArmed
+	}
+	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, next, true, notifier, logger, &saved)
 	return false
 }
 
@@ -1136,7 +1154,8 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 	}
 	if requested != nil {
 		saved := *requested
-		if saved.Close.Circuit {
+		clearReduce := saved.Close == nil && saved.Reduce != nil
+		if saved.Close != nil && saved.Close.Circuit {
 			if old := s.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); old != nil {
 				left := saved.Close.Quantity
 				for _, fill := range verified {
@@ -1153,6 +1172,9 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 			}
 		}
 		saved.Close = nil
+		if clearReduce {
+			saved.Reduce = nil
+		}
 		raw, _ := json.Marshal(saved)
 		p.RequestJSON = string(raw)
 	}

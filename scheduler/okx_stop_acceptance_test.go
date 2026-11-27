@@ -622,6 +622,94 @@ func TestOKXStopAbsentCloseRelease(t *testing.T) {
 	})
 }
 
+func TestOKXStopEmergencyTerminalReduce(t *testing.T) {
+	pct := 2.0
+	sc := StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "perps", Script: okxStopScript, Direction: DirectionBoth, StopLossPct: &pct, Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+	start := func(t *testing.T, fix *okxAcceptFixture) (*StateStore, *StateDB, *StrategyState, *sync.RWMutex) {
+		t.Helper()
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		mu := &sync.RWMutex{}
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		return store, db, live, mu
+	}
+	t.Run("canceled-zero", func(t *testing.T) {
+		fix := &okxAcceptFixture{failMark: true, rejectReduce: true, followupReduce: true}
+		store, _, live, mu := start(t, fix)
+		logger := silentStrategyLogger(sc.ID)
+		reconcileOKXProtection(store, sc, live, mu, nil, logger)
+		reduceLeft := live.OKXProtection != nil && live.OKXProtection.RequestJSON != "" && okxSavedRequest(t, live.OKXProtection).Reduce != nil
+		if fix.reduceWrites != 1 || len(live.TradeHistory) != 0 || live.Positions["BTC"] == nil ||
+			live.OKXProtection == nil || live.OKXProtection.Status == okxProtectReducing || reduceLeft {
+			t.Fatalf("a zero-fill emergency reduce must clear without a booking: writes=%d trades=%d protection=%+v", fix.reduceWrites, len(live.TradeHistory), live.OKXProtection)
+		}
+		first := fix.reduceClientID
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		closer := protectedOKXCloser(store, app, []StrategyConfig{sc}, mu, nil, false, func(string, *float64) (*OKXCloseResult, error) {
+			t.Fatal("kill switch used the fallback while the stop row was unresolved")
+			return nil, nil
+		})
+		_, _ = closer("BTC", nil)
+		if fix.reduceWrites != 2 || fix.secondReduceID == "" || fix.secondReduceID == first || len(live.TradeHistory) != 0 {
+			t.Fatalf("the kill-switch close did not send a new order: writes=%d first=%s second=%s trades=%d", fix.reduceWrites, first, fix.secondReduceID, len(live.TradeHistory))
+		}
+	})
+	t.Run("canceled-partial", func(t *testing.T) {
+		fix := &okxAcceptFixture{failMark: true, emergencyPartial: true}
+		store, _, live, mu := start(t, fix)
+		logger := silentStrategyLogger(sc.ID)
+		reconcileOKXProtection(store, sc, live, mu, nil, logger)
+		if fix.reduceWrites != 1 || live.Positions["BTC"] == nil || live.Positions["BTC"].Quantity != 6 ||
+			len(live.TradeHistory) != 1 || live.TradeHistory[0].Quantity != 4 || !live.TradeHistory[0].IsClose ||
+			live.OKXProtection == nil || !live.OKXProtection.unresolved() || okxSavedRequest(t, live.OKXProtection).Reduce != nil {
+			t.Fatalf("the partial emergency fill was not booked once: trades=%+v protection=%+v", live.TradeHistory, live.OKXProtection)
+		}
+		first := fix.reduceClientID
+		reconcileOKXProtection(store, sc, live, mu, nil, logger)
+		if fix.reduceWrites != 2 || fix.secondReduceID == "" || fix.secondReduceID == first ||
+			live.OKXProtection != nil || live.Positions["BTC"] != nil || len(live.TradeHistory) != 2 ||
+			live.TradeHistory[1].Quantity != 6 || !live.TradeHistory[1].IsClose {
+			t.Fatalf("the remainder was not reduced once with a new id: writes=%d first=%s second=%s trades=%+v protection=%+v", fix.reduceWrites, first, fix.secondReduceID, live.TradeHistory, live.OKXProtection)
+		}
+	})
+	t.Run("restart-between-book-and-clear", func(t *testing.T) {
+		fix := &okxAcceptFixture{failMark: true, emergencyPartial: true}
+		store, db, live, mu := start(t, fix)
+		logger := silentStrategyLogger(sc.ID)
+		reconcileOKXProtection(store, sc, live, mu, nil, logger)
+		if len(live.TradeHistory) != 1 || live.TradeHistory[0].Quantity != 4 || live.OKXProtection == nil {
+			t.Fatalf("the partial fill was not booked before the restart: %+v", live.TradeHistory)
+		}
+		saved := okxSavedRequest(t, live.OKXProtection)
+		saved.Reduce = &okxPendingClose{ClientID: fix.reduceClientID, Quantity: 10}
+		raw, err := json.Marshal(saved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live.OKXProtection.RequestJSON = string(raw)
+		live.OKXProtection.bump(okxProtectReducing)
+		if err := store.SaveStrategyBook(live); err != nil {
+			t.Fatal(err)
+		}
+		restarted, err := db.LoadState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.LoadOKXProtections(restarted, []StrategyConfig{sc}); err != nil {
+			t.Fatal(err)
+		}
+		loaded := restarted.Strategies[sc.ID]
+		reconcileOKXProtection(store, sc, loaded, mu, nil, logger)
+		if fix.reduceWrites != 1 || len(loaded.TradeHistory) != 1 || loaded.TradeHistory[0].Quantity != 4 ||
+			loaded.OKXProtection == nil || okxSavedRequest(t, loaded.OKXProtection).Reduce != nil {
+			t.Fatalf("the restarted partial fill was booked again: writes=%d trades=%+v protection=%+v", fix.reduceWrites, loaded.TradeHistory, loaded.OKXProtection)
+		}
+	})
+}
+
 func TestOKXStopCloseWithoutSavedStop(t *testing.T) {
 	if filepath.Base(mustGetwd(t)) == "scheduler" {
 		t.Chdir("..")
@@ -1007,6 +1095,9 @@ type okxAcceptFixture struct {
 	rejectReduce        bool
 	absentReduce        bool
 	reduceTransportFail bool
+	followupReduce      bool
+	emergencyPartial    bool
+	partialFilled       bool
 	stopBeforeReduce    bool
 	lot                 string
 	mark                string
@@ -1068,8 +1159,9 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.reduceWrites++
 		id := arg("clOrdId")
 		newID := f.reduceClientID != "" && f.reduceClientID != id
+		laterReduce := f.absentReduce || f.followupReduce || f.emergencyPartial
 		if params["reduceOnly"] != true || arg("side") != "sell" || arg("instId") != "BTC-USDT-SWAP" || id == "" ||
-			(f.reduceClientID != "" && (!f.absentReduce || (newID && f.secondReduceID != ""))) {
+			(f.reduceClientID != "" && (!laterReduce || (newID && f.secondReduceID != ""))) {
 			http.Error(w, "invalid or duplicate reduce", 400)
 			return
 		}
@@ -1115,8 +1207,11 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "position read failed", 500)
 			return
 		}
-		if !f.venueFlat && !f.effective && (f.reduceClientID == "" || f.rejectReduce || f.absentReduce || f.reduceTransportFail || f.circuitRemainder != "") {
+		if !f.venueFlat && !f.effective && (f.reduceClientID == "" || f.rejectReduce || f.absentReduce || f.reduceTransportFail || f.emergencyPartial || f.circuitRemainder != "") {
 			qty := "10"
+			if f.emergencyPartial && f.partialFilled {
+				qty = "6"
+			}
 			if f.partial {
 				qty = "4"
 				if f.onlyEntry {
@@ -1171,6 +1266,19 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		payload["data"] = []interface{}{map[string]string{"sCode": "0", "algoId": "algo-live"}}
 	case "privateGetTradeOrder":
 		if arg("clOrdId") != "" {
+			if f.emergencyPartial {
+				row := map[string]string{"instId": "BTC-USDT-SWAP", "clOrdId": arg("clOrdId"), "ordId": "reduce-1", "reduceOnly": "true", "state": "canceled", "side": "sell", "avgPx": "48500", "accFillSz": "4", "fee": "-0.02", "feeCcy": "USDT"}
+				if f.secondReduceID != "" && arg("clOrdId") == f.secondReduceID {
+					row["ordId"] = "reduce-2"
+					row["state"] = "filled"
+					row["accFillSz"] = "6"
+					f.venueFlat = true
+				} else {
+					f.partialFilled = true
+				}
+				payload["data"] = []interface{}{row}
+				break
+			}
 			if f.absentReduce || f.reduceTransportFail {
 				payload["code"] = "51603"
 				break
@@ -1180,7 +1288,7 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if f.rejectReduce {
 					state, qty = "canceled", "0"
 				}
-				payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "clOrdId": f.reduceClientID, "ordId": "reduce-1", "reduceOnly": "true", "state": state, "side": "sell", "avgPx": "48500", "accFillSz": qty, "fee": "-0.02", "feeCcy": "USDT"}}
+				payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "clOrdId": arg("clOrdId"), "ordId": "reduce-1", "reduceOnly": "true", "state": state, "side": "sell", "avgPx": "48500", "accFillSz": qty, "fee": "-0.02", "feeCcy": "USDT"}}
 			}
 		} else if f.effective || f.partial {
 			status := "filled"
