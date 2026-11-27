@@ -6126,9 +6126,9 @@ class Backtester:
             raise ValueError("OKX stop backtest needs an okx_mark column on every bar; a candle close is not a mark")
         return text
 
-    def _okx_contracts(self, coin_qty: float) -> str:
-        from okx_stop_geometry import contracts_from_coin
-        return contracts_from_coin(format(coin_qty, "f"), self._okx_instrument["ct_val"], self._okx_instrument["lot"])
+    def _okx_contracts(self, qty: float) -> str:
+        from decimal import Decimal
+        return format(Decimal(str(qty)), "f")
 
     def _okx_spec(self, side: str, entry: float, mark: str, entry_atr: float, contracts: str, previous: str, high: str) -> dict:
         owner = {

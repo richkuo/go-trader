@@ -625,6 +625,23 @@ def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", 
         except Exception:
             pass
 
+        if reduce_only and fill.get("oid") and not (fill.get("avg_px", 0) > 0 and fill.get("total_sz", 0) > 0):
+            read_err = None
+            for attempt in range(4):
+                try:
+                    row = adapter.confirmed_reduce_order(symbol.upper() + "-USDT-SWAP", fill["oid"])
+                    if row.get("side") != side.lower():
+                        raise RuntimeError("OKX reduce order side does not match")
+                    fill.update(avg_px=float(row["avgPx"]), total_sz=float(row["accFillSz"]),
+                                fee=max(0.0, -float(row["fee"])))
+                    read_err = None
+                    break
+                except Exception as exc:
+                    read_err = exc
+                    if attempt < 3:
+                        time.sleep(0.5)
+            if read_err is not None:
+                raise RuntimeError(f"OKX reduce order {fill['oid']} outcome is unknown: {read_err}")
         print(json.dumps({
             "execution": {
                 "action": "buy" if is_buy else "sell",
@@ -832,17 +849,17 @@ def main():
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--okx-stop", action="store_true")
-        parser.add_argument("--op", required=True, choices=["preflight", "position", "place", "read", "amend", "cancel", "fills", "public-instrument", "arm-reference"])
+        parser.add_argument("--op", required=True, choices=["preflight", "position", "place", "read", "amend", "cancel", "fills", "reduce", "reduce-fill", "public-instrument", "arm-reference"])
         parser.add_argument("--symbol", default="BTC")
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
         parser.add_argument("--contracts", default="")
-        parser.add_argument("--coin-qty", default="")
-        parser.add_argument("--ct-val", default="")
-        parser.add_argument("--lot", default="")
         parser.add_argument("--min-contracts", default="")
         parser.add_argument("--position-side", default="", choices=["", "long", "short"])
         parser.add_argument("--trigger-px", default="")
         parser.add_argument("--algo-client-id", default="")
+        parser.add_argument("--order-id", default="")
+        parser.add_argument("--round-entry", choices=["true"], default="")
+        parser.add_argument("--exp-time-ms", type=int, default=0)
         parser.add_argument("--algo-id", default="")
         parser.add_argument("--probe-only", action="store_true")
         args = parser.parse_args()

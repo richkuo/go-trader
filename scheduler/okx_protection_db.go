@@ -143,8 +143,8 @@ func upsertOKXProtectionRow(exec sqlExecer, sid string, p *okxProtection) error 
 		    size_contracts = excluded.size_contracts,
 		    request_json = CASE WHEN excluded.request_json != '' THEN excluded.request_json ELSE request_json END,
 		    evidence_json = CASE WHEN excluded.evidence_json != '' THEN excluded.evidence_json ELSE evidence_json END,
-		    incident_id = CASE WHEN excluded.incident_id != '' THEN excluded.incident_id ELSE incident_id END,
-		    alerted = MAX(alerted, excluded.alerted),
+		    incident_id = excluded.incident_id,
+		    alerted = excluded.alerted,
 		    version = excluded.version,
 		    position_id = CASE WHEN excluded.position_id != '' THEN excluded.position_id ELSE position_id END,
 		    place_attempts = excluded.place_attempts,
@@ -182,6 +182,11 @@ func (sdb *StateDB) writeOKXProtectionTx(tx *sql.Tx, s *StrategyState) error {
 	sid, err := sdb.okxProtectionOwner(s.ID)
 	if err != nil {
 		return err
+	}
+	if p.Replaces != nil {
+		if err := upsertOKXProtectionRow(tx, sid, p.Replaces); err != nil {
+			return err
+		}
 	}
 	if p.Version > p.durableVersion {
 		if err := upsertOKXProtectionRow(tx, sid, p); err != nil {
@@ -223,6 +228,7 @@ func pruneOKXProtectionAfterCommit(s *StrategyState) {
 		p.AppliedFills[fill.FillID] = true
 	}
 	p.PendingFills = nil
+	p.Replaces = nil
 	if !p.unresolved() {
 		s.OKXProtection = nil
 	}
@@ -265,6 +271,16 @@ func (sdb *StateDB) loadUnresolvedOKXProtection() ([]*okxProtection, []string, e
 		if err != nil {
 			return nil, nil, err
 		}
+		out = append(out, p)
+		sids = append(sids, sid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	for _, p := range out {
 		fills, err := sdb.loadOKXProtectionFills(p.AccountKey, p.RecordID)
 		if err != nil {
 			return nil, nil, err
@@ -272,11 +288,6 @@ func (sdb *StateDB) loadUnresolvedOKXProtection() ([]*okxProtection, []string, e
 		for _, id := range fills {
 			p.AppliedFills[id] = true
 		}
-		out = append(out, p)
-		sids = append(sids, sid)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
 	}
 	return out, sids, nil
 }

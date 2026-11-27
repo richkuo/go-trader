@@ -1712,6 +1712,7 @@ type OKXResult struct {
 	Error           string                 `json:"error,omitempty"`
 	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
 	CloseReduceOnly bool                   `json:"-"`
+	PaperOpenQty    float64                `json:"-"`
 	OrderSubmitted  bool                   `json:"-"`
 }
 

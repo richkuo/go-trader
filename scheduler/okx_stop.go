@@ -411,23 +411,6 @@ func okxFinalizeStop(in okxStopGeometryInput) (okxStopGeometryResult, error) {
 	if minMove.Sign() < 0 {
 		return okxStopGeometryResult{}, fmt.Errorf("min move must be >= 0")
 	}
-	if in.Owner == okxStopOwnerTrail && previous != nil {
-		tighter := (in.Side == "long" && rounded.Cmp(previous) > 0) || (in.Side == "short" && rounded.Cmp(previous) < 0)
-		if !tighter || !okxMinMoveReached(rounded, previous, minMove) {
-			prevText, err := okxFormatRat(previous, in.Tick)
-			if err != nil {
-				return okxStopGeometryResult{}, err
-			}
-			hwText := ""
-			if high != nil {
-				hwText, err = okxFormatRat(high, in.Tick)
-				if err != nil {
-					return okxStopGeometryResult{}, err
-				}
-			}
-			return okxStopGeometryResult{Trigger: prevText, HighWater: hwText, Moved: false}, nil
-		}
-	}
 	var formula *big.Rat
 	if in.Equity != "" && in.Contracts != "" && in.CtVal != "" && in.MMR != "" && in.Fee != "" && in.Entry != "" {
 		formula, err = okxCrossLiquidation(in.Side, in.Equity, in.Contracts, in.CtVal, in.Entry, in.MMR, in.Fee)
@@ -468,6 +451,20 @@ func okxFinalizeStop(in okxStopGeometryInput) (okxStopGeometryResult, error) {
 			}
 		}
 	}
+	moved := true
+	if previous != nil {
+		tighter := func(candidate *big.Rat) bool {
+			return (in.Side == "long" && candidate.Cmp(previous) > 0) || (in.Side == "short" && candidate.Cmp(previous) < 0)
+		}
+		moved = tighter(clamped)
+		if in.Owner == okxStopOwnerTrail && moved && !okxMinMoveReached(clamped, previous, minMove) {
+			_, previousNeedsClamp := okxClampInside(in.Side, previous, bound)
+			moved = previousNeedsClamp
+		}
+		if !moved {
+			clamped = previous
+		}
+	}
 	if !okxOnMarkSide(in.Side, clamped, mark) {
 		return okxStopGeometryResult{}, fmt.Errorf("stop is not on the executable side of the mark")
 	}
@@ -486,7 +483,7 @@ func okxFinalizeStop(in okxStopGeometryInput) (okxStopGeometryResult, error) {
 	if bound != nil && bound.Sign() > 0 {
 		liqText = okxBoundString(bound)
 	}
-	return okxStopGeometryResult{Trigger: trigger, HighWater: hwText, Moved: true, LiqBound: liqText, Clamped: didClamp}, nil
+	return okxStopGeometryResult{Trigger: trigger, HighWater: hwText, Moved: moved, LiqBound: liqText, Clamped: didClamp}, nil
 }
 
 func okxBoundString(v *big.Rat) string {
@@ -506,46 +503,18 @@ func orOKX(v, fallback string) string {
 }
 
 func okxPerpsStopOverlapErrors(strategies []StrategyConfig) []string {
-	type peer struct {
-		id   string
-		stop bool
-	}
-	groups := map[string][]peer{}
+	var ids []string
+	hasStop := false
 	for _, sc := range strategies {
-		if !okxPerpsStrategy(sc) || !okxIsLive(sc.Args) {
-			continue
+		if okxPerpsStrategy(sc) && okxIsLive(sc.Args) {
+			ids = append(ids, sc.ID)
+			owner, _ := okxExplicitStopOwner(sc)
+			hasStop = hasStop || owner != ""
 		}
-		sym := strings.ToUpper(strings.TrimSpace(okxSymbol(sc.Args)))
-		if sym == "" {
-			continue
-		}
-		owner, _ := okxExplicitStopOwner(sc)
-		groups[sym] = append(groups[sym], peer{id: sc.ID, stop: owner != ""})
 	}
-	var syms []string
-	for sym := range groups {
-		syms = append(syms, sym)
+	if !hasStop || len(ids) < 2 {
+		return nil
 	}
-	sort.Strings(syms)
-	var errs []string
-	for _, sym := range syms {
-		peers := groups[sym]
-		if len(peers) < 2 {
-			continue
-		}
-		anyStop := false
-		ids := make([]string, 0, len(peers))
-		for _, p := range peers {
-			ids = append(ids, p.id)
-			if p.stop {
-				anyStop = true
-			}
-		}
-		if !anyStop {
-			continue
-		}
-		sort.Strings(ids)
-		errs = append(errs, fmt.Sprintf("okx perps %s is shared by %s and one of them arms an exchange stop; one live stop owner per instrument", sym, strings.Join(ids, ", ")))
-	}
-	return errs
+	sort.Strings(ids)
+	return []string{fmt.Sprintf("okx perps account is shared by %s; an exchange stop requires one live OKX perps strategy on the account", strings.Join(ids, ", "))}
 }

@@ -163,16 +163,6 @@ def finalize_stop(spec):
     previous_text = spec.get("previous_trigger") or ""
     previous = _positive(previous_text, "previous_trigger") if previous_text else None
     min_move = _decimal(spec.get("min_move_pct") or "0", "min_move_pct")
-    if owner == "trailing_stop_pct" and previous is not None:
-        tighter = (side == "long" and rounded > previous) or (side == "short" and rounded < previous)
-        if not tighter or not _min_move_reached(rounded, previous, min_move):
-            return {
-                "trigger": _format_tick(previous, tick),
-                "high_water": _format_tick(high, tick),
-                "moved": False,
-                "liq_bound": "",
-                "clamped": False,
-            }
     formula = None
     if spec.get("equity") and spec.get("contracts") and spec.get("ct_val") and spec.get("mmr") and spec.get("fee") is not None and spec.get("entry"):
         formula = cross_liquidation_price(side, spec["equity"], spec["contracts"], spec["ct_val"], spec["entry"], spec["mmr"], spec["fee"])
@@ -193,6 +183,13 @@ def finalize_stop(spec):
                 raise ValueError("stop cannot sit inside the liquidation bound")
             if side == "short" and clamped_px >= bound_again:
                 raise ValueError("stop cannot sit inside the liquidation bound")
+    moved = True
+    if previous is not None:
+        moved = (side == "long" and clamped_px > previous) or (side == "short" and clamped_px < previous)
+        if owner == "trailing_stop_pct" and moved and not _min_move_reached(clamped_px, previous, min_move):
+            _, moved = _clamp_inside(side, previous, bound)
+        if not moved:
+            clamped_px = previous
     if not _on_mark_side(side, clamped_px, mark):
         raise ValueError("stop is not on the executable side of the mark")
     liq_text = ""
@@ -201,7 +198,7 @@ def finalize_stop(spec):
     return {
         "trigger": _format_tick(clamped_px, tick),
         "high_water": _format_tick(high, tick) if high is not None else "",
-        "moved": True,
+        "moved": moved,
         "liq_bound": liq_text,
         "clamped": did_clamp,
     }

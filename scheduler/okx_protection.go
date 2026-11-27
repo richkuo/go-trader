@@ -1,9 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +53,7 @@ type okxProtection struct {
 	UpdatedAtMs    int64
 	AppliedFills   map[string]bool
 	PendingFills   []okxProtectionFill
+	Replaces       *okxProtection
 }
 
 type okxProtectionFill struct {
@@ -89,6 +91,8 @@ type okxStopCommandResult struct {
 	AlgoID         string        `json:"algo_id,omitempty"`
 	AlgoState      string        `json:"algo_state,omitempty"`
 	AlgoClientID   string        `json:"algo_client_id,omitempty"`
+	ChildTerminal  bool          `json:"child_terminal"`
+	OrderIDs       []string      `json:"order_ids,omitempty"`
 	TriggerPx      string        `json:"trigger_px,omitempty"`
 	Sz             string        `json:"sz,omitempty"`
 	Contracts      string        `json:"contracts,omitempty"`
@@ -132,7 +136,7 @@ func (p *okxProtection) unresolved() bool {
 }
 
 func (p *okxProtection) holdsNewExposure() bool {
-	return p.unresolved() && p.Status != okxProtectArmed
+	return p.unresolved() && (p.Status != okxProtectArmed || p.IncidentID != "")
 }
 
 func okxProtectionUnresolved(state *AppState, id string) bool {
@@ -219,7 +223,7 @@ func runOKXStop(op string, fields map[string]string) (okxStopCommandResult, erro
 		}
 		args = append(args, "--"+k+"="+fields[k])
 	}
-	sideEffect := op == "place" || op == "amend" || op == "cancel"
+	sideEffect := op == "place" || op == "amend" || op == "cancel" || op == "reduce"
 	var stdout, stderr []byte
 	var runErr error
 	if sideEffect {
@@ -234,7 +238,7 @@ func runOKXStop(op string, fields map[string]string) (okxStopCommandResult, erro
 		}
 		return res, fmt.Errorf("okx stop %s output: %v", op, err)
 	}
-	if res.Contract != okxStopContract {
+	if res.Contract != okxStopContract || res.Op != op {
 		return res, fmt.Errorf("okx stop %s contract %q", op, res.Contract)
 	}
 	if !res.OK {
@@ -266,6 +270,9 @@ func admitOKXStopEntry(sc StrategyConfig, s *StrategyState, symbol string, signa
 	if kind != entryIncreaseOpen {
 		return entryAdmission{}
 	}
+	if !okxIsLive(sc.Args) {
+		return entryAdmission{}
+	}
 	adm := entryAdmission{
 		Applies:    true,
 		Kind:       kind,
@@ -290,8 +297,12 @@ func admitOKXStopEntry(sc StrategyConfig, s *StrategyState, symbol string, signa
 	return adm
 }
 
-func okxPreflightAllowsEntry(symbol string) (okxStopCommandResult, error) {
-	res, err := runOKXStop("preflight", okxStopFields(symbol, nil))
+func okxPreflightAllowsEntry(symbol string, plannedContracts ...string) (okxStopCommandResult, error) {
+	fields := okxStopFields(symbol, nil)
+	if len(plannedContracts) > 0 {
+		fields["contracts"] = plannedContracts[0]
+	}
+	res, err := runOKXStop("preflight", fields)
 	if err != nil {
 		return res, err
 	}
@@ -317,6 +328,7 @@ func reserveOKXStop(store *StateStore, sc StrategyConfig, s *StrategyState, in *
 		AccountKey:    in.AccountKey,
 		InstID:        okxSwapRouteInstID(strings.ToUpper(in.Symbol)),
 		Symbol:        in.Symbol,
+		Side:          in.TargetSide,
 		AlgoClientID:  in.InitialStopClientID,
 		EntryClientID: in.ClientOrderID,
 		Status:        okxProtectReserved,
@@ -348,7 +360,7 @@ func saveOKXProtection(store *StateStore, s *StrategyState) error {
 }
 
 func armOKXStopAfterEntry(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in *entryIntent, fill *OKXFill, notifier *MultiNotifier, logger *StrategyLogger) {
-	if in == nil || fill == nil || s == nil || s.OKXProtection == nil || !okxStopWanted(sc) {
+	if in == nil || fill == nil || s == nil || s.OKXProtection == nil || !okxStopWanted(sc) || okxEntryUnresolved(s, mu) {
 		return
 	}
 	p := s.OKXProtection
@@ -370,7 +382,7 @@ func armOKXStopAfterEntry(store *StateStore, sc StrategyConfig, s *StrategyState
 		okxProtectionIncident(store, s, mu, p, detail, notifier, logger)
 		return
 	}
-	if !okxFillMatchesContracts(fill.TotalSz, ref.PosContracts) {
+	if (p.Side != "" && p.Side != ref.PosSide) || !okxFillMatchesContracts(fill.TotalSz, ref.PosContracts) {
 		okxProtectionIncident(store, s, mu, p, "the confirmed fill size does not match the venue position", notifier, logger)
 		return
 	}
@@ -392,6 +404,13 @@ func armOKXStopAfterEntry(store *StateStore, sc StrategyConfig, s *StrategyState
 	req.Trigger = final.Trigger
 	raw, _ := json.Marshal(req)
 	mu.Lock()
+	book := s.Positions[p.Symbol]
+	if book == nil || book.Side != pos.PosSide || !okxFillMatchesContracts(book.Quantity, pos.PosContracts) {
+		mu.Unlock()
+		okxProtectionIncident(store, s, mu, p, "the confirmed entry is not booked against the matching strategy position", notifier, logger)
+		return
+	}
+	p.PositionID = ensurePositionTradeID(s.ID, p.Symbol, book)
 	p.RequestJSON = string(raw)
 	p.TriggerPx = final.Trigger
 	p.SizeContracts = pos.PosContracts
@@ -405,35 +424,35 @@ func armOKXStopAfterEntry(store *StateStore, sc StrategyConfig, s *StrategyState
 		}
 		return
 	}
+	placeSavedOKXStop(store, s, mu, p, notifier, logger)
+}
+
+func placeSavedOKXStop(store *StateStore, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) {
 	mu.Lock()
 	p.PlaceAttempts++
-	err = saveOKXProtection(store, s)
+	p.bump(okxProtectArming)
+	err := saveOKXProtection(store, s)
 	mu.Unlock()
 	if err != nil {
-		if logger != nil {
-			logger.Error("CRITICAL: OKX stop attempt for %s was not saved, so it was not sent: %v", p.Symbol, err)
-		}
+		okxProtectionIncident(store, s, mu, p, "the stop attempt could not be saved before sending: "+err.Error(), notifier, logger)
 		return
 	}
-	placed, placeErr := runOKXStop("place", okxStopFields(p.Symbol, map[string]string{
-		"position-side":  p.Side,
-		"contracts":      p.SizeContracts,
-		"trigger-px":     p.TriggerPx,
-		"algo-client-id": p.AlgoClientID,
+	placed, err := runOKXStop("place", okxStopFields(p.Symbol, map[string]string{
+		"position-side": p.Side, "contracts": p.SizeContracts, "trigger-px": p.TriggerPx, "algo-client-id": p.AlgoClientID,
 	}))
-	mu.Lock()
-	defer mu.Unlock()
-	if placeErr != nil {
-		p.bump(okxProtectArming)
-		_ = saveOKXProtection(store, s)
-		okxProtectionIncident(store, s, nil, p, placeErr.Error(), notifier, logger)
+	if err != nil || placed.AlgoID == "" {
+		okxProtectionIncident(store, s, mu, p, fmt.Sprintf("the stop place result was uncertain: %v", err), notifier, logger)
 		return
 	}
+	mu.Lock()
 	p.AlgoID = placed.AlgoID
 	p.bump(okxProtectArmed)
 	p.IncidentID = ""
-	if err := saveOKXProtection(store, s); err != nil && logger != nil {
-		logger.Error("CRITICAL: OKX stop %s was placed but the armed record was not saved: %v", p.AlgoClientID, err)
+	p.Alerted = false
+	err = saveOKXProtection(store, s)
+	mu.Unlock()
+	if err != nil {
+		okxProtectionIncident(store, s, mu, p, "the armed record could not be saved: "+err.Error(), notifier, logger)
 	}
 }
 
@@ -465,14 +484,14 @@ func okxGeometryFor(p *okxProtection, pos, ref okxStopCommandResult, fill *OKXFi
 }
 
 func okxProtectionIncident(store *StateStore, s *StrategyState, mu *sync.RWMutex, p *okxProtection, reason string, notifier *MultiNotifier, logger *StrategyLogger) {
-	if p.IncidentID == "" {
-		p.IncidentID = p.RecordID
-	}
-	p.EvidenceJSON = reason
 	if mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
 	}
+	if p.IncidentID == "" {
+		p.IncidentID = p.RecordID
+	}
+	p.EvidenceJSON = reason
 	if !p.Alerted && notifier != nil {
 		notifier.SendOwnerDM(fmt.Sprintf("**OKX STOP UNRESOLVED** [%s] %s stop %s: %s. New exposure is held. One alert is sent for this incident.", p.StrategyID, p.Symbol, p.AlgoClientID, reason))
 		p.Alerted = true
@@ -487,14 +506,31 @@ func okxProtectionIncident(store *StateStore, s *StrategyState, mu *sync.RWMutex
 	_ = saveOKXProtection(store, s)
 }
 
+func okxEntryUnresolved(s *StrategyState, mu *sync.RWMutex) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return s.EntryGuard != nil && s.EntryGuard.unresolvedIntent() != nil
+}
+
 func reconcileOKXProtection(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) {
-	if s == nil || s.OKXProtection == nil || !s.OKXProtection.unresolved() || !okxIsLive(sc.Args) {
+	if s == nil || !okxIsLive(sc.Args) || !okxStopWanted(sc) {
 		return
 	}
 	p := s.OKXProtection
+	if !p.unresolved() || okxEntryUnresolved(s, mu) {
+		return
+	}
 	lock := okxInstrumentLock(p.AccountKey, p.InstID)
 	lock.Lock()
 	defer lock.Unlock()
+	if p.AccountKey != okxEntryAccountKey("swap") {
+		okxProtectionIncident(store, s, mu, p, "the current OKX credentials do not own the saved stop", notifier, logger)
+		return
+	}
+	if p.Status == okxProtectReducing {
+		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
+		return
+	}
 	found, err := runOKXStop("read", okxStopFields(p.Symbol, map[string]string{"algo-client-id": p.AlgoClientID}))
 	if err != nil {
 		okxProtectionIncident(store, s, mu, p, "the saved stop could not be read: "+err.Error(), notifier, logger)
@@ -502,103 +538,114 @@ func reconcileOKXProtection(store *StateStore, sc StrategyConfig, s *StrategySta
 	}
 	switch found.AlgoState {
 	case "live":
-		mu.Lock()
-		p.AlgoID = found.AlgoID
-		if p.Status == okxProtectArming || p.Status == okxProtectAmending || p.Status == okxProtectReserved {
+		if found.AlgoID == "" || (p.AlgoID != "" && found.AlgoID != p.AlgoID) ||
+			!okxSameDecimal(found.TriggerPx, p.TriggerPx) && !okxTriggerTighter(p.Side, found.TriggerPx, p.TriggerPx) {
+			okxProtectionIncident(store, s, mu, p, "the resting stop identity or trigger could not be verified", notifier, logger)
+			return
+		}
+		if _, err := okxPositive(found.Sz, "resting size"); err != nil {
+			okxProtectionIncident(store, s, mu, p, err.Error(), notifier, logger)
+			return
+		}
+		if p.Status != okxProtectArmed || found.TriggerPx != p.TriggerPx || found.Sz != p.SizeContracts {
+			mu.Lock()
+			p.AlgoID = found.AlgoID
+			p.TriggerPx = found.TriggerPx
+			p.SizeContracts = found.Sz
 			p.bump(okxProtectArmed)
-			p.IncidentID = ""
 			_ = saveOKXProtection(store, s)
+			mu.Unlock()
 		}
-		mu.Unlock()
-		if p.Status == okxProtectArmed {
-			okxTrailAndAmend(store, sc, s, mu, p, notifier, logger)
-		}
+		okxTrailAndAmend(store, sc, s, mu, p, notifier, logger)
 	case "absent":
-		if p.Status == okxProtectCanceling {
-			mu.Lock()
-			p.bump(okxProtectRetired)
-			_ = saveOKXProtection(store, s)
-			mu.Unlock()
+		if p.Status == okxProtectTriggered || p.AlgoID != "" {
+			okxProtectionIncident(store, s, mu, p, "a previously observed stop is missing from OKX", notifier, logger)
 			return
 		}
-		if p.PlaceAttempts >= 2 || p.RequestJSON == "" || p.Status == okxProtectArmed {
-			okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
-			return
-		}
-		if p.Status == okxProtectArming || p.Status == okxProtectReserved {
-			mu.Lock()
-			p.PlaceAttempts++
-			saveErr := saveOKXProtection(store, s)
-			mu.Unlock()
-			if saveErr != nil {
-				okxProtectionIncident(store, s, mu, p, "the stop retry was not saved, so it was not sent: "+saveErr.Error(), notifier, logger)
+		if p.PlaceAttempts < 2 && p.RequestJSON != "" && p.Status == okxProtectArming {
+			ref, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
+			if err == nil && !ref.Flat && ref.PosSide == p.Side && okxSameDecimal(ref.PosContracts, p.SizeContracts) {
+				placeSavedOKXStop(store, s, mu, p, notifier, logger)
 				return
 			}
-			placed, placeErr := runOKXStop("place", okxStopFields(p.Symbol, map[string]string{
-				"position-side": p.Side, "contracts": p.SizeContracts, "trigger-px": p.TriggerPx, "algo-client-id": p.AlgoClientID,
-			}))
-			if placeErr != nil {
-				okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
-				return
-			}
-			mu.Lock()
-			p.AlgoID = placed.AlgoID
-			p.bump(okxProtectArmed)
-			p.IncidentID = ""
-			_ = saveOKXProtection(store, s)
-			mu.Unlock()
 		}
-	case "effective", "partially_effective":
-		mu.Lock()
-		p.bump(okxProtectTriggered)
-		_ = saveOKXProtection(store, s)
-		mu.Unlock()
-		okxBookStopFills(store, sc, s, mu, p, notifier, logger)
-	case "canceled":
-		if p.Status == okxProtectCanceling {
-			mu.Lock()
-			p.bump(okxProtectRetired)
-			_ = saveOKXProtection(store, s)
-			mu.Unlock()
-			return
-		}
-		okxProtectionIncident(store, s, mu, p, "the saved stop is canceled without a requested cancel", notifier, logger)
 		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
-	case "order_failed":
-		okxProtectionIncident(store, s, mu, p, "the saved stop is order_failed", notifier, logger)
+	case "effective", "partially_effective":
+		okxBookStopFills(store, sc, s, mu, p, found, notifier, logger)
+	case "canceled", "order_failed":
+		if len(found.OrderIDs) != 0 {
+			okxBookStopFills(store, sc, s, mu, p, found, notifier, logger)
+			return
+		}
 		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
 	default:
 		okxProtectionIncident(store, s, mu, p, "the saved stop state "+found.AlgoState+" is not conclusive", notifier, logger)
 	}
 }
 
+func okxSameDecimal(a, b string) bool {
+	x, xErr := okxPositive(a, "value")
+	y, yErr := okxPositive(b, "value")
+	return xErr == nil && yErr == nil && x.Cmp(y) == 0
+}
+
+func okxTriggerTighter(side, current, previous string) bool {
+	x, xErr := okxPositive(current, "trigger")
+	y, yErr := okxPositive(previous, "previous trigger")
+	return xErr == nil && yErr == nil && (side == "long" && x.Cmp(y) > 0 || side == "short" && x.Cmp(y) < 0)
+}
+
 func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) {
-	pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
-	if err != nil || (!pos.Flat && !pos.LiqKnown) {
-		okxProtectionIncident(store, s, mu, p, "owned exposure could not be verified before a reduce", notifier, logger)
-		return
-	}
-	if pos.Flat {
+	incident := func(why string) { okxProtectionIncident(store, s, mu, p, why, notifier, logger) }
+	orderID := fmt.Sprintf("okr%x", sha256.Sum256([]byte(p.RecordID)))[:32]
+	var submitErr error
+	if p.Status != okxProtectReducing {
+		pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
+		if err != nil {
+			incident("owned exposure could not be verified before a reduce: " + err.Error())
+			return
+		}
 		mu.Lock()
-		p.bump(okxProtectRetired)
-		_ = saveOKXProtection(store, s)
+		book := s.Positions[p.Symbol]
+		if pos.Flat && (book == nil || book.Quantity == 0) {
+			previous := p.Status
+			p.bump(okxProtectRetired)
+			err := saveOKXProtection(store, s)
+			if err != nil {
+				p.bump(previous)
+			}
+			mu.Unlock()
+			if err != nil {
+				incident("the flat stop record could not be retired: " + err.Error())
+			}
+			return
+		}
+		if pos.Flat || book == nil || book.Side != pos.PosSide || (p.Side != "" && p.Side != book.Side) ||
+			(p.PositionID != "" && p.PositionID != book.TradePositionID) ||
+			!okxFillMatchesContracts(book.Quantity, pos.PosContracts) {
+			mu.Unlock()
+			incident("the position and book do not agree before a reduce")
+			return
+		}
+		p.Side = book.Side
+		p.bump(okxProtectReducing)
+		err = saveOKXProtection(store, s)
 		mu.Unlock()
+		if err != nil {
+			incident("the emergency reduce could not be saved before sending: " + err.Error())
+			return
+		}
+		_, submitErr = runOKXStop("reduce", okxStopFields(p.Symbol, map[string]string{
+			"position-side": p.Side, "contracts": pos.PosContracts, "order-id": orderID,
+			"exp-time-ms": strconv.FormatInt(tradingNow().Add(2*time.Minute).UnixMilli(), 10),
+		}))
+	}
+	out, err := runOKXStop("reduce-fill", okxStopFields(p.Symbol, map[string]string{"order-id": orderID}))
+	if err != nil || len(out.Fills) != 1 {
+		incident(fmt.Sprintf("the emergency reduce has no confirmed fill for order %s (submit: %v, read: %v)", orderID, submitErr, err))
 		return
 	}
-	mu.Lock()
-	p.bump(okxProtectReducing)
-	_ = saveOKXProtection(store, s)
-	mu.Unlock()
-	_, _, _ = runPythonSideEffect(sc.Script, []string{"--execute", "--symbol=" + p.Symbol, "--side=" + okxReduceSide(pos.PosSide), "--size=" + pos.PosContracts, "--mode=live", "--inst-type=swap", "--reduce-only"})
-	after, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
-	if err != nil || !after.Flat {
-		okxProtectionIncident(store, s, mu, p, "the reduce-only close did not prove the position flat", notifier, logger)
-		return
-	}
-	mu.Lock()
-	p.bump(okxProtectRetired)
-	_ = saveOKXProtection(store, s)
-	mu.Unlock()
+	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, okxProtectReducing, true, notifier, logger)
 }
 
 func okxReduceSide(positionSide string) string {
@@ -608,100 +655,173 @@ func okxReduceSide(positionSide string) string {
 	return "buy"
 }
 
-func okxBookStopFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) {
-	fills, err := runOKXStop("fills", okxStopFields(p.Symbol, nil))
-	if err != nil {
-		okxProtectionIncident(store, s, mu, p, "stop fills could not be read: "+err.Error(), notifier, logger)
+func okxBookStopFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, found okxStopCommandResult, notifier *MultiNotifier, logger *StrategyLogger) {
+	if len(found.OrderIDs) == 0 {
+		okxProtectionIncident(store, s, mu, p, "the triggered stop has no child order IDs", notifier, logger)
 		return
 	}
-	for _, fill := range fills.Fills {
-		if fill.FillID == "" || p.AppliedFills[fill.FillID] {
-			continue
-		}
-		px, err := okxPositive(fill.Px, "fill")
+	var fills []okxStopFill
+	terminal := true
+	for _, id := range found.OrderIDs {
+		out, err := runOKXStop("fills", okxStopFields(p.Symbol, map[string]string{"order-id": id}))
 		if err != nil {
-			okxProtectionIncident(store, s, mu, p, "stop fill "+fill.FillID+" has no price", notifier, logger)
+			okxProtectionIncident(store, s, mu, p, "stop fills could not be read: "+err.Error(), notifier, logger)
 			return
 		}
-		qty, err := okxPositive(fill.Qty, "fill qty")
-		if err != nil {
-			okxProtectionIncident(store, s, mu, p, "stop fill "+fill.FillID+" has no size", notifier, logger)
-			return
-		}
-		pxText, err := okxFormatRat(px, okxFillTick(p))
-		if err != nil {
-			pxText = fill.Px
-		}
-		qtyText := okxBoundString(qty)
-		booked := okxProtectionFill{FillID: fill.FillID, Side: fill.Side, OrdID: fill.OrdID}
-		if pxf, perr := strconv.ParseFloat(pxText, 64); perr == nil {
-			booked.Px = pxf
-		}
-		if qtyf, qerr := strconv.ParseFloat(qtyText, 64); qerr == nil {
-			booked.Qty = qtyf
-		}
-		if fee, ferr := okxRat(orOKX(fill.Fee, "0"), "fill fee"); ferr == nil && fee.Sign() < 0 {
-			booked.Fee, _ = new(big.Rat).Neg(fee).Float64()
-		}
-		mu.Lock()
-		pos := s.Positions[p.Symbol]
-		if pos != nil && pos.Quantity > 0 && booked.Qty > 0 && booked.Px > 0 {
-			signal := -1
-			if pos.Side == "short" {
-				signal = 1
-			}
-			frac := 1.0
-			if booked.Qty < pos.Quantity {
-				frac = booked.Qty / pos.Quantity
-			}
-			pos.StopLossTriggerPx, _ = strconv.ParseFloat(p.TriggerPx, 64)
-			if _, execErr := ExecutePerpsSignalWithLeverageDeferredOpen(s, signal, p.Symbol, booked.Px, PerpsSizingFor(sc, booked.Px, pos.EntryATR), booked.Qty, fill.OrdID, booked.Fee, EffectiveDirection(sc), frac, logger); execErr != nil {
-				mu.Unlock()
-				okxProtectionIncident(store, s, mu, p, "stop fill "+fill.FillID+" was not booked: "+execErr.Error(), notifier, logger)
-				return
+		terminal = terminal && out.ChildTerminal
+		for _, fill := range out.Fills {
+			if fill.OrdID == id && fill.Side == okxReduceSide(p.Side) {
+				fills = append(fills, fill)
 			}
 		}
-		p.PendingFills = append(p.PendingFills, booked)
-		p.bump(p.Status)
-		saveErr := saveOKXProtection(store, s)
-		mu.Unlock()
-		if saveErr != nil {
-			okxProtectionIncident(store, s, mu, p, "proven stop fills were not saved: "+saveErr.Error(), notifier, logger)
-			return
-		}
+	}
+	remaining, settled := settleOKXProtectionFills(store, sc, s, mu, p, fills, okxProtectTriggered, terminal, notifier, logger)
+	if terminal && settled && remaining > 0 {
+		okxRestoreRemainderStop(store, sc, s, mu, p, remaining, notifier, logger)
 	}
 }
 
-func cancelOKXProtection(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, logger *StrategyLogger) error {
-	if s == nil || s.OKXProtection == nil || !s.OKXProtection.unresolved() {
-		return nil
+func okxRestoreRemainderStop(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, old *okxProtection, remaining float64, notifier *MultiNotifier, logger *StrategyLogger) {
+	ref, err := runOKXStop("arm-reference", okxStopFields(old.Symbol, nil))
+	if err != nil || ref.PosSide != old.Side || !okxFillMatchesContracts(remaining, ref.PosContracts) {
+		okxProtectionIncident(store, s, mu, old, "the remaining exposure could not be verified for a replacement stop", notifier, logger)
+		return
 	}
-	p := s.OKXProtection
-	lock := okxInstrumentLock(p.AccountKey, p.InstID)
-	lock.Lock()
-	defer lock.Unlock()
+	geom, err := okxGeometryFor(old, ref, ref, nil)
+	if err != nil {
+		okxProtectionIncident(store, s, mu, old, err.Error(), notifier, logger)
+		return
+	}
+	final, err := okxFinalizeStop(geom)
+	if err != nil {
+		okxReduceUnprotected(store, sc, s, mu, old, notifier, logger)
+		return
+	}
+	id := fmt.Sprintf("okp%x", sha256.Sum256([]byte(old.RecordID)))[:32]
+	var saved okxStopRequest
+	_ = json.Unmarshal([]byte(old.RequestJSON), &saved)
+	saved.Mark, saved.HighWater, saved.Tick = geom.Mark, final.HighWater, geom.Tick
+	saved.CtVal, saved.MMR, saved.Fee, saved.Equity = geom.CtVal, geom.MMR, geom.Fee, geom.Equity
+	saved.VenueLiq, saved.VenueKnown = geom.VenueLiq, geom.VenueLiqKnown
+	saved.Trigger, saved.Contracts = final.Trigger, ref.PosContracts
+	raw, _ := json.Marshal(saved)
+	now := tradingNow().UnixMilli()
+	next := &okxProtection{
+		RecordID: id, AlgoClientID: id, AccountKey: old.AccountKey, InstID: old.InstID, StrategyID: old.StrategyID,
+		Symbol: old.Symbol, Side: old.Side, EntryClientID: old.EntryClientID, PositionID: old.PositionID,
+		Status: okxProtectArming, Owner: old.Owner, PolicyJSON: old.PolicyJSON, TriggerPx: saved.Trigger,
+		SizeContracts: saved.Contracts, RequestJSON: string(raw), Version: 1, CreatedAtMs: now, UpdatedAtMs: now,
+		Replaces: old,
+	}
 	mu.Lock()
-	p.bump(okxProtectCanceling)
+	old.bump(okxProtectRetired)
+	s.OKXProtection = next
+	if err := saveOKXProtection(store, s); err != nil {
+		s.OKXProtection = old
+		old.bump(okxProtectTriggered)
+		mu.Unlock()
+		okxProtectionIncident(store, s, mu, old, "the replacement stop could not be saved before sending: "+err.Error(), notifier, logger)
+		return
+	}
+	mu.Unlock()
+	placeSavedOKXStop(store, s, mu, next, notifier, logger)
+}
+
+func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, fills []okxStopFill, status string, mayRetire bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, bool) {
+	pos, posErr := runOKXStop("position", okxStopFields(p.Symbol, nil))
+	incident := func(why string) { okxProtectionIncident(store, s, mu, p, why, notifier, logger) }
+	mu.Lock()
+	book := s.Positions[p.Symbol]
+	remaining := 0.0
+	if book != nil {
+		remaining = book.Quantity
+		if book.Side != p.Side || (p.PositionID != "" && p.PositionID != book.TradePositionID) {
+			mu.Unlock()
+			incident("the fill could not be attributed to the booked position side")
+			return 0, false
+		}
+	}
+	seen := make(map[string]bool, len(fills)+len(p.PendingFills))
+	for _, booked := range p.PendingFills {
+		seen[booked.FillID] = true
+	}
+	var verified []okxProtectionFill
+	for _, fill := range fills {
+		if p.AppliedFills[fill.FillID] || seen[fill.FillID] {
+			continue
+		}
+		qty, qErr := strconv.ParseFloat(fill.Qty, 64)
+		px, pxErr := strconv.ParseFloat(fill.Px, 64)
+		fee, feeErr := strconv.ParseFloat(fill.Fee, 64)
+		validSize := qty <= remaining || okxFillQuantityEqual(qty, remaining)
+		if fill.FillID == "" || fill.OrdID == "" || fill.Side != okxReduceSide(p.Side) ||
+			qErr != nil || pxErr != nil || feeErr != nil || !okxUsablePrice(qty) || !okxUsablePrice(px) ||
+			math.IsNaN(fee) || math.IsInf(fee, 0) || remaining <= 0 || !validSize {
+			mu.Unlock()
+			incident("a close fill lacked valid identity, side, price, fee or owned size")
+			return 0, false
+		}
+		if okxFillQuantityEqual(qty, remaining) {
+			qty = remaining
+		}
+		remaining = math.Max(0, remaining-qty)
+		seen[fill.FillID] = true
+		verified = append(verified, okxProtectionFill{FillID: fill.FillID, Side: fill.Side, Qty: qty, Px: px, Fee: math.Max(0, -fee), OrdID: fill.OrdID})
+	}
+	before, protectionBefore := *s, *p
+	var bookBefore Position
+	if book != nil {
+		bookBefore = *book
+	}
+	restore := func() {
+		*s, *p = before, protectionBefore
+		if book != nil {
+			*book = bookBefore
+			s.Positions[p.Symbol] = book
+		}
+	}
+	s.deferTradePersist = true
+	for _, fill := range verified {
+		book := s.Positions[p.Symbol]
+		signal := -1
+		if p.Side == "short" {
+			signal = 1
+		}
+		book.StopLossTriggerPx, _ = strconv.ParseFloat(p.TriggerPx, 64)
+		result, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, signal, p.Symbol, fill.Px, PerpsSizingFor(sc, fill.Px, book.EntryATR), fill.Qty, fill.OrdID, fill.Fee, DirectionBoth, fill.Qty/book.Quantity, logger)
+		if err != nil || result.TradesExecuted != 1 {
+			restore()
+			mu.Unlock()
+			incident(fmt.Sprintf("the close fill could not be booked: %v", err))
+			return 0, false
+		}
+		p.PendingFills = append(p.PendingFills, fill)
+	}
+	canRetire := mayRetire && posErr == nil && pos.Flat && remaining == 0 && (len(verified) > 0 || len(seen) > 0 || len(p.AppliedFills) > 0)
+	if canRetire {
+		p.bump(okxProtectRetired)
+	} else {
+		p.bump(status)
+	}
+	s.deferTradePersist = before.deferTradePersist
 	err := saveOKXProtection(store, s)
+	if err != nil {
+		restore()
+	}
 	mu.Unlock()
 	if err != nil {
-		return err
+		incident("proven close fills could not be saved: " + err.Error())
+		return 0, false
 	}
-	if _, err := runOKXStop("cancel", okxStopFields(p.Symbol, map[string]string{"algo-id": p.AlgoID, "algo-client-id": p.AlgoClientID})); err != nil {
-		return err
+	matchedRemainder := posErr == nil && !pos.Flat && pos.PosSide == p.Side && okxFillMatchesContracts(remaining, pos.PosContracts)
+	if !canRetire && !(mayRetire && status == okxProtectTriggered && matchedRemainder) {
+		incident("the close has not proved both the exchange and strategy book flat; verify the remaining exposure")
 	}
-	found, err := runOKXStop("read", okxStopFields(p.Symbol, map[string]string{"algo-client-id": p.AlgoClientID}))
-	if err != nil {
-		return err
-	}
-	if found.AlgoState == "absent" || found.AlgoState == "canceled" {
-		mu.Lock()
-		p.bump(okxProtectRetired)
-		_ = saveOKXProtection(store, s)
-		mu.Unlock()
-		return nil
-	}
-	return fmt.Errorf("OKX stop %s is still %s after cancel", p.AlgoClientID, found.AlgoState)
+	return remaining, matchedRemainder
+}
+
+func okxFillQuantityEqual(a, b float64) bool {
+	return okxUsablePrice(a) && okxUsablePrice(b) && math.Abs(a-b) <= 8*(math.Nextafter(b, math.Inf(1))-b)
 }
 
 func validateOKXStopStartup(state *AppState, cfgs []StrategyConfig) error {
@@ -714,12 +834,7 @@ func validateOKXStopStartup(state *AppState, cfgs []StrategyConfig) error {
 			return fmt.Errorf("strategy %s has no state", sc.ID)
 		}
 		p := s.OKXProtection
-		if p == nil {
-			res, err := okxPreflightAllowsEntry(okxSymbol(sc.Args))
-			if err != nil {
-				return fmt.Errorf("strategy %s cannot activate an OKX stop until the account is flat, net-mode and cross with no conflicting orders: %v", sc.ID, err)
-			}
-			_ = res
+		if !p.unresolved() {
 			continue
 		}
 		if p.AccountKey != okxEntryAccountKey(okxInstType(sc.Args)) || p.InstID != okxSwapRouteInstID(strings.ToUpper(okxSymbol(sc.Args))) {
@@ -737,10 +852,13 @@ func validateOKXStopStartup(state *AppState, cfgs []StrategyConfig) error {
 	return nil
 }
 
-func okxPaperReference(symbol, coinQty string) (okxStopCommandResult, error) {
+func okxPaperReference(symbol, contracts string, opening bool) (okxStopCommandResult, error) {
 	extra := map[string]string{}
-	if coinQty != "" {
-		extra["coin-qty"] = coinQty
+	if contracts != "" {
+		extra["contracts"] = contracts
+		if opening {
+			extra["round-entry"] = "true"
+		}
 	}
 	res, err := runOKXStop("public-instrument", okxStopFields(symbol, extra))
 	if err != nil {
@@ -756,7 +874,11 @@ func okxFillMatchesContracts(filled float64, contracts string) bool {
 	if err != nil || wantErr != nil {
 		return false
 	}
-	return got.Cmp(want) == 0
+	if got.Cmp(want) == 0 {
+		return true
+	}
+	asFloat, _ := want.Float64()
+	return okxUsablePrice(asFloat) && okxFillQuantityEqual(filled, asFloat)
 }
 
 func okxIntentATR(in *entryIntent) string {
@@ -770,17 +892,6 @@ func okxIntentATR(in *entryIntent) string {
 	return strconv.FormatFloat(req.EntryATR, 'f', -1, 64)
 }
 
-func okxFillTick(p *okxProtection) string {
-	var saved okxStopRequest
-	if p != nil {
-		_ = json.Unmarshal([]byte(p.RequestJSON), &saved)
-	}
-	if saved.Tick != "" {
-		return saved.Tick
-	}
-	return "0.00000001"
-}
-
 func okxTrailAndAmend(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) {
 	if p == nil || p.Status != okxProtectArmed {
 		return
@@ -790,7 +901,8 @@ func okxTrailAndAmend(store *StateStore, sc StrategyConfig, s *StrategyState, mu
 		okxProtectionIncident(store, s, mu, p, "the armed stop could not be checked against the position: "+err.Error(), notifier, logger)
 		return
 	}
-	if ref.Flat {
+	if ref.Flat || ref.PosSide != p.Side {
+		okxProtectionIncident(store, s, mu, p, "the resting stop could not be matched to the open position", notifier, logger)
 		return
 	}
 	geom, err := okxGeometryFor(p, ref, ref, nil)
@@ -806,7 +918,7 @@ func okxTrailAndAmend(store *StateStore, sc StrategyConfig, s *StrategyState, mu
 	var saved okxStopRequest
 	_ = json.Unmarshal([]byte(p.RequestJSON), &saved)
 	triggerChanged := final.Trigger != "" && final.Trigger != p.TriggerPx && final.Moved
-	sizeChanged := ref.PosContracts != "" && ref.PosContracts != p.SizeContracts
+	sizeChanged := ref.PosContracts != "" && !okxSameDecimal(ref.PosContracts, p.SizeContracts)
 	if final.HighWater != "" && final.HighWater != saved.HighWater {
 		saved.HighWater = final.HighWater
 		raw, _ := json.Marshal(saved)
@@ -817,6 +929,14 @@ func okxTrailAndAmend(store *StateStore, sc StrategyConfig, s *StrategyState, mu
 		mu.Unlock()
 	}
 	if !triggerChanged && !sizeChanged {
+		if p.IncidentID != "" {
+			mu.Lock()
+			p.IncidentID = ""
+			p.Alerted = false
+			p.bump(okxProtectArmed)
+			_ = saveOKXProtection(store, s)
+			mu.Unlock()
+		}
 		return
 	}
 	trigger := p.TriggerPx
@@ -868,7 +988,7 @@ func okxPaperRestingStop(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, 
 	if qty <= 0 || trigger <= 0 {
 		return false, 0, nil
 	}
-	ref, err := okxPaperReference(symbol, strconv.FormatFloat(qty, 'f', -1, 64))
+	ref, err := okxPaperReference(symbol, strconv.FormatFloat(qty, 'f', -1, 64), false)
 	if err != nil {
 		return false, 0, err
 	}
@@ -915,50 +1035,23 @@ func okxPaperRestingStop(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, 
 	return false, 0, nil
 }
 
-func okxArmPaperPosition(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, symbol string, cash float64, logger *StrategyLogger) {
-	mu.RLock()
-	pos := s.Positions[symbol]
-	side, qty, avg, atr, already := "", 0.0, 0.0, 0.0, 0.0
-	if pos != nil {
-		side, qty, avg, atr, already = pos.Side, pos.Quantity, pos.AvgCost, pos.EntryATR, pos.StopLossTriggerPx
-	}
-	mu.RUnlock()
-	if qty <= 0 || already > 0 {
-		return
-	}
-	ref, err := okxPaperReference(symbol, strconv.FormatFloat(qty, 'f', -1, 64))
+func okxPlanPaperOpen(sc StrategyConfig, symbol, side string, qty, price, atr, cash float64) (float64, okxStopGeometryResult, error) {
+	ref, err := okxPaperReference(symbol, strconv.FormatFloat(qty, 'f', -1, 64), true)
 	if err != nil {
-		if logger != nil {
-			logger.Error("CRITICAL: OKX paper stop was not armed: %v", err)
-		}
-		return
+		return 0, okxStopGeometryResult{}, err
 	}
 	pol, _, err := okxStopPolicyOf(sc)
 	if err != nil {
-		return
+		return 0, okxStopGeometryResult{}, err
 	}
-	geom := okxStopGeometryInput{
-		Side: side, Owner: pol.Owner, Entry: strconv.FormatFloat(avg, 'f', -1, 64), Mark: ref.Mark,
-		EntryATR: strconv.FormatFloat(atr, 'f', -1, 64), Pct: pol.Pct, ATRMult: pol.ATRMult,
-		MinMovePct: pol.MinMovePct, Tick: ref.Tick, Equity: strconv.FormatFloat(cash, 'f', -1, 64),
-		Contracts: ref.Contracts, CtVal: ref.CtVal, MMR: ref.MMR, Fee: ref.Fee,
+	qty, err = strconv.ParseFloat(ref.Contracts, 64)
+	if err != nil || !okxUsablePrice(qty) {
+		return 0, okxStopGeometryResult{}, fmt.Errorf("paper stop has no executable contract size")
 	}
-	final, err := okxFinalizeStop(geom)
-	if err != nil {
-		if logger != nil {
-			logger.Error("CRITICAL: OKX paper stop was not armed: %v", err)
-		}
-		return
-	}
-	mu.Lock()
-	if cur := s.Positions[symbol]; cur != nil && cur.StopLossTriggerPx == 0 {
-		cur.StopLossTriggerPx, _ = strconv.ParseFloat(final.Trigger, 64)
-		if final.HighWater != "" {
-			cur.StopLossHighWaterPx, _ = strconv.ParseFloat(final.HighWater, 64)
-		}
-	}
-	mu.Unlock()
-	if logger != nil {
-		logger.Info("OKX paper stop armed at %s", final.Trigger)
-	}
+	final, err := okxFinalizeStop(okxStopGeometryInput{
+		Side: side, Owner: pol.Owner, Entry: okxDecimalField(price), Mark: ref.Mark,
+		EntryATR: okxDecimalField(atr), Pct: pol.Pct, ATRMult: pol.ATRMult, MinMovePct: pol.MinMovePct,
+		Tick: ref.Tick, Equity: okxDecimalField(cash), Contracts: ref.Contracts, CtVal: ref.CtVal, MMR: ref.MMR, Fee: ref.Fee,
+	})
+	return qty, final, err
 }

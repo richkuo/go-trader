@@ -41,7 +41,7 @@ class Fixture:
 
     def reply(self, method, params):
         if method == "privateGetAccountConfig":
-            return {"code": "0", "data": [{"posMode": "net_mode"}]}
+            return {"code": "0", "data": [{"posMode": "net_mode", "acctLv": "2"}]}
         if method == "privateGetAccountPositions":
             return {"code": "0", "data": list(self.positions)}
         if method == "privateGetTradeOrdersPending":
@@ -52,23 +52,21 @@ class Fixture:
                 row = self.pending.get(cid)
                 return {"code": "0", "data": [row] if row else []}
             return {"code": "0", "data": list(self.pending.values())}
-        if method == "privateGetTradeOrdersAlgoHistory":
+        if method == "privateGetTradeOrderAlgo":
             cid = params.get("algoClOrdId")
-            if cid:
-                row = self.history.get(cid)
-                return {"code": "0", "data": [row] if row else []}
-            return {"code": "0", "data": list(self.history.values())}
+            row = self.pending.get(cid) or self.history.get(cid)
+            return {"code": "0", "data": [row]} if row else {"code": "51603", "data": []}
         if method == "publicGetPublicInstruments":
             return {"code": "0", "data": [{
-                "instId": INST, "tickSz": "0.1", "lotSz": "1", "minSz": "1",
+                "instId": INST, "tickSz": "0.1", "lotSz": "0.01", "minSz": "0.01",
                 "ctVal": "0.01", "state": "live", "instFamily": "BTC-USDT",
             }]}
-        if method == "publicGetMarketTicker":
+        if method == "publicGetPublicMarkPrice":
             return {"code": "0", "data": [{"instId": INST, "markPx": "50000"}]}
         if method == "publicGetPublicPositionTiers":
             return {"code": "0", "data": [{"minSz": "0", "maxSz": "100000", "mmr": "0.005"}]}
         if method == "privateGetAccountBalance":
-            return {"code": "0", "data": [{"details": [{"ccy": "USDT", "eq": "1000"}]}]}
+            return {"code": "0", "data": [{"details": [{"ccy": "USDT", "eq": "1000", "cashBal": "1000"}]}]}
         if method == "privateGetAccountTradeFee":
             return {"code": "0", "data": [{"taker": "-0.0005"}]}
         if method == "privatePostTradeOrderAlgo":
@@ -85,6 +83,8 @@ class Fixture:
                 row["state"] = "canceled"
                 self.history[cid] = row
             return {"code": "0", "data": [{"sCode": "0"}]}
+        if method == "privateGetTradeOrder":
+            return {"code": "0", "data": [{"instId": INST, "ordId": params.get("ordId"), "reduceOnly": "true", "state": "filled"}]}
         if method == "privateGetTradeFills":
             return {"code": "0", "data": list(self.fills)}
         return {"code": "1", "data": [], "msg": "unexpected " + method}
@@ -229,12 +229,16 @@ def main():
             "instId": INST, "tradeId": "fill-1", "side": "sell",
             "fillSz": "4", "fillPx": "49000", "fee": "-0.02", "ordId": "ord-1",
         })
-        first = load(run(["--okx-stop", "--op", "fills", "--symbol", "BTC", "--inst-type", "swap"], env), "fills")
-        second = load(run(["--okx-stop", "--op", "fills", "--symbol", "BTC", "--inst-type", "swap"], env), "fills again")
+        first = load(run(["--okx-stop", "--op", "fills", "--symbol", "BTC", "--inst-type", "swap", "--order-id", "ord-1"], env), "fills")
+        second = load(run(["--okx-stop", "--op", "fills", "--symbol", "BTC", "--inst-type", "swap", "--order-id", "ord-1"], env), "fills again")
         expect(first.get("fills") == second.get("fills"), (first, second))
         expect(len(first["fills"]) == 1 and first["fills"][0]["fill_id"] == "fill-1", first)
         expect(first["fills"][0]["qty"] == "4" and first["fills"][0]["px"] == "49000", first)
 
+        sized = load(run(["--okx-stop", "--op", "preflight", "--symbol", "BTC", "--inst-type", "swap",
+                          "--contracts", "0.0123456789"], env), "entry size")
+        expect(sized.get("ok") and sized.get("contracts") == "0.01", sized)
+        print("BTC swap entry contract rounding: 0.0123456789 -> 0.01")
         fix.positions.append({
             "instId": INST, "pos": "10", "posSide": "net", "mgnMode": "cross", "liqPx": "40000",
         })
@@ -257,6 +261,16 @@ def main():
             "mmr": "0.005", "fee": "0.0005", "require_venue_liq": False,
         })
         expect(held["trigger"] == "49000.0" and held["moved"] is False, held)
+        for side, previous, bound, trigger, moved in (
+            ("long", "95.5", "90", "95.5", False),
+            ("long", "95.5", "97", "97.5", True),
+            ("short", "104.4", "110", "104.4", False),
+        ):
+            fixed = finalize_stop({"side": side, "owner": "stop_loss_pct", "entry": "100", "mark": "100",
+                                   "pct": "20", "tick": "0.1", "previous_trigger": previous,
+                                   "venue_liq": bound, "venue_liq_known": True, "require_venue_liq": True})
+            expect(fixed["trigger"] == trigger and fixed["moved"] is moved, fixed)
+            print(f"fixed {side}: previous={previous} bound={bound} trigger={trigger} moved={moved}")
         print("okx stop offline acceptance: place=%d reads-found-lost-reply=1 cancel=canceled fill=fill-1 trigger=49000.0" % fix.place_count)
     finally:
         httpd.shutdown()

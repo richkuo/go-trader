@@ -425,11 +425,6 @@ func runPendingOKXCircuitCloses(
 			if sz <= 1e-15 {
 				continue
 			}
-			if ss := state.Strategies[j.stratID]; ss != nil && ss.OKXProtection.unresolved() {
-				if err := cancelOKXProtection(store, *sc, ss, mu, nil); err != nil {
-					fmt.Printf("[CRITICAL] okx-circuit-close: stop cancel for %s is uncertain: %v; the reduce-only close still runs\n", c.Symbol, err)
-				}
-			}
 			partial := sz
 			_, err := closer(c.Symbol, &partial)
 			if err != nil {
@@ -439,6 +434,11 @@ func runPendingOKXCircuitCloses(
 				failedSz = sz
 				failedErr = err
 				break
+			}
+			if ss := state.Strategies[j.stratID]; ss != nil && ss.OKXProtection.unresolved() {
+				logger := entryRecoveryLogger(nil, sc.ID)
+				reconcileOKXProtection(store, *sc, ss, mu, nil, logger)
+				logger.Close()
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}

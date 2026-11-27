@@ -76,10 +76,10 @@ After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule 
 - Liquidation guard:CLAMP,never refuse to arm;ONE-WAY TIGHTEN at 0.5% buffer;0=unknown,never persisted;unclampable REFUSES;unreadable outcome keeps state.
 - Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution
 - HL protection:reduce-only;on-chain TP needs `strategyUsesTieredTPATRClose`+live=`close_owner` marker+echo(no echo=hold),NEVER nil `CloseStrategy`;evaluator fallback ONLY if nothing rests/armed+tiers unplaceable.
-- OKX perps stop:opt-in;arm after save;geometry or refuse
   - `SLAfterMoved`:kept trigger ONLY,tighter-only;lost=CRITICAL.
   - Shared floor:<$10 shared-coin close escalates ONLY if every peer flat on-chain(refetched)+in book,pre SL blocks,else 1 alert+hold;`venue_rejected` never resends;re-arm(7 owners) same-cycle ONLY after SUBMITTED cancel;any 2nd refusal holds;manual guard skips queued-row symbol;failed-close owner re-arms SL leg ONLY,3 blocks=CRITICAL;unknown TP place=armed,no re-place.
   - Operator floor(`decideOperatorSharedCloseFloor`):same test+side+no larger,else refuse,no hold;unreadable mark skips escalation
+- OKX perps stop:opt-in;arm after save;geometry or refuse
 - `probeArgv`/`probeCompositeArgv`:new runtime CLI flag>both.
 - `--bootstrap-md`=`AGENTS.generated.md`,NEVER `AGENTS.md`.
 - Wire failure notifier per new `run*Check`.

@@ -42,6 +42,7 @@ var venueWriteDispatchFlags = map[string]bool{
 	"--op=place":         true,
 	"--op=amend":         true,
 	"--op=cancel":        true,
+	"--op=reduce":        true,
 }
 
 func venueCloseScript(script string) bool {

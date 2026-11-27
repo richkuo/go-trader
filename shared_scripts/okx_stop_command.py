@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.join(_ROOT, "shared_tools"))
 sys.path.insert(0, os.path.join(_ROOT, "platforms", "okx"))
 
 from adapter import OKXExchangeAdapter
-from okx_stop_geometry import contracts_from_coin
 
 OKX_STOP_CONTRACT = "okx_stop_v1"
 
@@ -40,11 +39,7 @@ def run_okx_stop(args):
             adapter = OKXExchangeAdapter(public_only=True)
             inst = _inst_id(args.symbol, args.inst_type)
             planned = args.contracts or args.min_contracts or ""
-            ref = adapter.public_stop_reference(inst, planned)
-            if args.coin_qty:
-                planned = contracts_from_coin(args.coin_qty, ref["ct_val"], ref["lot"])
-                ref = adapter.public_stop_reference(inst, planned)
-                ref["contracts"] = planned
+            ref = adapter.public_stop_reference(inst, planned, args.round_entry == "true")
             out = _base(op, True)
             out.update(ref)
             out["fee_source"] = "okx-perps platform taker fee"
@@ -53,10 +48,7 @@ def run_okx_stop(args):
         adapter = OKXExchangeAdapter()
         inst = _inst_id(args.symbol, args.inst_type)
         if op == "preflight":
-            planned = args.contracts
-            if not planned and args.coin_qty and args.ct_val and args.lot:
-                planned = contracts_from_coin(args.coin_qty, args.ct_val, args.lot)
-            ref = adapter.stop_preflight(inst, planned or "")
+            ref = adapter.stop_preflight(inst, args.contracts)
             out = _base(op, True)
             out.update(ref)
             if ref["pos_mode"] != "net_mode" or not ref["flat"] or not ref["cross"] or ref["open_orders"] or ref["open_algos"] or ref["other_positions"]:
@@ -98,9 +90,22 @@ def run_okx_stop(args):
             out.update(canceled)
             _emit(out)
             return
+        if op == "reduce":
+            adapter.stop_reduce(inst, args.position_side, args.contracts, args.order_id, args.exp_time_ms)
+            _emit(_base(op, True))
+            return
+        if op == "reduce-fill":
+            out = _base(op, True)
+            out["fills"] = [adapter.stop_reduce_fill(inst, args.order_id)]
+            _emit(out)
+            return
         if op == "fills":
             out = _base(op, True)
-            out["fills"] = adapter.stop_fills(inst)
+            out["fills"] = adapter.stop_fills(inst, args.order_id)
+            try:
+                out["child_terminal"] = adapter.stop_child_terminal(inst, args.order_id)
+            except Exception:
+                out["child_terminal"] = False
             _emit(out)
             return
         raise RuntimeError(f"unknown OKX stop op {op}")
