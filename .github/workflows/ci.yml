@@ -242,8 +242,9 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-          sudo apt-get update
-          sudo apt-get install -y strace nftables iproute2
+          apt_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${apt_sources[@]}" update
+          sudo apt-get "${apt_sources[@]}" install -y strace nftables iproute2
           sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/egress
           UV_PYTHON_INSTALL_DIR=/opt/egress/python UV_PROJECT_ENVIRONMENT=/opt/egress/venv uv sync --no-dev --compile-bytecode
           chmod -R a+rX /opt/egress
@@ -499,8 +500,9 @@ jobs:
       - name: Install the egress suite tools
         if: ${{ needs.changes.outputs.egress_docker == 'true' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y nftables iproute2
+          apt_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${apt_sources[@]}" update
+          sudo apt-get "${apt_sources[@]}" install -y nftables iproute2
 
       - name: Build the egress suite binaries
         if: ${{ needs.changes.outputs.egress_docker == 'true' }}
