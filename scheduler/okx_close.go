@@ -40,6 +40,21 @@ func defaultOKXLiveCloser(symbol string, partialSz *float64) (*OKXCloseResult, e
 
 type OKXPositionsFetcher func() ([]OKXPosition, error)
 
+func protectedOKXCloser(store *StateStore, state *AppState, roster []StrategyConfig, mu *sync.RWMutex, notifier *MultiNotifier, circuit bool, fallback OKXLiveCloser) OKXLiveCloser {
+	return func(symbol string, size *float64) (*OKXCloseResult, error) {
+		for _, sc := range okxLiveStrategiesForCoin(symbol, roster) {
+			s := state.Strategies[sc.ID]
+			if !okxStopWanted(sc) || s == nil || !s.OKXProtection.unresolved() {
+				continue
+			}
+			logger := entryRecoveryLogger(nil, sc.ID)
+			defer logger.Close()
+			return submitOKXProtectedClose(store, sc, s, mu, size, circuit, notifier, logger)
+		}
+		return fallback(symbol, size)
+	}
+}
+
 func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	result, stderr, err := RunOKXFetchPositions(okxFetchPositionsScript)
 	if stderr != "" {

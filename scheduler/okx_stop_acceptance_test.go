@@ -3,14 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -236,9 +237,12 @@ func TestOKXStopReviewRecovery(t *testing.T) {
 	}
 	pct := 2.0
 	sc := StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "perps", Script: okxStopScript, StopLossPct: &pct, Args: []string{"sma", "BTC", "1h", "--mode=live"}}
-	for _, mode := range []string{"confirmed-reduce", "unresolved-entry", "unreadable-reduce", "partial-stop", "partial-stop-entry-only", "restart-after-book", "failed-close", "circuit-partial"} {
+	for _, mode := range []string{"confirmed-reduce", "unresolved-entry", "unreadable-reduce", "partial-stop", "partial-stop-entry-only", "restart-after-book", "failed-close", "circuit-partial", "requested-close-recovery", "breaker-stop-race", "kill-switch-stop-race", "breaker-partial-race", "legacy-mark-race", "legacy-partial-mark-race"} {
 		t.Run(mode, func(t *testing.T) {
-			fix := &okxAcceptFixture{hideReduceFill: mode == "unreadable-reduce", onlyEntry: mode == "partial-stop-entry-only"}
+			fix := &okxAcceptFixture{
+				hideReduceFill: mode == "unreadable-reduce" || mode == "requested-close-recovery",
+				onlyEntry:      mode == "partial-stop-entry-only", rejectReduce: mode == "failed-close",
+			}
 			server := httptest.NewServer(fix)
 			t.Cleanup(server.Close)
 			t.Setenv("OKX_OFFLINE_FIXTURE", server.URL)
@@ -251,7 +255,7 @@ func TestOKXStopReviewRecovery(t *testing.T) {
 			p := live.OKXProtection
 			var mu sync.RWMutex
 			logger := silentStrategyLogger(sc.ID)
-			if mode == "partial-stop" || mode == "partial-stop-entry-only" || mode == "restart-after-book" || mode == "failed-close" || mode == "circuit-partial" {
+			if mode != "unresolved-entry" && mode != "confirmed-reduce" && mode != "unreadable-reduce" {
 				armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
 				if mode == "partial-stop" {
 					if _, err := ExecutePerpsSignalWithLeverageDeferredOpen(live, -1, "BTC", 49500,
@@ -290,43 +294,104 @@ func TestOKXStopReviewRecovery(t *testing.T) {
 				if !fix.reduceSent() || live.OKXProtection != p || !p.holdsNewExposure() || p.IncidentID == "" || len(live.TradeHistory) != 0 {
 					t.Fatal("the unknown reduce must hold the book with an incident")
 				}
-			case "failed-close":
-				oldExec := okxExecuteGuardedFn
-				t.Cleanup(func() { okxExecuteGuardedFn = oldExec })
-				sent := false
-				okxExecuteGuardedFn = func(_, _, side string, size float64, _ string, opts okxExecuteOptions) (*OKXExecuteResult, string, error) {
-					sent = opts.ReduceOnly && side == "sell" && size == 10
-					return nil, "", fmt.Errorf("fixture exchange refused the close")
-				}
+			case "failed-close", "requested-close-recovery":
 				app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
-				runOKXStep(okxStepContext{
-					Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
-					Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
-					Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000},
-				}, sc, func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
-					return &OKXResult{Symbol: "BTC", Signal: -1, StrategyDecisionFields: StrategyDecisionFields{CloseFraction: 1}}, "SELL", 50000, true
-				})
-				if !sent || live.OKXProtection.Status != okxProtectArmed || fix.placeCount() != 1 || len(live.TradeHistory) != 0 {
-					t.Fatal("a failed strategy close must leave the original stop in place")
+				step := func() {
+					runOKXStep(okxStepContext{
+						Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+						Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+						Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000},
+					}, sc, func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
+						return &OKXResult{Symbol: "BTC", Signal: -1, StrategyDecisionFields: StrategyDecisionFields{CloseFraction: 1}}, "SELL", 50000, true
+					})
 				}
-			case "circuit-partial":
+				step()
+				if !fix.reduceSent() || live.OKXProtection.Status != okxProtectArmed || fix.placeCount() != 1 || len(live.TradeHistory) != 0 {
+					t.Fatal("the submitted close must leave the stop record and hold the book until venue evidence arrives")
+				}
+				if mode == "requested-close-recovery" {
+					restarted, err := db.LoadState()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := store.LoadOKXProtections(restarted, []StrategyConfig{sc}); err != nil {
+						t.Fatal(err)
+					}
+					fix.mu.Lock()
+					fix.hideReduceFill = false
+					fix.mu.Unlock()
+					loaded := restarted.Strategies[sc.ID]
+					reconcileOKXProtection(store, sc, loaded, &mu, nil, logger)
+					reconcileOKXProtection(store, sc, loaded, &mu, nil, logger)
+					if loaded.OKXProtection != nil || loaded.Positions["BTC"] != nil ||
+						len(loaded.TradeHistory) != 1 || loaded.TradeHistory[0].Price != 48500 || fix.reduceWrites != 1 {
+						t.Fatal("restart must book the venue average once and retire the canceled stop without resending")
+					}
+				}
+			case "circuit-partial", "breaker-partial-race":
 				app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+				quantity := 4.0
+				if mode == "breaker-partial-race" {
+					quantity = 6
+					fix.mu.Lock()
+					fix.partial, fix.onlyEntry, fix.partialTerminal = true, true, true
+					fix.mu.Unlock()
+					forceCloseAllPositions(live, &sc, map[string]float64{"BTC": 48000}, logger)
+				}
 				live.RiskState.setPendingCircuitClose(PlatformPendingCloseOKX, &PendingCircuitClose{
-					Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 4}},
+					Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: quantity}},
 				})
+				closer := protectedOKXCloser(store, app, []StrategyConfig{sc}, &mu, nil, true,
+					func(string, *float64) (*OKXCloseResult, error) {
+						t.Fatal("protected circuit close used the fallback")
+						return nil, nil
+					})
 				runPendingOKXCircuitCloses(context.Background(), store, app, []StrategyConfig{sc}, true,
-					[]OKXPosition{{Coin: "BTC", Size: 10}}, true, nil,
-					func(symbol string, contracts *float64) (*OKXCloseResult, error) {
-						if symbol != "BTC" || contracts == nil || *contracts != 4 {
-							t.Fatal("circuit close must request only its partial size")
-						}
-						fix.mu.Lock()
-						fix.circuitRemainder = "6"
-						fix.mu.Unlock()
-						return &OKXCloseResult{}, nil
-					}, 20*time.Second, &mu, nil)
-				if live.OKXProtection.Status != okxProtectArmed || live.OKXProtection.SizeContracts != "6" || fix.placeCount() != 1 {
-					t.Fatal("a partial circuit close must keep the original stop with the remaining size")
+					[]OKXPosition{{Coin: "BTC", Size: 10}}, true, nil, closer, 20*time.Second, &mu, nil)
+				if mode == "breaker-partial-race" {
+					if live.OKXProtection != nil || live.Positions["BTC"] != nil || len(live.TradeHistory) != 2 ||
+						live.TradeHistory[0].Quantity != 6 || live.TradeHistory[1].Quantity != 4 {
+						t.Fatalf("the breaker and stop must account for each fill once: %+v", live.TradeHistory)
+					}
+				} else if live.OKXProtection.Status != okxProtectArmed || live.OKXProtection.SizeContracts != "6" ||
+					fix.placeCount() != 1 || live.Positions["BTC"].Quantity != 6 || len(live.TradeHistory) != 1 {
+					t.Fatal("a partial circuit close must book its fill and resize the original stop")
+				}
+			case "legacy-mark-race", "legacy-partial-mark-race":
+				closeVirtualPositionAtMark(live, &sc, "BTC", live.Positions["BTC"], map[string]float64{"BTC": 48000}, logger)
+				fix.mu.Lock()
+				fix.effective = mode == "legacy-mark-race"
+				fix.partial = !fix.effective
+				fix.partialTerminal, fix.venueFlat = true, true
+				fix.mu.Unlock()
+				reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+				reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+				live.EntryGuard = &entryGuardState{Partition: partitionFor(sc)}
+				next := admitOKXStopEntry(sc, live, "BTC", 1, 0, 0, "", tradingNow())
+				if !next.admitted() {
+					t.Fatal("the earlier model close and retired receipt must allow the next entry")
+				}
+				var fills int
+				err := db.db.QueryRow("SELECT COUNT(*) FROM okx_protection_fills WHERE record_id = ?", p.RecordID).Scan(&fills)
+				if err != nil || fills != 1 || live.OKXProtection != nil || len(live.TradeHistory) != 1 || live.TradeHistory[0].Price != 48000 {
+					t.Fatalf("an earlier model-only close must preserve the receipt once without a second trade: fills=%d, err=%v, trades=%+v", fills, err, live.TradeHistory)
+				}
+			case "breaker-stop-race", "kill-switch-stop-race":
+				fix.setEffective()
+				if mode == "breaker-stop-race" {
+					forceCloseAllPositions(live, &sc, map[string]float64{"BTC": 48000}, logger)
+				} else {
+					forceCloseKillSwitchPositions(live, sc, map[string]float64{"BTC": 48000}, nil, nil, nil, nil, logger)
+				}
+				if live.Positions["BTC"] == nil || len(live.TradeHistory) != 0 {
+					t.Fatal("risk must leave a live protected book for venue settlement")
+				}
+				reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+				live.EntryGuard = &entryGuardState{Partition: partitionFor(sc)}
+				next := admitOKXStopEntry(sc, live, "BTC", 1, 0, 0, "", tradingNow())
+				if live.OKXProtection != nil || live.Positions["BTC"] != nil || len(live.TradeHistory) != 1 ||
+					live.TradeHistory[0].Price != 49000 || !next.admitted() {
+					t.Fatal("the stop fill must retire at its venue price and release the next entry")
 				}
 			case "restart-after-book":
 				if live.OKXProtection != p || live.Positions["BTC"] != nil || len(live.TradeHistory) != 1 {
@@ -371,6 +436,257 @@ func TestOKXStopReviewRecovery(t *testing.T) {
 	}
 }
 
+func TestOKXNonStopReversalUsesLegacyClose(t *testing.T) {
+	db := openTestDB(t)
+	store := singleFileStore(db)
+	live := okxAcceptanceBook(t)
+	live.OKXProtection = nil
+	sc := StrategyConfig{ID: live.ID, Platform: "okx", Type: "perps", Script: okxStopScript,
+		Direction: DirectionBoth, ClosedBarDecisions: true, Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+	app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+	var mu sync.RWMutex
+	calls := 0
+	previous := okxExecuteGuardedFn
+	t.Cleanup(func() { okxExecuteGuardedFn = previous })
+	okxExecuteGuardedFn = func(_, _, side string, qty float64, _ string, opts okxExecuteOptions) (*OKXExecuteResult, string, error) {
+		if side != "sell" || qty != 10 || !opts.ReduceOnly {
+			t.Fatal("closed-bar reversal did not make a reduce-only request for the owned position")
+		}
+		calls++
+		return &OKXExecuteResult{Execution: &OKXExecution{Fill: &OKXFill{OID: "accepted-without-fill"}}}, "", nil
+	}
+	step := func(captured okxStepPosition) {
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu,
+			Logger: silentStrategyLogger(sc.ID), Prices: map[string]float64{}, Risk: &scopeCycleRisk{},
+			Cash: 10000, Pos: captured}, sc, func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
+			now := tradingNow()
+			fields := entryTestDecision(entryTestNewestBar(now), now)
+			return &OKXResult{Symbol: "BTC", Signal: -1, StrategyDecisionFields: fields}, "SELL", 48500, true
+		})
+	}
+	step(okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000})
+	step(okxStepPosition{})
+	if calls != 1 || live.Positions["BTC"] != nil || len(live.TradeHistory) != 1 || !live.TradeHistory[0].IsClose {
+		t.Fatalf("legacy signal-price fallback did not settle once: requests=%d, trades=%+v", calls, live.TradeHistory)
+	}
+}
+
+func TestOKXStopPaperReviewCases(t *testing.T) {
+	if filepath.Base(mustGetwd(t)) == "scheduler" {
+		t.Chdir("..")
+	}
+	fix := &okxAcceptFixture{lot: "0.01"}
+	server := httptest.NewServer(fix)
+	t.Cleanup(server.Close)
+	t.Setenv("OKX_OFFLINE_FIXTURE", server.URL)
+	t.Setenv("OKX_API_KEY", "offline-fixture")
+	t.Setenv("OKX_API_SECRET", "secret")
+	t.Setenv("OKX_PASSPHRASE", "pass")
+	db := openTestDB(t)
+	store := singleFileStore(db)
+	pct := 2.0
+	sc := StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "perps", StopLossPct: &pct, Args: []string{"sma", "BTC", "1h", "--mode=paper"}}
+	const price, rawQty = 50000.0, 0.0123456789
+	paper := &StrategyState{ID: sc.ID, Type: "perps", Platform: "okx", Cash: price * rawQty, Positions: map[string]*Position{}}
+	app := &AppState{Strategies: map[string]*StrategyState{sc.ID: paper}}
+	var mu sync.RWMutex
+	logger := silentStrategyLogger(sc.ID)
+	run := func(signal int, pos okxStepPosition) {
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: paper, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+			Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: paper.Cash, Pos: pos}, sc,
+			func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
+				return &OKXResult{Symbol: "BTC", Signal: signal}, "fixture", price, true
+			})
+	}
+	run(1, okxStepPosition{})
+	pos := paper.Positions["BTC"]
+	if pos == nil || pos.Quantity != 0.01 || pos.StopLossTriggerPx <= 0 {
+		t.Fatalf("paper stop did not arm on the rounded entry: %+v", pos)
+	}
+	t.Logf("paper entry requested %.10f contracts, booked %.2f and armed at %g", rawQty, pos.Quantity, pos.StopLossTriggerPx)
+
+	simRef, err := okxPaperReference("BTC", "10", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveRef, err := runOKXStop("arm-reference", okxStopFields("BTC", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := func(ref okxStopCommandResult, equity string, live bool) okxStopGeometryResult {
+		result, err := okxFinalizeStop(okxStopGeometryInput{Side: "long", Owner: okxStopOwnerPct, Pct: "2", Entry: "50000",
+			Contracts: ref.Contracts, CtVal: ref.CtVal, Mark: ref.Mark, Tick: ref.Tick, MMR: ref.MMR, Equity: equity,
+			Fee: ref.Fee, VenueLiq: ref.LiqPx, VenueLiqKnown: ref.LiqKnown, RequireVenueLiq: live})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	paperGeometry := model(simRef, liveRef.Equity, false)
+	liveGeometry := model(liveRef, liveRef.Equity, true)
+	if paperGeometry.LiqBound == "" || paperGeometry.LiqBound != liveGeometry.LiqBound || paperGeometry.Trigger != liveGeometry.Trigger {
+		t.Fatalf("the same reference inputs gave different geometry: paper %+v, live %+v", paperGeometry, liveGeometry)
+	}
+	t.Logf("paper and live bounds match at %s with the same geometry inputs", paperGeometry.LiqBound)
+
+	pos.Quantity = rawQty
+	fix.mu.Lock()
+	fix.mark = "48000"
+	fix.mu.Unlock()
+	run(0, okxStepPosition{Qty: rawQty, Side: "long", AvgCost: pos.AvgCost})
+	if paper.Positions["BTC"] != nil || len(paper.TradeHistory) != 2 || paper.TradeHistory[1].Quantity != rawQty {
+		t.Fatal("paper stop did not close the saved non-lot position after the mark crossed it")
+	}
+	t.Logf("mark crossing closed the saved non-lot paper position of %.10f contracts", rawQty)
+}
+
+func TestOKXStopStartupReviewCases(t *testing.T) {
+	if filepath.Base(mustGetwd(t)) == "scheduler" {
+		t.Chdir("..")
+	}
+	root := mustGetwd(t)
+	binary := filepath.Join(t.TempDir(), "scheduler")
+	build := exec.Command("go", "-C", "scheduler", "build", "-o", binary, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build scheduler: %v: %s", err, out)
+	}
+	for _, mode := range []string{"saved-position", "account-timeout", "open-order"} {
+		t.Run(mode, func(t *testing.T) {
+			fix := &okxAcceptFixture{venueFlat: true, accountTimeout: mode == "account-timeout", openOrder: mode == "open-order"}
+			server := httptest.NewServer(fix)
+			t.Cleanup(server.Close)
+			t.Setenv("OKX_OFFLINE_FIXTURE", server.URL)
+			t.Setenv("OKX_API_KEY", "offline-fixture")
+			t.Setenv("OKX_API_SECRET", "secret")
+			t.Setenv("OKX_PASSPHRASE", "pass")
+			t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+			t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+			t.Setenv("NO_PROXY", "127.0.0.1")
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "state.db")
+			if mode == "saved-position" {
+				db, err := OpenStateDB(dbPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				book := okxAcceptanceBook(t)
+				book.OKXProtection = nil
+				if err := singleFileStore(db).SaveStrategyBook(book); err != nil {
+					db.Close()
+					t.Fatal(err)
+				}
+				db.Close()
+			}
+			config := map[string]any{"config_version": CurrentConfigVersion, "auto_update": "off", "db_file": dbPath, "interval_seconds": 300,
+				"strategies": []map[string]any{
+					{"id": "okx-btc", "platform": "okx", "type": "perps", "script": okxStopScript, "args": []string{"sma_crossover", "BTC", "1h", "--mode=live"}, "allow_no_edge": true, "stop_loss_pct": 2, "capital": 10000, "paused": true},
+					{"id": "paper-btc", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": []string{"momentum", "BTC/USDT", "1h", "--mode=paper"}, "capital": 1000},
+				}}
+			configPath := filepath.Join(dir, "config.json")
+			raw, _ := json.Marshal(config)
+			if err := os.WriteFile(configPath, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			runRoot := root
+			if mode == "account-timeout" {
+				runRoot = filepath.Join(dir, "runtime")
+				prepareOKXStartupRuntime(t, root, runRoot)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "-config", configPath, "-once")
+			cmd.Dir = runRoot
+			output, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Stderr = cmd.Stdout
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			var warning string
+			var lines []string
+			started := false
+			scanner := bufio.NewScanner(output)
+			for scanner.Scan() {
+				line := scanner.Text()
+				lines = append(lines, line)
+				if strings.Contains(line, "[okx-stop] WARN: OKX stop startup check for okx-btc failed:") {
+					warning = line
+				}
+				if strings.Contains(line, "Option pricers ready") {
+					started = true
+					if mode != "account-timeout" {
+						_ = cmd.Process.Signal(os.Interrupt)
+					}
+				}
+			}
+			waitErr := cmd.Wait()
+			if !started || warning == "" {
+				t.Fatalf("scheduler did not start past the OKX warning: %v\n%s", waitErr, strings.Join(lines, "\n"))
+			}
+			if mode == "account-timeout" {
+				if waitErr != nil {
+					t.Fatalf("offline scheduler cycle failed: %v\n%s", waitErr, strings.Join(lines, "\n"))
+				}
+				if _, err := os.Stat(filepath.Join(runRoot, "paper-check-ran")); err != nil {
+					t.Fatalf("the second platform did not execute its strategy check: %v\n%s", err, strings.Join(lines, "\n"))
+				}
+				t.Log("the Binance.US paper strategy executed after the OKX account timeout")
+			}
+			if mode != "saved-position" {
+				if _, err := okxPreflightAllowsEntry("BTC", "0.01"); err == nil {
+					t.Fatal("the failed startup preflight must still block entry")
+				}
+			}
+			if fix.reduceSent() || fix.placeCount() != 0 {
+				t.Fatal("startup preflight must not send an order")
+			}
+			t.Logf("scheduler reached Option pricers ready after warning: %s", warning)
+		})
+	}
+}
+
+func prepareOKXStartupRuntime(t *testing.T, source, target string) {
+	t.Helper()
+	scripts := filepath.Join(target, "shared_scripts")
+	if err := os.MkdirAll(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".venv", "platforms", "shared_tools", "shared_strategies", "backtest", "scripts"} {
+		if err := os.Symlink(filepath.Join(source, name), filepath.Join(target, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(source, "shared_scripts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "check_price.py" || name == "check_strategy.py" {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(source, "shared_scripts", name), filepath.Join(scripts, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	python := map[string]string{
+		"check_price.py": `print('{"BTC/USDT":50000}')`,
+		"check_strategy.py": `from pathlib import Path
+import sys
+if "--probe-only" not in sys.argv:
+    Path("paper-check-ran").touch()
+print('{"symbol":"BTC/USDT","signal":0,"price":50000,"platform":"binanceus","mode":"paper"}')
+`,
+	}
+	for name, body := range python {
+		if err := os.WriteFile(filepath.Join(scripts, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func mustGetwd(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -408,6 +724,14 @@ type okxAcceptFixture struct {
 	failNextPosition bool
 	hideReduceFill   bool
 	reduceClientID   string
+	reduceQty        string
+	reduceWrites     int
+	rejectReduce     bool
+	lot              string
+	mark             string
+	venueFlat        bool
+	accountTimeout   bool
+	openOrder        bool
 	resting          map[string]string
 }
 
@@ -454,23 +778,39 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "lost", 500)
 		return
 	case "privatePostTradeOrder":
-		if f.reduceClientID != "" || params["reduceOnly"] != true || arg("side") != "sell" || arg("sz") != "10" || arg("instId") != "BTC-USDT-SWAP" || arg("clOrdId") == "" {
+		f.reduceWrites++
+		if f.reduceClientID != "" || params["reduceOnly"] != true || arg("side") != "sell" || arg("instId") != "BTC-USDT-SWAP" || arg("clOrdId") == "" {
 			http.Error(w, "invalid or duplicate reduce", 400)
 			return
 		}
 		f.reduceClientID = arg("clOrdId")
+		f.reduceQty = arg("sz")
+		if f.reduceQty == "4" {
+			f.circuitRemainder = "6"
+		}
 		http.Error(w, "lost", 500)
 		return
 	}
 	payload := map[string]interface{}{"code": "0", "data": []interface{}{}}
 	switch body.Method {
+	case "privateGetAccountConfig":
+		if f.accountTimeout {
+			http.Error(w, "fixture account endpoint timed out", 504)
+			return
+		}
+		payload["data"] = []interface{}{map[string]string{"posMode": "net_mode", "acctLv": "2"}}
+	case "privateGetTradeOrdersPending":
+		if f.openOrder {
+			payload["data"] = []interface{}{map[string]string{"ordId": "instrument-order"}}
+		}
+	case "privateGetTradeOrdersAlgoPending":
 	case "privateGetAccountPositions":
 		if f.failNextPosition {
 			f.failNextPosition = false
 			http.Error(w, "position read failed", 500)
 			return
 		}
-		if !f.effective && f.reduceClientID == "" {
+		if !f.venueFlat && !f.effective && (f.reduceClientID == "" || f.rejectReduce || f.circuitRemainder != "") {
 			qty := "10"
 			if f.partial {
 				qty = "4"
@@ -483,13 +823,21 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "pos": qty, "posSide": "net", "mgnMode": "cross", "liqPx": "40000"}}
 		}
 	case "publicGetPublicInstruments":
-		payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "tickSz": "0.1", "lotSz": "1", "minSz": "1", "ctVal": "0.01", "state": "live", "instFamily": "BTC-USDT"}}
+		lot := f.lot
+		if lot == "" {
+			lot = "1"
+		}
+		payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "tickSz": "0.1", "lotSz": lot, "minSz": lot, "ctVal": "0.01", "state": "live", "instFamily": "BTC-USDT"}}
 	case "publicGetPublicMarkPrice":
 		if f.failMark {
 			http.Error(w, "mark read failed", 500)
 			return
 		}
-		payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "markPx": "50000"}}
+		mark := f.mark
+		if mark == "" {
+			mark = "50000"
+		}
+		payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "markPx": mark}}
 	case "publicGetPublicPositionTiers":
 		payload["data"] = []interface{}{map[string]string{"minSz": "0", "maxSz": "100000", "mmr": "0.005"}}
 	case "privateGetAccountBalance":
@@ -508,6 +856,9 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				row["state"] = "partially_effective"
 			}
 		}
+		if f.reduceClientID != "" && !f.rejectReduce && f.circuitRemainder == "" && !f.partial {
+			row = map[string]string{"instId": "BTC-USDT-SWAP", "algoId": "algo-live", "algoClOrdId": arg("algoClOrdId"), "state": "canceled"}
+		}
 		payload["data"] = []interface{}{row}
 	case "privatePostTradeAmendAlgos":
 		f.resting["sz"] = arg("newSz")
@@ -516,7 +867,11 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "privateGetTradeOrder":
 		if arg("clOrdId") != "" {
 			if f.reduceClientID != "" && !f.hideReduceFill {
-				payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "clOrdId": f.reduceClientID, "ordId": "reduce-1", "reduceOnly": "true", "state": "filled", "side": "sell", "avgPx": "48500", "accFillSz": "10", "fee": "-0.02", "feeCcy": "USDT"}}
+				state, qty := "filled", f.reduceQty
+				if f.rejectReduce {
+					state, qty = "canceled", "0"
+				}
+				payload["data"] = []interface{}{map[string]string{"instId": "BTC-USDT-SWAP", "clOrdId": f.reduceClientID, "ordId": "reduce-1", "reduceOnly": "true", "state": state, "side": "sell", "avgPx": "48500", "accFillSz": qty, "fee": "-0.02", "feeCcy": "USDT"}}
 			}
 		} else if f.effective || f.partial {
 			status := "filled"

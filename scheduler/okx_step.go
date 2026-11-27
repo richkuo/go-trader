@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -205,10 +206,27 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		}
 		if okxIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
 			if okxStopWanted(sc) && okxPosQty > 0 && signalTargetSide(result.Signal) != okxPosSide {
-				result.CloseReduceOnly = true
-				if result.CloseFraction == 0 {
-					result.CloseFraction = 1
+				var size *float64
+				if result.CloseFraction > 0 && result.CloseFraction < 1 {
+					requested := okxPosQty * result.CloseFraction
+					size = &requested
 				}
+				mu.RLock()
+				before := len(stratState.TradeHistory)
+				mu.RUnlock()
+				if _, err := submitOKXProtectedClose(store, sc, stratState, mu, size, false, notifier, logger); err != nil {
+					logger.Warn("OKX protected close: %v", err)
+				} else {
+					reconcileOKXProtection(store, sc, stratState, mu, notifier, logger)
+				}
+				mu.RLock()
+				out.Trades = len(stratState.TradeHistory) - before
+				if out.Trades > 0 {
+					last := stratState.TradeHistory[len(stratState.TradeHistory)-1]
+					out.Detail = fmt.Sprintf("[%s] LIVE %s %s @ $%s", sc.ID, signalStr, result.Symbol, formatSignalPrice(last.Price))
+				}
+				mu.RUnlock()
+				return out
 			}
 			er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger)
 			if ok2 {
@@ -235,9 +253,6 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			mu.Unlock()
 			if okxIsLive(sc.Args) && okxEntryIntent != nil && execResult != nil && confirmOKXEntryFill(execResult) == nil && okxStopWanted(sc) {
 				armOKXStopAfterEntry(store, sc, stratState, mu, okxEntryIntent, execResult.Execution.Fill, notifier, logger)
-			}
-			if okxIsLive(sc.Args) && okxStopWanted(sc) && result.CloseReduceOnly && execResult != nil {
-				reconcileOKXProtection(store, sc, stratState, mu, notifier, logger)
 			}
 			if cashAlert != "" {
 				notifySpotLiveCashOverBudget(notifier, cashAlert)

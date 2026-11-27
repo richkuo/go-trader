@@ -625,23 +625,6 @@ def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", 
         except Exception:
             pass
 
-        if reduce_only and fill.get("oid") and not (fill.get("avg_px", 0) > 0 and fill.get("total_sz", 0) > 0):
-            read_err = None
-            for attempt in range(4):
-                try:
-                    row = adapter.confirmed_reduce_order(symbol.upper() + "-USDT-SWAP", fill["oid"])
-                    if row.get("side") != side.lower():
-                        raise RuntimeError("OKX reduce order side does not match")
-                    fill.update(avg_px=float(row["avgPx"]), total_sz=float(row["accFillSz"]),
-                                fee=max(0.0, -float(row["fee"])))
-                    read_err = None
-                    break
-                except Exception as exc:
-                    read_err = exc
-                    if attempt < 3:
-                        time.sleep(0.5)
-            if read_err is not None:
-                raise RuntimeError(f"OKX reduce order {fill['oid']} outcome is unknown: {read_err}")
         print(json.dumps({
             "execution": {
                 "action": "buy" if is_buy else "sell",

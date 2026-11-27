@@ -80,7 +80,7 @@ class OKXExchangeAdapter:
         api_key = "" if self._public_only else os.environ.get("OKX_API_KEY", "")
         api_secret = "" if self._public_only else os.environ.get("OKX_API_SECRET", "")
         passphrase = "" if self._public_only else os.environ.get("OKX_PASSPHRASE", "")
-        self._offline_url = "" if self._public_only else _okx_offline_fixture_url(api_key)
+        self._offline_url = _okx_offline_fixture_url(os.environ.get("OKX_API_KEY", ""))
         sandbox = os.environ.get("OKX_SANDBOX", "") == "1"
 
         config = {
@@ -953,16 +953,6 @@ class OKXExchangeAdapter:
         if len(rows) != 1 or not isinstance(rows[0], dict) or str(rows[0].get("sCode")) != "0":
             raise RuntimeError("OKX did not confirm submission of the emergency reduce")
 
-    def confirmed_reduce_order(self, inst_id: str, order_id: str) -> dict:
-        rows = self._okx_data(self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "ordId": order_id}), "reduce order")
-        if len(rows) != 1 or not isinstance(rows[0], dict):
-            raise RuntimeError("OKX returned no unique reduce order")
-        row = rows[0]
-        if (row.get("instId") != inst_id or row.get("ordId") != order_id or row.get("reduceOnly") not in (True, "true")
-                or row.get("state") not in ("filled", "canceled") or row.get("feeCcy") != "USDT"):
-            raise RuntimeError("OKX did not prove the terminal reduce order")
-        return row
-
     def stop_reduce_fill(self, inst_id: str, client_id: str) -> dict:
         self._require_live_stop()
         rows = self._okx_data(self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "clOrdId": client_id}), "emergency reduce order")
@@ -970,8 +960,13 @@ class OKXExchangeAdapter:
             raise RuntimeError("OKX returned no unique emergency reduce order")
         row = rows[0]
         if (row.get("instId") != inst_id or row.get("clOrdId") != client_id or row.get("reduceOnly") not in (True, "true")
-                or row.get("state") not in ("filled", "canceled") or not row.get("ordId") or row.get("feeCcy") != "USDT"):
+                or row.get("state") not in ("filled", "canceled") or not row.get("ordId")):
             raise RuntimeError("OKX did not prove a terminal emergency reduce order with a USDT fee")
+        qty = Decimal(row["accFillSz"])
+        if row["state"] == "canceled" and qty == 0:
+            return {"side": row.get("side"), "qty": "0", "ord_id": row["ordId"]}
+        if row.get("feeCcy") != "USDT":
+            raise RuntimeError("OKX reduce fill has no USDT fee evidence")
         return {"fill_id": "order:" + row["ordId"], "ord_id": row["ordId"], "side": row.get("side"),
                 "qty": row.get("accFillSz"), "px": row.get("avgPx"), "fee": row.get("fee")}
 

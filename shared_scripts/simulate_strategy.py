@@ -372,6 +372,15 @@ def _simulate_arm(cfg: dict, candles: List[dict]) -> tuple:
             "direction", "htf_filter")})
     bt_kwargs.update(feature_labels)
     bt_kwargs.update(_preview_stop_kwargs(cfg, prepared))
+    if platform == "okx" and strategy_type == "perps":
+        from backtester import build_stop_capability_context
+        context = build_stop_capability_context(
+            platform=platform, strategy_type=strategy_type, close_refs=close_refs,
+            fields=bt_kwargs, capability_context=bt_kwargs.get("capability_context"))
+        owner = context.resolved_stop_owner
+        if owner is not None and owner["parameters"].get("geometry") == "okx":
+            raise ArmRefusal("OKX exchange stops require a single backtest with recorded OKX marks. "
+                             "Use run_backtest.py --mode single --okx-stop-inputs PATH.")
     sizing = cfg.get("perps_sizing")
     if sizing is not None:
         if not isinstance(sizing, dict):

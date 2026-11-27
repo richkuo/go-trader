@@ -1246,7 +1246,7 @@ func robinhoodOnAccountSize(coin string, positions []RobinhoodPosition) float64 
 }
 
 func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
-	if sc == nil || assist == nil || len(assist.OKXPositions) == 0 {
+	if sc == nil {
 		return
 	}
 	if sc.Platform != "okx" || sc.Type != "perps" || !okxIsLive(sc.Args) {
@@ -1256,11 +1256,17 @@ func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *P
 	if sym == "" {
 		return
 	}
-	if _, ok := s.Positions[sym]; !ok {
+	book := s.Positions[sym]
+	if book == nil {
 		return
 	}
-	qty, ok := computeOKXCircuitCloseQty(sym, s.ID, assist.OKXPositions, assist.OKXLiveAll)
-	if !ok || qty <= 0 {
+	var qty float64
+	if okxOwnsProtectedBook(*sc, s, sym) {
+		qty = book.Quantity
+	} else if assist != nil {
+		qty, _ = computeOKXCircuitCloseQty(sym, s.ID, assist.OKXPositions, assist.OKXLiveAll)
+	}
+	if !okxUsablePrice(qty) {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseOKX, &PendingCircuitClose{
@@ -1289,6 +1295,9 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 		}
 		sort.Strings(refused)
 		return refused
+	}
+	if okxStopWanted(sc) && okxIsLive(sc.Args) {
+		return forceCloseAllPositions(s, &sc, prices, logger)
 	}
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
@@ -1361,6 +1370,10 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) []string {
 	var kept []string
 	for symbol, pos := range s.Positions {
+		if sc != nil && okxOwnsProtectedBook(*sc, s, symbol) {
+			kept = append(kept, symbol)
+			continue
+		}
 		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
 	}
 	now := tradingNow().UTC()
@@ -1549,7 +1562,7 @@ func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[
 	}
 	var syms []string
 	for sym := range s.Positions {
-		if coins[sym] {
+		if coins[sym] && !okxOwnsProtectedBook(sc, s, sym) {
 			syms = append(syms, sym)
 		}
 	}

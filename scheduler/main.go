@@ -1789,7 +1789,7 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           defaultOKXLiveCloser,
+					OKXCloser:           protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, false, defaultOKXLiveCloser),
 					OKXAccount:          okxEntryAccountKey("swap"),
 					OKXReader:           defaultOKXStrictPositionReader,
 					RHLiveCrypto:        rhLiveCrypto,
@@ -1836,21 +1836,21 @@ func main() {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
 				rhFlatProofs := plan.RHCloseReport.VerifiedFlatCoins()
-				var rhBooksKept []string
+				var venueBooksKept []string
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						for _, coin := range forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatProofs, nil) {
-							rhBooksKept = append(rhBooksKept, sc.ID+" "+coin)
+							venueBooksKept = append(venueBooksKept, sc.ID+" "+coin)
 						}
 					}
 				}
-				if len(rhBooksKept) > 0 {
-					sort.Strings(rhBooksKept)
-					fmt.Printf("[CRITICAL] Portfolio kill switch: Robinhood books %v stay open without fresh account-qualified flat proof; the latch cannot auto-reset this cycle (#1921)\n", rhBooksKept)
+				if len(venueBooksKept) > 0 {
+					sort.Strings(venueBooksKept)
+					fmt.Printf("[CRITICAL] Portfolio kill switch: Venue books %v await verified settlement; the latch cannot auto-reset this cycle\n", venueBooksKept)
 				}
 				if !notifier.HasOwner() {
-					if len(rhBooksKept) > 0 {
-						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
+					if len(venueBooksKept) > 0 {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: venue books await verified settlement")
 					} else if plan.CanAutoResetWithoutOwner() {
 						livePrs := state.partitionRisk(livePartition)
 						before := clonePortfolioRiskState(livePrs)
@@ -2094,7 +2094,7 @@ func main() {
 						okxPositions,
 						okxStateFetched,
 						defaultOKXPositionsFetcher,
-						defaultOKXLiveCloser,
+						protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, true, defaultOKXLiveCloser),
 						90*time.Second,
 						&mu,
 						notifier.SendOwnerDM,
@@ -5128,23 +5128,6 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		logger.Error("Live execute returned error: %s", execResult.Error)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
 		return execResult, false
-	}
-	if opts.ReduceOnly && okxStopWanted(sc) {
-		if execResult.Execution == nil || execResult.Execution.Fill == nil {
-			logger.Error("OKX reduce has no confirmed fill. The stop remains under reconciliation.")
-			return execResult, false
-		}
-		fill := execResult.Execution.Fill
-		if fill.OID == "" || !okxUsablePrice(fill.AvgPx) || !okxUsablePrice(fill.TotalSz) || math.IsNaN(fill.Fee) || math.IsInf(fill.Fee, 0) ||
-			fill.TotalSz > posQty && !okxFillQuantityEqual(fill.TotalSz, posQty) {
-			logger.Error("OKX reduce fill could not be matched to the booked position.")
-			return execResult, false
-		}
-		if fill.TotalSz < posQty && !okxFillQuantityEqual(fill.TotalSz, posQty) {
-			result.CloseFraction = fill.TotalSz / posQty
-		} else {
-			result.CloseFraction = 1
-		}
 	}
 	if opts.ClientOrderID != "" {
 		if confirmErr := confirmOKXEntryFill(execResult); confirmErr != nil {

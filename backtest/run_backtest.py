@@ -2964,6 +2964,8 @@ def _main():
             fields=live_stop_kwargs, capability_context=live_stop_kwargs.get("capability_context"))
         owner = context.resolved_stop_owner
         if owner is not None and owner["parameters"].get("geometry") == "okx":
+            if args.mode != "single":
+                raise SystemExit("OKX exchange stops require --mode single with recorded OKX mark inputs")
             if not args.okx_stop_inputs:
                 raise SystemExit("OKX stop backtest needs --okx-stop-inputs with instrument metadata and candle-open marks")
             try:

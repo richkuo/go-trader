@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,20 +110,28 @@ type okxStopFill struct {
 	OrdID  string `json:"ord_id"`
 }
 
+type okxPendingClose struct {
+	ClientID string  `json:"client_id"`
+	Quantity float64 `json:"quantity"`
+	Circuit  bool    `json:"circuit,omitempty"`
+}
+
 type okxStopRequest struct {
-	Entry      string `json:"entry,omitempty"`
-	Mark       string `json:"mark,omitempty"`
-	EntryATR   string `json:"entry_atr,omitempty"`
-	HighWater  string `json:"high_water,omitempty"`
-	Tick       string `json:"tick,omitempty"`
-	CtVal      string `json:"ct_val,omitempty"`
-	MMR        string `json:"mmr,omitempty"`
-	Fee        string `json:"fee,omitempty"`
-	Equity     string `json:"equity,omitempty"`
-	VenueLiq   string `json:"venue_liq,omitempty"`
-	VenueKnown bool   `json:"venue_liq_known,omitempty"`
-	Trigger    string `json:"trigger,omitempty"`
-	Contracts  string `json:"contracts,omitempty"`
+	Close      *okxPendingClose `json:"pending_close,omitempty"`
+	Entry      string           `json:"entry,omitempty"`
+	Mark       string           `json:"mark,omitempty"`
+	EntryATR   string           `json:"entry_atr,omitempty"`
+	HighWater  string           `json:"high_water,omitempty"`
+	Tick       string           `json:"tick,omitempty"`
+	Lot        string           `json:"lot,omitempty"`
+	CtVal      string           `json:"ct_val,omitempty"`
+	MMR        string           `json:"mmr,omitempty"`
+	Fee        string           `json:"fee,omitempty"`
+	Equity     string           `json:"equity,omitempty"`
+	VenueLiq   string           `json:"venue_liq,omitempty"`
+	VenueKnown bool             `json:"venue_liq_known,omitempty"`
+	Trigger    string           `json:"trigger,omitempty"`
+	Contracts  string           `json:"contracts,omitempty"`
 }
 
 func (p *okxProtection) unresolved() bool {
@@ -137,6 +147,11 @@ func (p *okxProtection) unresolved() bool {
 
 func (p *okxProtection) holdsNewExposure() bool {
 	return p.unresolved() && (p.Status != okxProtectArmed || p.IncidentID != "")
+}
+
+func okxOwnsProtectedBook(sc StrategyConfig, s *StrategyState, symbol string) bool {
+	return s != nil && okxStopWanted(sc) && okxIsLive(sc.Args) &&
+		s.OKXProtection.unresolved() && s.OKXProtection.Symbol == symbol
 }
 
 func okxProtectionUnresolved(state *AppState, id string) bool {
@@ -395,7 +410,7 @@ func armOKXStopAfterEntry(store *StateStore, sc StrategyConfig, s *StrategyState
 	if atr := okxIntentATR(in); atr != "" {
 		geom.EntryATR = atr
 	}
-	req := okxStopRequest{Entry: geom.Entry, Mark: geom.Mark, EntryATR: geom.EntryATR, HighWater: geom.HighWater, Tick: geom.Tick, CtVal: ref.CtVal, MMR: ref.MMR, Fee: ref.Fee, Equity: ref.Equity, VenueLiq: pos.LiqPx, VenueKnown: pos.LiqKnown, Trigger: "", Contracts: pos.PosContracts}
+	req := okxStopRequest{Entry: geom.Entry, Mark: geom.Mark, EntryATR: geom.EntryATR, HighWater: geom.HighWater, Tick: geom.Tick, Lot: ref.Lot, CtVal: ref.CtVal, MMR: ref.MMR, Fee: ref.Fee, Equity: ref.Equity, VenueLiq: pos.LiqPx, VenueKnown: pos.LiqKnown, Trigger: "", Contracts: pos.PosContracts}
 	final, err := okxFinalizeStop(geom)
 	if err != nil {
 		okxProtectionIncident(store, s, mu, p, err.Error(), notifier, logger)
@@ -527,6 +542,14 @@ func reconcileOKXProtection(store *StateStore, sc StrategyConfig, s *StrategySta
 		okxProtectionIncident(store, s, mu, p, "the current OKX credentials do not own the saved stop", notifier, logger)
 		return
 	}
+	var saved okxStopRequest
+	if err := json.Unmarshal([]byte(p.RequestJSON), &saved); err != nil && p.RequestJSON != "" {
+		okxProtectionIncident(store, s, mu, p, "the saved OKX protection request is unreadable", notifier, logger)
+		return
+	}
+	if saved.Close != nil && !settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+		return
+	}
 	if p.Status == okxProtectReducing {
 		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
 		return
@@ -645,7 +668,138 @@ func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState
 		incident(fmt.Sprintf("the emergency reduce has no confirmed fill for order %s (submit: %v, read: %v)", orderID, submitErr, err))
 		return
 	}
-	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, okxProtectReducing, true, notifier, logger)
+	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, okxProtectReducing, true, notifier, logger, nil)
+}
+
+func submitOKXProtectedClose(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, size *float64, circuit bool, notifier *MultiNotifier, logger *StrategyLogger) (*OKXCloseResult, error) {
+	p := s.OKXProtection
+	if !p.unresolved() || p.AccountKey == "" || p.AccountKey != okxEntryAccountKey("swap") || okxEntryUnresolved(s, mu) {
+		return nil, fmt.Errorf("OKX close has no verified protection owner")
+	}
+	lock := okxInstrumentLock(p.AccountKey, p.InstID)
+	lock.Lock()
+	defer lock.Unlock()
+	var saved okxStopRequest
+	if p.RequestJSON != "" {
+		if err := json.Unmarshal([]byte(p.RequestJSON), &saved); err != nil {
+			return nil, err
+		}
+	}
+	if saved.Close != nil || p.Status == okxProtectReducing {
+		return nil, fmt.Errorf("an earlier OKX close still needs venue evidence")
+	}
+	pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
+	if err != nil {
+		return nil, err
+	}
+	if pos.Flat {
+		return &OKXCloseResult{Close: &OKXClose{Symbol: p.Symbol, AlreadyFlat: true}}, nil
+	}
+	venueQty, err := strconv.ParseFloat(pos.PosContracts, 64)
+	if err != nil || !okxUsablePrice(venueQty) {
+		return nil, fmt.Errorf("OKX close has no verified venue size")
+	}
+	qty, contracts := venueQty, pos.PosContracts
+	if size != nil && !okxUsablePrice(*size) {
+		return nil, fmt.Errorf("OKX close size is invalid")
+	}
+	if size != nil && *size < venueQty {
+		lot := saved.Lot
+		if lot == "" {
+			ref, err := okxPaperReference(p.Symbol, "", false)
+			if err != nil {
+				return nil, err
+			}
+			lot = ref.Lot
+		}
+		var err error
+		contracts, qty, err = okxRoundCloseSize(*size, lot)
+		if err != nil {
+			return nil, err
+		}
+	}
+	mu.Lock()
+	book := s.Positions[p.Symbol]
+	if book == nil || book.Side != pos.PosSide || p.Side != "" && book.Side != p.Side ||
+		p.PositionID != "" && p.PositionID != book.TradePositionID ||
+		!okxUsablePrice(book.Quantity) || venueQty > book.Quantity && !okxFillQuantityEqual(venueQty, book.Quantity) {
+		mu.Unlock()
+		return nil, fmt.Errorf("OKX close could not verify the owned position and venue exposure")
+	}
+	previous := *p
+	p.Side = book.Side
+	p.PositionID = ensurePositionTradeID(s.ID, p.Symbol, book)
+	id := fmt.Sprintf("okc%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d", p.RecordID, p.Version+1))))[:32]
+	saved.Close = &okxPendingClose{ClientID: id, Quantity: qty, Circuit: circuit}
+	raw, _ := json.Marshal(saved)
+	p.RequestJSON = string(raw)
+	p.bump(p.Status)
+	err = saveOKXProtection(store, s)
+	if err != nil {
+		*p = previous
+	}
+	mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	_, submitErr := runOKXStop("reduce", okxStopFields(p.Symbol, map[string]string{
+		"position-side": p.Side, "contracts": contracts, "order-id": id,
+		"exp-time-ms": strconv.FormatInt(tradingNow().Add(2*time.Minute).UnixMilli(), 10),
+	}))
+	if !settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+		return nil, fmt.Errorf("OKX close %s awaits venue evidence (submission: %v)", id, submitErr)
+	}
+	mu.RLock()
+	hasCircuitRemainder := circuit && s.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil
+	mu.RUnlock()
+	if hasCircuitRemainder {
+		return nil, fmt.Errorf("OKX circuit close has a remaining request")
+	}
+	return &OKXCloseResult{Close: &OKXClose{Symbol: p.Symbol}}, nil
+}
+
+func okxRoundCloseSize(size float64, lot string) (string, float64, error) {
+	qty, err := okxPositive(strconv.FormatFloat(size, 'f', -1, 64), "close size")
+	if err != nil {
+		return "", 0, err
+	}
+	step, err := okxPositive(lot, "close lot size")
+	if err != nil {
+		return "", 0, err
+	}
+	steps := new(big.Rat).Quo(qty, step)
+	count := new(big.Int).Quo(steps.Num(), steps.Denom())
+	if count.Sign() == 0 {
+		return "", 0, fmt.Errorf("OKX close size is below one contract lot")
+	}
+	rounded := new(big.Rat).Mul(new(big.Rat).SetInt(count), step)
+	text, err := okxFormatRat(rounded, lot)
+	value, _ := rounded.Float64()
+	return text, value, err
+}
+
+func settleOKXRequestedClose(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, saved okxStopRequest, notifier *MultiNotifier, logger *StrategyLogger) bool {
+	pending := saved.Close
+	out, err := runOKXStop("reduce-fill", okxStopFields(p.Symbol, map[string]string{"order-id": pending.ClientID}))
+	if err != nil || len(out.Fills) != 1 {
+		okxProtectionIncident(store, s, mu, p, fmt.Sprintf("OKX close %s awaits terminal venue evidence: %v", pending.ClientID, err), notifier, logger)
+		return false
+	}
+	fill := out.Fills[0]
+	qty, err := strconv.ParseFloat(fill.Qty, 64)
+	if err != nil || fill.Side != okxReduceSide(p.Side) || fill.OrdID == "" ||
+		qty != 0 && (!okxUsablePrice(qty) || qty > pending.Quantity && !okxFillQuantityEqual(qty, pending.Quantity)) {
+		okxProtectionIncident(store, s, mu, p, "OKX close evidence does not match the saved side or size", notifier, logger)
+		return false
+	}
+	fills := out.Fills
+	if qty == 0 {
+		fills = nil
+	}
+	settleOKXProtectionFills(store, sc, s, mu, p, fills, p.Status, false, notifier, logger, &saved)
+	var current okxStopRequest
+	_ = json.Unmarshal([]byte(p.RequestJSON), &current)
+	return current.Close == nil
 }
 
 func okxReduceSide(positionSide string) string {
@@ -675,7 +829,7 @@ func okxBookStopFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu
 			}
 		}
 	}
-	remaining, settled := settleOKXProtectionFills(store, sc, s, mu, p, fills, okxProtectTriggered, terminal, notifier, logger)
+	remaining, settled := settleOKXProtectionFills(store, sc, s, mu, p, fills, okxProtectTriggered, terminal, notifier, logger, nil)
 	if terminal && settled && remaining > 0 {
 		okxRestoreRemainderStop(store, sc, s, mu, p, remaining, notifier, logger)
 	}
@@ -700,7 +854,7 @@ func okxRestoreRemainderStop(store *StateStore, sc StrategyConfig, s *StrategySt
 	id := fmt.Sprintf("okp%x", sha256.Sum256([]byte(old.RecordID)))[:32]
 	var saved okxStopRequest
 	_ = json.Unmarshal([]byte(old.RequestJSON), &saved)
-	saved.Mark, saved.HighWater, saved.Tick = geom.Mark, final.HighWater, geom.Tick
+	saved.Mark, saved.HighWater, saved.Tick, saved.Lot = geom.Mark, final.HighWater, geom.Tick, ref.Lot
 	saved.CtVal, saved.MMR, saved.Fee, saved.Equity = geom.CtVal, geom.MMR, geom.Fee, geom.Equity
 	saved.VenueLiq, saved.VenueKnown = geom.VenueLiq, geom.VenueLiqKnown
 	saved.Trigger, saved.Contracts = final.Trigger, ref.PosContracts
@@ -727,7 +881,7 @@ func okxRestoreRemainderStop(store *StateStore, sc StrategyConfig, s *StrategySt
 	placeSavedOKXStop(store, s, mu, next, notifier, logger)
 }
 
-func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, fills []okxStopFill, status string, mayRetire bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, bool) {
+func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, fills []okxStopFill, status string, mayRetire bool, notifier *MultiNotifier, logger *StrategyLogger, requested *okxStopRequest) (float64, bool) {
 	pos, posErr := runOKXStop("position", okxStopFields(p.Symbol, nil))
 	incident := func(why string) { okxProtectionIncident(store, s, mu, p, why, notifier, logger) }
 	mu.Lock()
@@ -740,6 +894,20 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 			incident("the fill could not be attributed to the booked position side")
 			return 0, false
 		}
+	}
+	var legacyMark *Trade
+	if book == nil && posErr == nil && pos.Flat && p.PositionID != "" {
+		for i := len(s.TradeHistory) - 1; i >= 0; i-- {
+			trade := &s.TradeHistory[i]
+			if trade.PositionID == p.PositionID && trade.Symbol == p.Symbol && trade.IsClose &&
+				trade.FeeSource == FeeSourceReconcileAdjustment && strings.HasPrefix(trade.Details, "Circuit breaker close ") {
+				legacyMark = trade
+				break
+			}
+		}
+	}
+	if legacyMark != nil {
+		remaining = legacyMark.Quantity
 	}
 	seen := make(map[string]bool, len(fills)+len(p.PendingFills))
 	for _, booked := range p.PendingFills {
@@ -781,6 +949,11 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 		}
 	}
 	s.deferTradePersist = true
+	if legacyMark != nil {
+		p.PendingFills = append(p.PendingFills, verified...)
+		verified = nil
+		remaining = 0
+	}
 	for _, fill := range verified {
 		book := s.Positions[p.Symbol]
 		signal := -1
@@ -796,6 +969,28 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 			return 0, false
 		}
 		p.PendingFills = append(p.PendingFills, fill)
+	}
+	if requested != nil {
+		saved := *requested
+		if saved.Close.Circuit {
+			if old := s.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); old != nil {
+				left := saved.Close.Quantity
+				for _, fill := range verified {
+					left -= fill.Qty
+				}
+				s.RiskState.PendingCircuitCloses = maps.Clone(s.RiskState.PendingCircuitCloses)
+				if (posErr == nil && pos.Flat) || left <= 0 || okxFillQuantityEqual(saved.Close.Quantity-left, saved.Close.Quantity) {
+					s.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+				} else {
+					next := *old
+					next.Symbols = []PendingCircuitCloseSymbol{{Symbol: p.Symbol, Size: left}}
+					s.RiskState.setPendingCircuitClose(PlatformPendingCloseOKX, &next)
+				}
+			}
+		}
+		saved.Close = nil
+		raw, _ := json.Marshal(saved)
+		p.RequestJSON = string(raw)
 	}
 	canRetire := mayRetire && posErr == nil && pos.Flat && remaining == 0 && (len(verified) > 0 || len(seen) > 0 || len(p.AppliedFills) > 0)
 	if canRetire {
@@ -814,7 +1009,16 @@ func settleOKXProtectionFills(store *StateStore, sc StrategyConfig, s *StrategyS
 		return 0, false
 	}
 	matchedRemainder := posErr == nil && !pos.Flat && pos.PosSide == p.Side && okxFillMatchesContracts(remaining, pos.PosContracts)
-	if !canRetire && !(mayRetire && status == okxProtectTriggered && matchedRemainder) {
+	if canRetire && legacyMark != nil && len(fills) > 0 {
+		msg := fmt.Sprintf("OKX stop %s: venue fill %s at %s followed an earlier model close at %g for %s. Venue evidence was saved once.", p.AlgoClientID, fills[0].FillID, fills[0].Px, legacyMark.Price, p.Symbol)
+		if logger != nil {
+			logger.Warn("%s", msg)
+		}
+		if notifier != nil {
+			notifier.SendOwnerDM(msg)
+		}
+	}
+	if requested == nil && !canRetire && !(mayRetire && status == okxProtectTriggered && matchedRemainder) {
 		incident("the close has not proved both the exchange and strategy book flat; verify the remaining exposure")
 	}
 	return remaining, matchedRemainder
