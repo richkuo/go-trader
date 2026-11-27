@@ -722,6 +722,9 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		if okxPerpsStrategy(sc) && (strategyHasOpenPositions(stateStrategy(state, sc.ID)) || okxProtectionUnresolved(state, sc.ID)) && !okxStopPolicyEqual(sc, ns) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] OKX stop policy changed while a position or unresolved stop remains (flatten and resolve the stop first)", sc.ID))
+		}
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
 			newConfigured := ns.RegimeDirectionalPolicy.IsConfigured()

@@ -40,6 +40,21 @@ func defaultOKXLiveCloser(symbol string, partialSz *float64) (*OKXCloseResult, e
 
 type OKXPositionsFetcher func() ([]OKXPosition, error)
 
+func protectedOKXCloser(store *StateStore, state *AppState, roster []StrategyConfig, mu *sync.RWMutex, notifier *MultiNotifier, circuit bool, fallback OKXLiveCloser) OKXLiveCloser {
+	return func(symbol string, size *float64) (*OKXCloseResult, error) {
+		for _, sc := range okxLiveStrategiesForCoin(symbol, roster) {
+			s := state.Strategies[sc.ID]
+			if !okxStopWanted(sc) || s == nil || !s.OKXProtection.unresolved() {
+				continue
+			}
+			logger := entryRecoveryLogger(nil, sc.ID)
+			defer logger.Close()
+			return submitOKXProtectedClose(store, sc, s, mu, size, circuit, notifier, logger)
+		}
+		return fallback(symbol, size)
+	}
+}
+
 func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	result, stderr, err := RunOKXFetchPositions(okxFetchPositionsScript)
 	if stderr != "" {
@@ -263,6 +278,7 @@ func computeOKXCircuitCloseQty(coin, strategyID string, okxPositions []OKXPositi
 
 func runPendingOKXCircuitCloses(
 	ctx context.Context,
+	store *StateStore,
 	state *AppState,
 	strategies []StrategyConfig,
 	okxHasCreds bool,
@@ -433,6 +449,11 @@ func runPendingOKXCircuitCloses(
 				failedSz = sz
 				failedErr = err
 				break
+			}
+			if ss := state.Strategies[j.stratID]; ss != nil && ss.OKXProtection.unresolved() {
+				logger := entryRecoveryLogger(nil, sc.ID)
+				reconcileOKXProtection(store, *sc, ss, mu, nil, logger)
+				logger.Close()
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}

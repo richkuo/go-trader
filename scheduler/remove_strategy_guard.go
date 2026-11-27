@@ -78,6 +78,10 @@ func (ss *StatusServer) removeStrategyRefusal(id string) string {
 	if reason := ss.removeStrategyQueuedRowRefusal(id); reason != "" {
 		return reason
 	}
+	if ss.state != nil && ss.state.Strategies[id] != nil && ss.state.Strategies[id].OKXProtection.unresolved() {
+		p := ss.state.Strategies[id].OKXProtection
+		return fmt.Sprintf("strategy %q has an unresolved OKX stop %s; cancel it and confirm it is gone before removing the strategy", id, p.AlgoClientID)
+	}
 	return ""
 }
 

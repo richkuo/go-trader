@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -509,6 +510,33 @@ func main() {
 		}
 		for _, line := range robinhoodOrderStartupLines(state) {
 			fmt.Println(line)
+		}
+		if err := store.LoadOKXProtections(state, cfg.Strategies); err != nil {
+			msg := fmt.Sprintf("OKX stop protection: %v", err)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s (exit %d)\n", msg, ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Storage layout", fmt.Sprintf("%s (exit %d)", msg, ExitStorageOwnership))
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		if err := validateOKXStopStartup(state, cfg.Strategies); err != nil {
+			fmt.Fprintf(os.Stderr, "[okx-stop] CRITICAL: refusing to start: %v\n", err)
+			sendStartupRefusalDM(notifier, "OKX stop", err.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
+		for _, sc := range cfg.Strategies {
+			if !okxIsLive(sc.Args) || !okxStopWanted(sc) || state.Strategies[sc.ID].OKXProtection.unresolved() {
+				continue
+			}
+			_, err := okxPreflightAllowsEntry(okxSymbol(sc.Args))
+			if err == nil && strategyHasOpenPositions(state.Strategies[sc.ID]) {
+				err = fmt.Errorf("the book has an open position with no saved stop")
+			}
+			if err != nil {
+				msg := fmt.Sprintf("OKX stop startup check for %s failed: %v. New entries require a fresh preflight. Verify any open position has a stop.", sc.ID, err)
+				fmt.Fprintln(os.Stderr, "[okx-stop] WARN:", msg)
+				notifier.SendOwnerDM(msg)
+			}
 		}
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &sync.RWMutex{}, notifier, time.Now())
 	}
@@ -1082,6 +1110,14 @@ func main() {
 		}
 
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, tradingNow())
+		for _, sc := range cfg.Strategies {
+			ss := state.Strategies[sc.ID]
+			if ss != nil && ss.OKXProtection.unresolved() {
+				logger := entryRecoveryLogger(logMgr, sc.ID)
+				reconcileOKXProtection(store, sc, ss, &mu, notifier, logger)
+				logger.Close()
+			}
+		}
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
 		runPaperManualPositionWarnings(cfg, state, store, &mu, notifier, paperManualWarnings, ownership != nil)
@@ -1753,7 +1789,7 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           defaultOKXLiveCloser,
+					OKXCloser:           protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, false, defaultOKXLiveCloser),
 					OKXAccount:          okxEntryAccountKey("swap"),
 					OKXReader:           defaultOKXStrictPositionReader,
 					RHLiveCrypto:        rhLiveCrypto,
@@ -1800,21 +1836,21 @@ func main() {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
 				rhFlatProofs := plan.RHCloseReport.VerifiedFlatCoins()
-				var rhBooksKept []string
+				var venueBooksKept []string
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						for _, coin := range forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatProofs, nil) {
-							rhBooksKept = append(rhBooksKept, sc.ID+" "+coin)
+							venueBooksKept = append(venueBooksKept, sc.ID+" "+coin)
 						}
 					}
 				}
-				if len(rhBooksKept) > 0 {
-					sort.Strings(rhBooksKept)
-					fmt.Printf("[CRITICAL] Portfolio kill switch: Robinhood books %v stay open without fresh account-qualified flat proof; the latch cannot auto-reset this cycle (#1921)\n", rhBooksKept)
+				if len(venueBooksKept) > 0 {
+					sort.Strings(venueBooksKept)
+					fmt.Printf("[CRITICAL] Portfolio kill switch: Venue books %v await verified settlement; the latch cannot auto-reset this cycle\n", venueBooksKept)
 				}
 				if !notifier.HasOwner() {
-					if len(rhBooksKept) > 0 {
-						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
+					if len(venueBooksKept) > 0 {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: venue books await verified settlement")
 					} else if plan.CanAutoResetWithoutOwner() {
 						livePrs := state.partitionRisk(livePartition)
 						before := clonePortfolioRiskState(livePrs)
@@ -2051,13 +2087,14 @@ func main() {
 				if len(okxLivePerps) > 0 && okxHasCreds {
 					runPendingOKXCircuitCloses(
 						shutdownSideEffectCtx,
+						store,
 						state,
 						cfg.Strategies,
 						okxHasCreds,
 						okxPositions,
 						okxStateFetched,
 						defaultOKXPositionsFetcher,
-						defaultOKXLiveCloser,
+						protectedOKXCloser(store, state, okxLivePerps, &mu, notifier, true, defaultOKXLiveCloser),
 						90*time.Second,
 						&mu,
 						notifier.SendOwnerDM,
@@ -5038,6 +5075,18 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	}
 	instType := okxInstType(sc.Args)
 	var opts okxExecuteOptions
+	if okxStopWanted(sc) && result.EntrySubmitGate != nil {
+		ref, err := okxPreflightAllowsEntry(result.Symbol, strconv.FormatFloat(size, 'f', -1, 64))
+		if err != nil {
+			logger.Warn("OKX stop entry held: %v", err)
+			return nil, false
+		}
+		size, err = strconv.ParseFloat(ref.Contracts, 64)
+		if err != nil || !okxUsablePrice(size) {
+			logger.Warn("OKX stop entry held: no executable contract size")
+			return nil, false
+		}
+	}
 	if result.EntrySubmitGate != nil {
 		tags, gateErr := result.EntrySubmitGate(side, size)
 		if gateErr != nil {
@@ -5070,6 +5119,10 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		logger.Error("Live execute failed: %v", err)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return execResult, false
+	}
+	if execResult == nil {
+		logger.Error("OKX execute returned no order result")
+		return nil, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
@@ -5108,7 +5161,10 @@ func confirmOKXEntryFill(res *OKXExecuteResult) error {
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
-	var fillQty float64
+	fillQty := result.PaperOpenQty
+	if fillQty > 0 {
+		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
+	}
 	var fillFee float64
 	var fillOID string
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {

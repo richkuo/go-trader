@@ -1839,6 +1839,8 @@ def run_single_backtest(
     regime_side: bool = False,
     allow_uncertified_regime_side: bool = False,
     regime_side_certification: Optional[dict] = None,
+    okx_instrument: Optional[dict] = None,
+    okx_marks: Optional[dict] = None,
 ) -> Optional[dict]:
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
@@ -2189,6 +2191,7 @@ def run_single_backtest(
         allow_uncertified_regime_side=bool(allow_uncertified_regime_side),
         regime_side_certification=regime_side_certification if regime_side else None,
         htf_filter=bool(htf_filter and regime_side),
+        okx_instrument=okx_instrument,
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
     if regime_side:
@@ -2201,6 +2204,13 @@ def run_single_backtest(
     if manifest is None:
         from funding_fetcher import rejoin_funding_columns
         df_signals = rejoin_funding_columns(df_signals, df)
+    if okx_marks is not None:
+        marks = pd.to_numeric(df_signals["timestamp"].astype(str).map(okx_marks), errors="coerce")
+        valid = marks.gt(0) & marks.lt(float("inf"))
+        if not valid.all():
+            missing = df_signals.loc[~valid, "timestamp"].iloc[0]
+            raise SystemExit(f"OKX stop backtest needs a positive mark at candle-open timestamp {missing}")
+        df_signals = df_signals.assign(okx_mark=marks)
     results = bt.run(
         df_signals,
         strategy_name=strategy_name,
@@ -2543,6 +2553,8 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Repeat for multiple. Each runs per-bar against the simulated position; "
                              "max close_fraction wins. Replaces the pre-#641 --close-strategy NAME + "
                              "--close-params JSON pair.")
+    parser.add_argument("--okx-stop-inputs", metavar="PATH",
+                        help="Single-mode JSON with instrument metadata and marks keyed by candle-open Unix milliseconds")
     parser.add_argument("--liquidation-model", choices=["none", "venue_isolated"],
                         default="none",
                         help="Hyperliquid isolated liquidation model. venue_isolated "
@@ -2942,6 +2954,32 @@ def _main():
               "semantics); use --mode single, or eval_windows.py, for legacy-"
               "baseline reproduction")
         sys.exit(1)
+
+    if args.okx_stop_inputs and args.mode != "single":
+        raise SystemExit("--okx-stop-inputs requires --mode single")
+    stop_platform = live_stop_kwargs.get("stop_platform") or args.platform
+    if stop_platform in ("okx", "okx-perps") and live_stop_kwargs.get("strategy_type", "perps") == "perps":
+        context = build_stop_capability_context(
+            platform="okx", strategy_type="perps", close_refs=close_refs,
+            fields=live_stop_kwargs, capability_context=live_stop_kwargs.get("capability_context"))
+        owner = context.resolved_stop_owner
+        if owner is not None and owner["parameters"].get("geometry") == "okx":
+            if args.mode != "single":
+                raise SystemExit("OKX exchange stops require --mode single with recorded OKX mark inputs")
+            if not args.okx_stop_inputs:
+                raise SystemExit("OKX stop backtest needs --okx-stop-inputs with instrument metadata and candle-open marks")
+            try:
+                with open(args.okx_stop_inputs, encoding="utf-8") as source:
+                    stop_inputs = json.load(source)
+                instrument, marks = stop_inputs["instrument"], stop_inputs["marks"]
+                if not isinstance(instrument, dict) or not isinstance(marks, dict) or not marks:
+                    raise ValueError("instrument and marks must be objects, with at least one mark")
+                for field in ("tick", "lot", "ct_val", "mmr", "fee", "equity"):
+                    if instrument.get(field) is None or str(instrument[field]).strip() == "":
+                        raise ValueError(f"instrument.{field} is required")
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise SystemExit(f"--okx-stop-inputs: {exc}") from exc
+            live_stop_kwargs.update(stop_platform="okx", okx_instrument=instrument, okx_marks=marks)
 
     reg = load_registry(args.registry)
 
