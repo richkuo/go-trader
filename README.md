@@ -313,7 +313,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `script`, `args` | Python entry-point + argv (auto-filled for `manual`) | required |
 | `capital` | Virtual starting capital in USD. May be omitted only when every member of one supported 2+ live perps wallet uses shared-wallet pool budgeting with `margin_per_trade_usd` | 1000 |
 | `max_drawdown_pct` | Per-strategy CB; peak-relative (spot/options/futures), margin-relative (perps) | spot 5, options 10, perps 5 |
-| `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
+| `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains. Paper strategies arm no breaker unless root `paper_circuit_breakers` is `true` (alerts need `notify_paper_circuit_breakers`) | enabled (live) |
 | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter (50-EMA on the default higher timeframe). Missing, short or unusable higher-timeframe candles hold new entries and additions while closes and protection continue, and repeated failures alert; restart-required | false |
@@ -324,8 +324,8 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |
 | `sizing_leverage` | Perps — order sizing multiplier | `leverage` |
 | `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage`, with each position reserved at the larger of entry-price or mark-price margin | omitted |
-| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out. `trailing_stop_pct: 0` beside a positive `stop_loss_pct`, `stop_loss_margin_pct` or `trailing_stop_atr_mult` is refused at load; beside a positive `stop_loss_atr_mult` it is valid and the fixed ATR stop arms | omitted |
-| `trailing_stop_min_move_pct` | HL trailing stop debounce (OID cap 1000) | 0.5 |
+| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; live OKX perps arm an exchange stop only when one is set (no regime ATR stops; needs `check_okx.py`); all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out. `trailing_stop_pct: 0` beside a positive `stop_loss_pct`, `stop_loss_margin_pct` or `trailing_stop_atr_mult` is refused at load; beside a positive `stop_loss_atr_mult` it is valid and the fixed ATR stop arms | omitted |
+| `trailing_stop_min_move_pct` | HL and OKX perps trailing stop debounce (HL OID cap 1000) | 0.5 |
 | `margin_mode` | HL perps — `isolated` / `cross`; from flat only | `isolated` |
 | `direction` | Perps — `long` / `short` / `both` | `long` |
 | `allowed_regimes` | Whitelist for new entries; requires `regime.enabled` | (no gate) |
