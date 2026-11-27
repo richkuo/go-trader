@@ -95,8 +95,12 @@ def run_okx_stop(args):
             _emit(_base(op, True))
             return
         if op == "reduce-fill":
+            found = adapter.stop_reduce_fill(inst, args.order_id)
             out = _base(op, True)
-            out["fills"] = [adapter.stop_reduce_fill(inst, args.order_id)]
+            if found.get("absent"):
+                out["order_absent"] = True
+            else:
+                out["fills"] = [found]
             _emit(out)
             return
         if op == "fills":

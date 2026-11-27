@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -436,6 +437,282 @@ func TestOKXStopReviewRecovery(t *testing.T) {
 	}
 }
 
+func bindOKXClock(t *testing.T) *simulatedClock {
+	t.Helper()
+	clk := &simulatedClock{now: time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)}
+	if err := bindTradingClock(t.Name(), clk.Now); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unbindTradingClock(t.Name()) })
+	return clk
+}
+
+func okxSavedRequest(t *testing.T, p *okxProtection) okxStopRequest {
+	t.Helper()
+	if p == nil {
+		t.Fatal("protection row is missing")
+	}
+	var saved okxStopRequest
+	if err := json.Unmarshal([]byte(p.RequestJSON), &saved); err != nil {
+		t.Fatal(err)
+	}
+	return saved
+}
+
+func okxAbsentFixture(t *testing.T, fix *okxAcceptFixture) {
+	t.Helper()
+	if filepath.Base(mustGetwd(t)) == "scheduler" {
+		t.Chdir("..")
+	}
+	server := httptest.NewServer(fix)
+	t.Cleanup(server.Close)
+	t.Setenv("OKX_OFFLINE_FIXTURE", server.URL)
+	t.Setenv("OKX_API_KEY", "offline-fixture")
+	t.Setenv("OKX_API_SECRET", "secret")
+	t.Setenv("OKX_PASSPHRASE", "pass")
+}
+
+func TestOKXStopAbsentCloseRelease(t *testing.T) {
+	pct := 2.0
+	sc := StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "perps", Script: okxStopScript, Direction: DirectionBoth, StopLossPct: &pct, Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+	sell := func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
+		return &OKXResult{Symbol: "BTC", Signal: -1, StrategyDecisionFields: StrategyDecisionFields{CloseFraction: 1}}, "SELL", 50000, true
+	}
+	t.Run("pending-until-expiry", func(t *testing.T) {
+		clk := bindOKXClock(t)
+		fix := &okxAcceptFixture{absentReduce: true}
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		var mu sync.RWMutex
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+			Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+			Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000}}, sc, sell)
+		saved := okxSavedRequest(t, live.OKXProtection)
+		if saved.Close == nil || saved.Close.ExpiresAtMs <= 0 || fix.reduceWrites != 1 || len(live.TradeHistory) != 0 || live.Positions["BTC"] == nil {
+			t.Fatalf("absent close must stay pending before expiry: request=%+v writes=%d trades=%d", saved.Close, fix.reduceWrites, len(live.TradeHistory))
+		}
+		first := fix.reduceClientID
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		if fix.reduceWrites != 1 || okxSavedRequest(t, live.OKXProtection).Close == nil {
+			t.Fatal("a later cycle before expiry must keep the absent close pending")
+		}
+		fallback := 0
+		closer := protectedOKXCloser(store, app, []StrategyConfig{sc}, &mu, nil, false, func(string, *float64) (*OKXCloseResult, error) {
+			fallback++
+			return nil, fmt.Errorf("fallback")
+		})
+		if _, err := closer("BTC", nil); err == nil || fallback != 0 || fix.reduceWrites != 1 {
+			t.Fatalf("kill switch sent while the close was inside its expiry: err nil=%v fallback=%d writes=%d", err == nil, fallback, fix.reduceWrites)
+		}
+		if err := clk.Set(time.UnixMilli(saved.Close.ExpiresAtMs + 1)); err != nil {
+			t.Fatal(err)
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		cleared := okxSavedRequest(t, live.OKXProtection)
+		if cleared.Close != nil || live.OKXProtection.Status != okxProtectArmed || live.Positions["BTC"] == nil || len(live.TradeHistory) != 0 {
+			t.Fatalf("expiry must clear the pending close without booking a zero fill: %+v status=%s", cleared.Close, live.OKXProtection.Status)
+		}
+		_, _ = closer("BTC", nil)
+		if fix.reduceWrites != 2 || fix.secondReduceID == "" || fix.secondReduceID == first || fallback != 0 {
+			t.Fatalf("the kill-switch close was not sent after expiry: writes=%d second=%s first=%s fallback=%d", fix.reduceWrites, fix.secondReduceID, first, fallback)
+		}
+	})
+	t.Run("transport-lost-before-expiry", func(t *testing.T) {
+		clk := bindOKXClock(t)
+		fix := &okxAcceptFixture{reduceTransportFail: true}
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		var mu sync.RWMutex
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+			Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+			Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000}}, sc, sell)
+		saved := okxSavedRequest(t, live.OKXProtection)
+		if saved.Close == nil || saved.Close.ExpiresAtMs <= 0 || fix.reduceWrites != 1 || len(live.TradeHistory) != 0 || live.Positions["BTC"] == nil {
+			t.Fatalf("a lost transport must leave the close pending: request=%+v writes=%d trades=%d", saved.Close, fix.reduceWrites, len(live.TradeHistory))
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		closer := protectedOKXCloser(store, app, []StrategyConfig{sc}, &mu, nil, false, func(string, *float64) (*OKXCloseResult, error) {
+			t.Fatal("kill switch used the fallback while the lost request was inside its expiry")
+			return nil, nil
+		})
+		if _, err := closer("BTC", nil); err == nil || fix.reduceWrites != 1 || okxSavedRequest(t, live.OKXProtection).Close == nil {
+			t.Fatalf("the lost request was cleared or resent before expiry: err nil=%v writes=%d", err == nil, fix.reduceWrites)
+		}
+		if err := clk.Set(time.UnixMilli(saved.Close.ExpiresAtMs + 1)); err != nil {
+			t.Fatal(err)
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		cleared := okxSavedRequest(t, live.OKXProtection)
+		if cleared.Close != nil || live.Positions["BTC"] == nil || len(live.TradeHistory) != 0 || fix.reduceWrites != 1 {
+			t.Fatalf("the lost request must clear only after expiry and book nothing: close=%+v writes=%d trades=%d", cleared.Close, fix.reduceWrites, len(live.TradeHistory))
+		}
+	})
+	t.Run("stop-filled-before-reduce", func(t *testing.T) {
+		clk := bindOKXClock(t)
+		fix := &okxAcceptFixture{absentReduce: true, stopBeforeReduce: true}
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		var mu sync.RWMutex
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+			Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+			Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000}}, sc, sell)
+		saved := okxSavedRequest(t, live.OKXProtection)
+		if saved.Close == nil || len(live.TradeHistory) != 0 || fix.reduceWrites != 1 {
+			t.Fatal("the rejected reduce must not book the stop fill before expiry")
+		}
+		if err := clk.Set(time.UnixMilli(saved.Close.ExpiresAtMs + 1)); err != nil {
+			t.Fatal(err)
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		if live.OKXProtection != nil || live.Positions["BTC"] != nil || len(live.TradeHistory) != 1 ||
+			live.TradeHistory[0].Price != 49000 || !live.TradeHistory[0].IsClose || fix.reduceWrites != 1 {
+			t.Fatalf("the stop fill must be booked once and the row retired: trades=%+v writes=%d protection=%+v", live.TradeHistory, fix.reduceWrites, live.OKXProtection)
+		}
+	})
+	t.Run("emergency-absent", func(t *testing.T) {
+		clk := bindOKXClock(t)
+		fix := &okxAcceptFixture{absentReduce: true, failMark: true}
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		var mu sync.RWMutex
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		saved := okxSavedRequest(t, live.OKXProtection)
+		if live.OKXProtection.Status != okxProtectReducing || saved.Reduce == nil || fix.reduceWrites != 1 {
+			t.Fatalf("the emergency reduce must stay pending: status=%s reduce=%+v writes=%d", live.OKXProtection.Status, saved.Reduce, fix.reduceWrites)
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		if fix.reduceWrites != 1 || live.OKXProtection.Status != okxProtectReducing {
+			t.Fatal("absence before expiry must not send another emergency reduce")
+		}
+		if err := clk.Set(time.UnixMilli(saved.Reduce.ExpiresAtMs + 1)); err != nil {
+			t.Fatal(err)
+		}
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		if fix.reduceWrites != 1 || live.OKXProtection == nil || live.OKXProtection.Status == okxProtectReducing || live.Positions["BTC"] == nil {
+			t.Fatalf("expiry must release the stuck reduce without sending another order: writes=%d protection=%+v", fix.reduceWrites, live.OKXProtection)
+		}
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		closer := protectedOKXCloser(store, app, []StrategyConfig{sc}, &mu, nil, false, func(string, *float64) (*OKXCloseResult, error) {
+			t.Fatal("kill switch used the fallback while the stop row was unresolved")
+			return nil, nil
+		})
+		if _, err := closer("BTC", nil); err == nil || fix.reduceWrites != 2 {
+			t.Fatalf("the kill-switch close was not sent after the emergency reduce expired: err=%v writes=%d", err, fix.reduceWrites)
+		}
+	})
+}
+
+func TestOKXStopCloseWithoutSavedStop(t *testing.T) {
+	if filepath.Base(mustGetwd(t)) == "scheduler" {
+		t.Chdir("..")
+	}
+	pct := 2.0
+	sc := StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "perps", Script: okxStopScript, Direction: DirectionBoth, StopLossPct: &pct, Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+	sell := func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
+		return &OKXResult{Symbol: "BTC", Signal: -1}, "SELL", 48500, true
+	}
+	stubClose := func(t *testing.T) *int {
+		t.Helper()
+		calls := 0
+		previous := okxExecuteGuardedFn
+		t.Cleanup(func() { okxExecuteGuardedFn = previous })
+		okxExecuteGuardedFn = func(_, _, side string, qty float64, _ string, opts okxExecuteOptions) (*OKXExecuteResult, string, error) {
+			if side != "sell" || qty != 10 || !opts.ReduceOnly {
+				t.Fatalf("close was not one reduce-only order: side=%s qty=%v reduce=%v", side, qty, opts.ReduceOnly)
+			}
+			calls++
+			return &OKXExecuteResult{Execution: &OKXExecution{Fill: &OKXFill{OID: "close-1"}}}, "", nil
+		}
+		return &calls
+	}
+	step := func(t *testing.T, store *StateStore, db *StateDB, live *StrategyState) {
+		t.Helper()
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		var mu sync.RWMutex
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu,
+			Logger: silentStrategyLogger(sc.ID), Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+			Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000}}, sc, sell)
+	}
+	t.Run("reduce-only", func(t *testing.T) {
+		calls := stubClose(t)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		live.OKXProtection = nil
+		step(t, store, db, live)
+		if *calls != 1 || live.Positions["BTC"] != nil || len(live.TradeHistory) != 1 || !live.TradeHistory[0].IsClose {
+			t.Fatalf("unowned long did not close once: calls=%d trades=%+v", *calls, live.TradeHistory)
+		}
+	})
+	t.Run("armed-uses-protection", func(t *testing.T) {
+		calls := stubClose(t)
+		fix := &okxAcceptFixture{rejectReduce: true}
+		okxAbsentFixture(t, fix)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		live := okxAcceptanceBook(t)
+		var mu sync.RWMutex
+		logger := silentStrategyLogger(sc.ID)
+		armOKXStopAfterEntry(store, sc, live, &mu, &entryIntent{ClientOrderID: "entry-1"}, &OKXFill{AvgPx: 50000, TotalSz: 10}, nil, logger)
+		reconcileOKXProtection(store, sc, live, &mu, nil, logger)
+		if live.OKXProtection == nil || live.OKXProtection.Status != okxProtectArmed {
+			t.Fatalf("the close fixture was not an armed row: %+v", live.OKXProtection)
+		}
+		app := &AppState{Strategies: map[string]*StrategyState{sc.ID: live}}
+		runOKXStep(okxStepContext{Cfg: &Config{}, State: app, StratState: live, Store: store, StratDB: db, Mu: &mu, Logger: logger,
+			Prices: map[string]float64{}, Risk: &scopeCycleRisk{}, Cash: 10000,
+			Pos: okxStepPosition{Qty: 10, Side: "long", AvgCost: 50000}}, sc, sell)
+		if *calls != 0 || !fix.reduceSent() || fix.reduceWrites != 1 || !strings.HasPrefix(fix.reduceClientID, "okc") || live.Positions["BTC"] == nil {
+			t.Fatalf("armed close used the execute path or sent a second order: calls=%d writes=%d id=%s", *calls, fix.reduceWrites, fix.reduceClientID)
+		}
+	})
+	t.Run("restart-saved-position", func(t *testing.T) {
+		calls := stubClose(t)
+		db := openTestDB(t)
+		store := singleFileStore(db)
+		book := okxAcceptanceBook(t)
+		book.OKXProtection = nil
+		if err := store.SaveStrategyBook(book); err != nil {
+			t.Fatal(err)
+		}
+		restarted, err := db.LoadState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.LoadOKXProtections(restarted, []StrategyConfig{sc}); err != nil {
+			t.Fatal(err)
+		}
+		loaded := restarted.Strategies[sc.ID]
+		if loaded == nil || loaded.OKXProtection != nil || loaded.Positions["BTC"] == nil {
+			t.Fatalf("saved-position restart did not reload the open book: %+v", loaded)
+		}
+		step(t, store, db, loaded)
+		if *calls != 1 || loaded.Positions["BTC"] != nil || len(loaded.TradeHistory) != 1 || !loaded.TradeHistory[0].IsClose {
+			t.Fatalf("restarted position did not close: calls=%d trades=%+v", *calls, loaded.TradeHistory)
+		}
+	})
+}
+
 func TestOKXNonStopReversalUsesLegacyClose(t *testing.T) {
 	db := openTestDB(t)
 	store := singleFileStore(db)
@@ -712,27 +989,31 @@ func okxAcceptanceBook(t *testing.T) *StrategyState {
 }
 
 type okxAcceptFixture struct {
-	mu               sync.Mutex
-	places           int
-	stored           bool
-	effective        bool
-	partial          bool
-	partialTerminal  bool
-	onlyEntry        bool
-	circuitRemainder string
-	failMark         bool
-	failNextPosition bool
-	hideReduceFill   bool
-	reduceClientID   string
-	reduceQty        string
-	reduceWrites     int
-	rejectReduce     bool
-	lot              string
-	mark             string
-	venueFlat        bool
-	accountTimeout   bool
-	openOrder        bool
-	resting          map[string]string
+	mu                  sync.Mutex
+	places              int
+	stored              bool
+	effective           bool
+	partial             bool
+	partialTerminal     bool
+	onlyEntry           bool
+	circuitRemainder    string
+	failMark            bool
+	failNextPosition    bool
+	hideReduceFill      bool
+	reduceClientID      string
+	secondReduceID      string
+	reduceQty           string
+	reduceWrites        int
+	rejectReduce        bool
+	absentReduce        bool
+	reduceTransportFail bool
+	stopBeforeReduce    bool
+	lot                 string
+	mark                string
+	venueFlat           bool
+	accountTimeout      bool
+	openOrder           bool
+	resting             map[string]string
 }
 
 func (f *okxAcceptFixture) placeCount() int {
@@ -745,6 +1026,12 @@ func (f *okxAcceptFixture) reduceSent() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.reduceClientID != ""
+}
+
+func (f *okxAcceptFixture) reduceWriteCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reduceWrites
 }
 
 func (f *okxAcceptFixture) setEffective() {
@@ -779,14 +1066,32 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "privatePostTradeOrder":
 		f.reduceWrites++
-		if f.reduceClientID != "" || params["reduceOnly"] != true || arg("side") != "sell" || arg("instId") != "BTC-USDT-SWAP" || arg("clOrdId") == "" {
+		id := arg("clOrdId")
+		newID := f.reduceClientID != "" && f.reduceClientID != id
+		if params["reduceOnly"] != true || arg("side") != "sell" || arg("instId") != "BTC-USDT-SWAP" || id == "" ||
+			(f.reduceClientID != "" && (!f.absentReduce || (newID && f.secondReduceID != ""))) {
 			http.Error(w, "invalid or duplicate reduce", 400)
 			return
 		}
-		f.reduceClientID = arg("clOrdId")
+		if f.reduceClientID == "" {
+			f.reduceClientID = id
+		} else if newID {
+			f.secondReduceID = id
+		}
 		f.reduceQty = arg("sz")
 		if f.reduceQty == "4" {
 			f.circuitRemainder = "6"
+		}
+		if f.absentReduce {
+			if f.stopBeforeReduce {
+				f.effective = true
+				f.venueFlat = true
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": "1", "data": []interface{}{map[string]string{
+				"sCode": "51169", "sMsg": "no position to reduce", "ordId": "", "clOrdId": id,
+			}}})
+			return
 		}
 		http.Error(w, "lost", 500)
 		return
@@ -810,7 +1115,7 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "position read failed", 500)
 			return
 		}
-		if !f.venueFlat && !f.effective && (f.reduceClientID == "" || f.rejectReduce || f.circuitRemainder != "") {
+		if !f.venueFlat && !f.effective && (f.reduceClientID == "" || f.rejectReduce || f.absentReduce || f.reduceTransportFail || f.circuitRemainder != "") {
 			qty := "10"
 			if f.partial {
 				qty = "4"
@@ -856,7 +1161,7 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				row["state"] = "partially_effective"
 			}
 		}
-		if f.reduceClientID != "" && !f.rejectReduce && f.circuitRemainder == "" && !f.partial {
+		if f.reduceClientID != "" && !f.rejectReduce && !f.absentReduce && !f.reduceTransportFail && f.circuitRemainder == "" && !f.partial {
 			row = map[string]string{"instId": "BTC-USDT-SWAP", "algoId": "algo-live", "algoClOrdId": arg("algoClOrdId"), "state": "canceled"}
 		}
 		payload["data"] = []interface{}{row}
@@ -866,6 +1171,10 @@ func (f *okxAcceptFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		payload["data"] = []interface{}{map[string]string{"sCode": "0", "algoId": "algo-live"}}
 	case "privateGetTradeOrder":
 		if arg("clOrdId") != "" {
+			if f.absentReduce || f.reduceTransportFail {
+				payload["code"] = "51603"
+				break
+			}
 			if f.reduceClientID != "" && !f.hideReduceFill {
 				state, qty := "filled", f.reduceQty
 				if f.rejectReduce {

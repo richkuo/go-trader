@@ -94,6 +94,7 @@ type okxStopCommandResult struct {
 	AlgoState      string        `json:"algo_state,omitempty"`
 	AlgoClientID   string        `json:"algo_client_id,omitempty"`
 	ChildTerminal  bool          `json:"child_terminal"`
+	OrderAbsent    bool          `json:"order_absent"`
 	OrderIDs       []string      `json:"order_ids,omitempty"`
 	TriggerPx      string        `json:"trigger_px,omitempty"`
 	Sz             string        `json:"sz,omitempty"`
@@ -111,13 +112,15 @@ type okxStopFill struct {
 }
 
 type okxPendingClose struct {
-	ClientID string  `json:"client_id"`
-	Quantity float64 `json:"quantity"`
-	Circuit  bool    `json:"circuit,omitempty"`
+	ClientID    string  `json:"client_id"`
+	Quantity    float64 `json:"quantity"`
+	Circuit     bool    `json:"circuit,omitempty"`
+	ExpiresAtMs int64   `json:"expires_at_ms"`
 }
 
 type okxStopRequest struct {
 	Close      *okxPendingClose `json:"pending_close,omitempty"`
+	Reduce     *okxPendingClose `json:"pending_reduce,omitempty"`
 	Entry      string           `json:"entry,omitempty"`
 	Mark       string           `json:"mark,omitempty"`
 	EntryATR   string           `json:"entry_atr,omitempty"`
@@ -547,12 +550,15 @@ func reconcileOKXProtection(store *StateStore, sc StrategyConfig, s *StrategySta
 		okxProtectionIncident(store, s, mu, p, "the saved OKX protection request is unreadable", notifier, logger)
 		return
 	}
-	if saved.Close != nil && !settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+	if saved.Close != nil && settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) == okxSettlePending {
 		return
 	}
+	releasedReduce := false
 	if p.Status == okxProtectReducing {
-		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
-		return
+		if !okxReduceUnprotected(store, sc, s, mu, p, notifier, logger) {
+			return
+		}
+		releasedReduce = true
 	}
 	found, err := runOKXStop("read", okxStopFields(p.Symbol, map[string]string{"algo-client-id": p.AlgoClientID}))
 	if err != nil {
@@ -592,12 +598,18 @@ func reconcileOKXProtection(store *StateStore, sc StrategyConfig, s *StrategySta
 				return
 			}
 		}
+		if releasedReduce {
+			return
+		}
 		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
 	case "effective", "partially_effective":
 		okxBookStopFills(store, sc, s, mu, p, found, notifier, logger)
 	case "canceled", "order_failed":
 		if len(found.OrderIDs) != 0 {
 			okxBookStopFills(store, sc, s, mu, p, found, notifier, logger)
+			return
+		}
+		if releasedReduce {
 			return
 		}
 		okxReduceUnprotected(store, sc, s, mu, p, notifier, logger)
@@ -618,15 +630,52 @@ func okxTriggerTighter(side, current, previous string) bool {
 	return xErr == nil && yErr == nil && (side == "long" && x.Cmp(y) > 0 || side == "short" && x.Cmp(y) < 0)
 }
 
-func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) {
+const okxReduceLifetime = 2 * time.Minute
+
+func okxReduceExpiry(now time.Time) int64 {
+	return now.Add(okxReduceLifetime).UnixMilli()
+}
+
+func okxStoredRequest(saved okxStopRequest) string {
+	if saved == (okxStopRequest{}) {
+		return ""
+	}
+	raw, err := json.Marshal(saved)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func okxAbsentCloseHeld(expiresAtMs int64, now time.Time) string {
+	if expiresAtMs <= 0 {
+		return "absence is not proof the order was never accepted because the request has no saved expiry"
+	}
+	if now.UnixMilli() <= expiresAtMs {
+		return fmt.Sprintf("OKX has no order for the request; it stays pending until the saved expiry %d", expiresAtMs)
+	}
+	return ""
+}
+
+func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, notifier *MultiNotifier, logger *StrategyLogger) bool {
 	incident := func(why string) { okxProtectionIncident(store, s, mu, p, why, notifier, logger) }
 	orderID := fmt.Sprintf("okr%x", sha256.Sum256([]byte(p.RecordID)))[:32]
+	var saved okxStopRequest
+	if p.RequestJSON != "" {
+		if err := json.Unmarshal([]byte(p.RequestJSON), &saved); err != nil {
+			incident("the saved OKX protection request is unreadable")
+			return false
+		}
+	}
 	var submitErr error
+	if p.Status == okxProtectReducing && saved.Reduce != nil && saved.Reduce.ClientID != "" {
+		orderID = saved.Reduce.ClientID
+	}
 	if p.Status != okxProtectReducing {
 		pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
 		if err != nil {
 			incident("owned exposure could not be verified before a reduce: " + err.Error())
-			return
+			return false
 		}
 		mu.Lock()
 		book := s.Positions[p.Symbol]
@@ -641,34 +690,78 @@ func okxReduceUnprotected(store *StateStore, sc StrategyConfig, s *StrategyState
 			if err != nil {
 				incident("the flat stop record could not be retired: " + err.Error())
 			}
-			return
+			return false
 		}
 		if pos.Flat || book == nil || book.Side != pos.PosSide || (p.Side != "" && p.Side != book.Side) ||
 			(p.PositionID != "" && p.PositionID != book.TradePositionID) ||
 			!okxFillMatchesContracts(book.Quantity, pos.PosContracts) {
 			mu.Unlock()
 			incident("the position and book do not agree before a reduce")
-			return
+			return false
 		}
+		qty, qtyErr := strconv.ParseFloat(pos.PosContracts, 64)
+		if qtyErr != nil || !okxUsablePrice(qty) {
+			mu.Unlock()
+			incident("the emergency reduce has no verified venue size")
+			return false
+		}
+		expiresAt := okxReduceExpiry(tradingNow())
 		p.Side = book.Side
+		saved.Reduce = &okxPendingClose{ClientID: orderID, Quantity: qty, ExpiresAtMs: expiresAt}
+		p.RequestJSON = okxStoredRequest(saved)
 		p.bump(okxProtectReducing)
 		err = saveOKXProtection(store, s)
 		mu.Unlock()
 		if err != nil {
 			incident("the emergency reduce could not be saved before sending: " + err.Error())
-			return
+			return false
 		}
 		_, submitErr = runOKXStop("reduce", okxStopFields(p.Symbol, map[string]string{
 			"position-side": p.Side, "contracts": pos.PosContracts, "order-id": orderID,
-			"exp-time-ms": strconv.FormatInt(tradingNow().Add(2*time.Minute).UnixMilli(), 10),
+			"exp-time-ms": strconv.FormatInt(expiresAt, 10),
 		}))
 	}
 	out, err := runOKXStop("reduce-fill", okxStopFields(p.Symbol, map[string]string{"order-id": orderID}))
+	if err == nil && out.OrderAbsent {
+		pending := saved.Reduce
+		if pending == nil || pending.ClientID != orderID {
+			incident(fmt.Sprintf("the emergency reduce %s is absent and its saved request cannot be matched", orderID))
+			return false
+		}
+		if why := okxAbsentCloseHeld(pending.ExpiresAtMs, tradingNow()); why != "" {
+			incident(fmt.Sprintf("the emergency reduce %s %s (submit: %v)", orderID, why, submitErr))
+			return false
+		}
+		return releaseOKXEmergencyReduce(store, s, mu, p, saved, notifier, logger)
+	}
 	if err != nil || len(out.Fills) != 1 {
 		incident(fmt.Sprintf("the emergency reduce has no confirmed fill for order %s (submit: %v, read: %v)", orderID, submitErr, err))
-		return
+		return false
 	}
 	settleOKXProtectionFills(store, sc, s, mu, p, out.Fills, okxProtectReducing, true, notifier, logger, nil)
+	return false
+}
+
+func releaseOKXEmergencyReduce(store *StateStore, s *StrategyState, mu *sync.RWMutex, p *okxProtection, saved okxStopRequest, notifier *MultiNotifier, logger *StrategyLogger) bool {
+	mu.Lock()
+	previous := *p
+	saved.Reduce = nil
+	p.RequestJSON = okxStoredRequest(saved)
+	next := okxProtectArming
+	if p.AlgoID != "" {
+		next = okxProtectArmed
+	}
+	p.bump(next)
+	err := saveOKXProtection(store, s)
+	if err != nil {
+		*p = previous
+	}
+	mu.Unlock()
+	if err != nil {
+		okxProtectionIncident(store, s, mu, p, "the expired emergency reduce could not be cleared: "+err.Error(), notifier, logger)
+		return false
+	}
+	return true
 }
 
 func submitOKXProtectedClose(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, size *float64, circuit bool, notifier *MultiNotifier, logger *StrategyLogger) (*OKXCloseResult, error) {
@@ -685,8 +778,30 @@ func submitOKXProtectedClose(store *StateStore, sc StrategyConfig, s *StrategySt
 			return nil, err
 		}
 	}
-	if saved.Close != nil || p.Status == okxProtectReducing {
-		return nil, fmt.Errorf("an earlier OKX close still needs venue evidence")
+	if saved.Close != nil {
+		switch settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+		case okxSettlePending:
+			return nil, fmt.Errorf("an earlier OKX close still needs venue evidence")
+		case okxSettleBooked:
+			return okxSettledCloseResult(s, mu, p, circuit)
+		case okxSettleReleased:
+			saved = okxStopRequest{}
+			if p.RequestJSON != "" && json.Unmarshal([]byte(p.RequestJSON), &saved) != nil {
+				return nil, fmt.Errorf("the saved OKX protection request is unreadable")
+			}
+		}
+	}
+	if p.Status == okxProtectReducing {
+		if okxReduceUnprotected(store, sc, s, mu, p, notifier, logger) {
+			saved = okxStopRequest{}
+			if p.RequestJSON != "" && json.Unmarshal([]byte(p.RequestJSON), &saved) != nil {
+				return nil, fmt.Errorf("the saved OKX protection request is unreadable")
+			}
+		} else if !p.unresolved() {
+			return okxSettledCloseResult(s, mu, p, circuit)
+		} else {
+			return nil, fmt.Errorf("an earlier OKX close still needs venue evidence")
+		}
 	}
 	pos, err := runOKXStop("position", okxStopFields(p.Symbol, nil))
 	if err != nil {
@@ -730,9 +845,9 @@ func submitOKXProtectedClose(store *StateStore, sc StrategyConfig, s *StrategySt
 	p.Side = book.Side
 	p.PositionID = ensurePositionTradeID(s.ID, p.Symbol, book)
 	id := fmt.Sprintf("okc%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d", p.RecordID, p.Version+1))))[:32]
-	saved.Close = &okxPendingClose{ClientID: id, Quantity: qty, Circuit: circuit}
-	raw, _ := json.Marshal(saved)
-	p.RequestJSON = string(raw)
+	expiresAt := okxReduceExpiry(tradingNow())
+	saved.Close = &okxPendingClose{ClientID: id, Quantity: qty, Circuit: circuit, ExpiresAtMs: expiresAt}
+	p.RequestJSON = okxStoredRequest(saved)
 	p.bump(p.Status)
 	err = saveOKXProtection(store, s)
 	if err != nil {
@@ -744,11 +859,17 @@ func submitOKXProtectedClose(store *StateStore, sc StrategyConfig, s *StrategySt
 	}
 	_, submitErr := runOKXStop("reduce", okxStopFields(p.Symbol, map[string]string{
 		"position-side": p.Side, "contracts": contracts, "order-id": id,
-		"exp-time-ms": strconv.FormatInt(tradingNow().Add(2*time.Minute).UnixMilli(), 10),
+		"exp-time-ms": strconv.FormatInt(expiresAt, 10),
 	}))
-	if !settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+	switch settleOKXRequestedClose(store, sc, s, mu, p, saved, notifier, logger) {
+	case okxSettleBooked:
+		return okxSettledCloseResult(s, mu, p, circuit)
+	default:
 		return nil, fmt.Errorf("OKX close %s awaits venue evidence (submission: %v)", id, submitErr)
 	}
+}
+
+func okxSettledCloseResult(s *StrategyState, mu *sync.RWMutex, p *okxProtection, circuit bool) (*OKXCloseResult, error) {
 	mu.RLock()
 	hasCircuitRemainder := circuit && s.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil
 	mu.RUnlock()
@@ -778,19 +899,41 @@ func okxRoundCloseSize(size float64, lot string) (string, float64, error) {
 	return text, value, err
 }
 
-func settleOKXRequestedClose(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, saved okxStopRequest, notifier *MultiNotifier, logger *StrategyLogger) bool {
+type okxSettleKind int
+
+const (
+	okxSettlePending okxSettleKind = iota
+	okxSettleBooked
+	okxSettleReleased
+)
+
+func settleOKXRequestedClose(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, p *okxProtection, saved okxStopRequest, notifier *MultiNotifier, logger *StrategyLogger) okxSettleKind {
 	pending := saved.Close
 	out, err := runOKXStop("reduce-fill", okxStopFields(p.Symbol, map[string]string{"order-id": pending.ClientID}))
-	if err != nil || len(out.Fills) != 1 {
+	if err != nil {
 		okxProtectionIncident(store, s, mu, p, fmt.Sprintf("OKX close %s awaits terminal venue evidence: %v", pending.ClientID, err), notifier, logger)
-		return false
+		return okxSettlePending
+	}
+	if out.OrderAbsent {
+		if why := okxAbsentCloseHeld(pending.ExpiresAtMs, tradingNow()); why != "" {
+			okxProtectionIncident(store, s, mu, p, fmt.Sprintf("OKX close %s %s", pending.ClientID, why), notifier, logger)
+			return okxSettlePending
+		}
+		if !clearExpiredOKXClose(store, s, mu, p, saved, notifier, logger) {
+			return okxSettlePending
+		}
+		return okxSettleReleased
+	}
+	if len(out.Fills) != 1 {
+		okxProtectionIncident(store, s, mu, p, fmt.Sprintf("OKX close %s awaits terminal venue evidence: no unique order", pending.ClientID), notifier, logger)
+		return okxSettlePending
 	}
 	fill := out.Fills[0]
 	qty, err := strconv.ParseFloat(fill.Qty, 64)
 	if err != nil || fill.Side != okxReduceSide(p.Side) || fill.OrdID == "" ||
 		qty != 0 && (!okxUsablePrice(qty) || qty > pending.Quantity && !okxFillQuantityEqual(qty, pending.Quantity)) {
 		okxProtectionIncident(store, s, mu, p, "OKX close evidence does not match the saved side or size", notifier, logger)
-		return false
+		return okxSettlePending
 	}
 	fills := out.Fills
 	if qty == 0 {
@@ -799,7 +942,28 @@ func settleOKXRequestedClose(store *StateStore, sc StrategyConfig, s *StrategySt
 	settleOKXProtectionFills(store, sc, s, mu, p, fills, p.Status, false, notifier, logger, &saved)
 	var current okxStopRequest
 	_ = json.Unmarshal([]byte(p.RequestJSON), &current)
-	return current.Close == nil
+	if current.Close != nil {
+		return okxSettlePending
+	}
+	return okxSettleBooked
+}
+
+func clearExpiredOKXClose(store *StateStore, s *StrategyState, mu *sync.RWMutex, p *okxProtection, saved okxStopRequest, notifier *MultiNotifier, logger *StrategyLogger) bool {
+	mu.Lock()
+	previous := *p
+	saved.Close = nil
+	p.RequestJSON = okxStoredRequest(saved)
+	p.bump(p.Status)
+	err := saveOKXProtection(store, s)
+	if err != nil {
+		*p = previous
+	}
+	mu.Unlock()
+	if err != nil {
+		okxProtectionIncident(store, s, mu, p, "the expired OKX close could not be cleared: "+err.Error(), notifier, logger)
+		return false
+	}
+	return true
 }
 
 func okxReduceSide(positionSide string) string {

@@ -205,7 +205,8 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			}
 		}
 		if okxIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
-			if okxStopWanted(sc) && okxPosQty > 0 && signalTargetSide(result.Signal) != okxPosSide {
+			closing := okxStopWanted(sc) && okxPosQty > 0 && signalTargetSide(result.Signal) != okxPosSide
+			if closing && stratState.OKXProtection.unresolved() {
 				var size *float64
 				if result.CloseFraction > 0 && result.CloseFraction < 1 {
 					requested := okxPosQty * result.CloseFraction
@@ -227,6 +228,9 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 				}
 				mu.RUnlock()
 				return out
+			}
+			if closing {
+				result.CloseReduceOnly = true
 			}
 			er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger)
 			if ok2 {

@@ -955,7 +955,13 @@ class OKXExchangeAdapter:
 
     def stop_reduce_fill(self, inst_id: str, client_id: str) -> dict:
         self._require_live_stop()
-        rows = self._okx_data(self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "clOrdId": client_id}), "emergency reduce order")
+        try:
+            reply = self._exchange_call("privateGetTradeOrder", {"instId": inst_id, "clOrdId": client_id})
+        except ccxt.OrderNotFound:
+            return {"absent": True}
+        if isinstance(reply, dict) and str(reply.get("code")) == "51603":
+            return {"absent": True}
+        rows = self._okx_data(reply, "emergency reduce order")
         if len(rows) != 1 or not isinstance(rows[0], dict):
             raise RuntimeError("OKX returned no unique emergency reduce order")
         row = rows[0]
